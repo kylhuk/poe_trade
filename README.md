@@ -7,3 +7,4 @@ Files:
 - 03-strategy-registry.md — community-sourced strategies to validate with your data
 - 04-exilelens-linux-item-capture.md — Linux clipboard/OCR client tool
 - 05-buildatlas-pob-intelligence.md — BuildAtlas: autonomous build discovery + build coach (PoB-powered)
+- 06-db-etl-roadmap.md — Detailed database/ETL roadmap prioritizing PoE ingestion
