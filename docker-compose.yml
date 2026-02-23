@@ -19,11 +19,25 @@ services:
       timeout: 5s
       retries: 5
 
+  schema_migrator:
+    build: .
+    entrypoint: ["poe-migrate"]
+    command: ["--apply"]
+    env_file:
+      - .env
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+
   market_harvester:
     build: .
     command: ["service", "--name", "market_harvester"]
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
 
@@ -31,15 +45,23 @@ services:
     build: .
     command: ["service", "--name", "stash_scribe"]
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
+    profiles:
+      - optional
 
   etl:
     build: .
     command: ["service", "--name", "etl"]
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
 
@@ -47,7 +69,10 @@ services:
     build: .
     command: ["service", "--name", "chaos_scale"]
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
 
@@ -55,7 +80,10 @@ services:
     build: .
     command: ["service", "--name", "flip_finder"]
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
 
@@ -63,7 +91,10 @@ services:
     build: .
     command: ["service", "--name", "forge_oracle"]
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
 
@@ -71,7 +102,10 @@ services:
     build: .
     command: ["service", "--name", "session_ledger"]
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
 
@@ -81,7 +115,10 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - clickhouse
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
     env_file:
       - .env
     healthcheck:
@@ -92,11 +129,13 @@ services:
 
   ledger_ui:
     build: .
-    command: ["service", "--name", "ledger_ui"]
+    entrypoint: ["streamlit"]
+    command: ["run", "-m", "poe_trade.ui.app", "--server.port", "8501", "--server.address", "0.0.0.0"]
     ports:
       - "8501:8501"
     depends_on:
-      - ledger_api
+      ledger_api:
+        condition: service_healthy
     env_file:
       - .env
     healthcheck:
@@ -111,7 +150,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - ledger_api
+      ledger_api:
+        condition: service_healthy
     profiles:
       - optional
 
@@ -121,7 +161,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - atlas_api
+      atlas_api:
+        condition: service_healthy
     profiles:
       - optional
 
@@ -131,7 +172,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - atlas_api
+      atlas_api:
+        condition: service_healthy
     profiles:
       - optional
 
@@ -141,7 +183,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - atlas_api
+      atlas_api:
+        condition: service_healthy
     profiles:
       - optional
 
@@ -151,7 +194,8 @@ services:
     env_file:
       - .env
     depends_on:
-      - ledger_api
+      ledger_api:
+        condition: service_healthy
     profiles:
       - optional
 
