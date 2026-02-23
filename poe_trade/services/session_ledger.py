@@ -20,6 +20,10 @@ def _default_session() -> SessionSnapshot:
     now = datetime.now(timezone.utc)
     return SessionSnapshot(
         session_id="session-1",
+        realm="pc",
+        league="Synthesis",
+        start_snapshot="start",
+        end_snapshot="end",
         start_value=1200.0,
         end_value=1350.0,
         start_time=now - timedelta(hours=2),

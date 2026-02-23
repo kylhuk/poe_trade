@@ -15,9 +15,30 @@ Files:
 3. `cp .env.example .env` and adjust values for your local environment;
 4. `pip install -e .` to install the package and scripts; the `poe-ledger-cli` script becomes available;
 5. `python -m poe_trade.cli --help` to inspect the service router CLI;
-6. `python -m poe_trade.cli service --name market_harvester --help` to view per-service flags;
+6. `.venv/bin/python -m poe_trade.cli service --help` to list service names and invocation pattern;
 7. `docker compose config` to validate the multi-service topology (core + optional profiles);
 8. `docker compose up --build` to spin up ClickHouse with the ledger API/UI services (optionally add `--profile optional`).
+
+## After Docker Is Running
+- `docker compose ps` — confirm containers are up before hitting services.
+- Minimum stack to keep online: `clickhouse` + `ledger_api` + `ledger_ui`. Add `market_harvester` and/or `stash_scribe` when you want fresh ingestion.
+- `docker compose logs --follow clickhouse market_harvester stash_scribe session_ledger flip_finder ledger_api ledger_ui` — stream the services that usually start first.
+- `.venv/bin/python -m poe_trade.cli --help` and `.venv/bin/python -m poe_trade.cli service --help` — verify the CLI/service surface available inside the virtualenv.
+- `docker compose exec clickhouse clickhouse-client --query "SELECT 1"` — ensure the ClickHouse container accepts connections.
+
+### When --help is not enough
+- `clickhouse` — hosts storage tier and schema migrations; watch `clickhouse` logs for startup schema errors.
+- `market_harvester` — ingests trade/price tuples; first look at its log when ingestion stalls.
+- `stash_scribe` — connects to private PoE APIs for manual stash data; inspect its log after auth/events fail.
+- `session_ledger` — syncs player sessions with ClickHouse; if it crashes watch its idle-loop logs for the `entering idle loop` heartbeat.
+- `flip_finder` — scans snapshots for profitable flips; its log shows each pass and is the first place to confirm healthy runs.
+- `ledger_api` — serves the REST surface for UI and external hooks; check its access logs when request failures appear.
+- `ledger_ui`: Streamlit UI service; start with its runtime logs for startup/import errors.
+
+### Troubleshooting bullets
+- `AUTHENTICATION_FAILED` from `poe_ingest` usually means ClickHouse volume already has users/passwords; confirm `POE_CLICKHOUSE_USER`/`PASSWORD` match the stored credentials—existing volumes will not reinitialize user records, so you must align env vars with the data already present.
+- Startup crashes addressed in code (e.g., `session_ledger`, `flip_finder`, `ledger_ui`) now log their idle-loop `entering idle loop` messages once healthy; check the associated container log for that heartbeat before concluding the service is down.
+- OAuth `expires_in` appearing as `null` (or missing tokens) still means the refresh path has not retried; if you see that again, examine `stash_scribe`/`market_harvester` logs for the `token refresh` stanza and ensure the OAuth secret file/config is readable.
 
 ## Environment variables
 - Prefer `POE_*` variables in `.env`; compatibility aliases (`CH_*`, `POE_CURSOR_DIR`) are supported for legacy runbooks.

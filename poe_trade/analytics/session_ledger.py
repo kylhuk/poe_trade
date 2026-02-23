@@ -68,3 +68,8 @@ def summarize_session(snapshot: SessionSnapshot) -> FarmingSessionRow:
         profit_per_hour=profit_per_hour,
         notes=snapshot.notes,
     )
+
+
+def compute_session_profit(snapshot: SessionSnapshot) -> FarmingSessionRow:
+    return summarize_session(snapshot)
+

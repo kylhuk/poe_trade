@@ -87,6 +87,25 @@ class StashScribeAuthTests(unittest.TestCase):
             },
         )
 
+    def test_refresh_defaults_expires_when_missing(self):
+        fake = FakePoeClient([
+            {
+                "access_token": "abc",
+                "refresh_token": "ref",
+                "expires_in": None,
+            }
+        ])
+        client = OAuthClient(
+            fake,
+            "cid",
+            "secret",
+            "client_credentials",
+            "service:psapi",
+        )
+        token = client.refresh()
+        self.assertIsInstance(token, OAuthToken)
+        self.assertEqual(token.refresh_token, "ref")
+
     def test_capture_lock_blocks_concurrent_runs(self):
         service = StashScribe(
             _StubPoeClient(),

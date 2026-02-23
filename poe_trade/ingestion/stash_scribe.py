@@ -59,9 +59,11 @@ class OAuthClient:
             "token",
             data=payload,
         )
+        expires_value = response.get("expires_in")
+        expires_seconds = 1800 if expires_value is None else int(expires_value)
         token = OAuthToken(
             access_token=response["access_token"],
-            expires_in=int(response.get("expires_in", 1800)),
+            expires_in=expires_seconds,
         )
         token.refresh_token = response.get("refresh_token")
         return token
