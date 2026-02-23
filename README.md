@@ -22,7 +22,7 @@ Files:
 ## Environment variables
 - Prefer `POE_*` variables in `.env`; compatibility aliases (`CH_*`, `POE_CURSOR_DIR`) are supported for legacy runbooks.
 - Core values: `POE_CLICKHOUSE_URL`, `POE_CLICKHOUSE_DATABASE`, `POE_CLICKHOUSE_USER`, `POE_CLICKHOUSE_PASSWORD`, `POE_CHECKPOINT_DIR`, `POE_USER_AGENT`, `POE_LEAGUES`, `POE_REALMS`.
-- OAuth credentials: set `POE_OAUTH_CLIENT_ID` and provide the client secret through `POE_OAUTH_CLIENT_SECRET_FILE` (preferred) or `POE_OAUTH_CLIENT_SECRET`; the default grant is `POE_OAUTH_GRANT_TYPE=client_credentials` with scope `POE_OAUTH_SCOPE=service:psapi`.
+- OAuth credentials are required only for services that call private PoE APIs (`stash_scribe`, optionally authenticated `market_harvester`): set `POE_OAUTH_CLIENT_ID` and provide the client secret through `POE_OAUTH_CLIENT_SECRET_FILE` (preferred) or `POE_OAUTH_CLIENT_SECRET`; the default grant is `POE_OAUTH_GRANT_TYPE=client_credentials` with scope `POE_OAUTH_SCOPE=service:psapi`.
 - ExileLens trigger protection: set `POE_STASH_TRIGGER_TOKEN` when enabling manual stash trigger endpoints.
 
 
@@ -35,3 +35,22 @@ Files:
 - Use `clickhouse-client --multiquery < schema/sanity/bronze.sql` to validate bronze ingestion freshness.
 - Use `clickhouse-client --multiquery < schema/sanity/silver.sql` for canonical coverage checks and `schema/sanity/gold.sql` for analytics health.
 - Run `clickhouse-client --multiquery < schema/sanity/buildatlas.sql` when Atlas tables are populated to ensure the genome/eval tables respond before exposing them to the UI.
+
+## ExileLens local client
+
+### Requirements
+- Linux desktop with at least one clipboard helper (`wl-paste`/`wl-copy` on Wayland, `xclip` or `xsel` for X11) and one screenshot helper (`grim` preferred, `maim` or `gnome-screenshot` as a fallback).
+- `tesseract` for OCR fallback plus the usual Python dependencies (`poe_trade` install via `pip install -e .`).
+
+### One-shot capture
+- Ensure PoE copies text to the system clipboard (Ctrl+C or Ctrl+Alt+C) and run `python -m poe_trade.services.exilelens --endpoint http://localhost/v1/item/analyze --mode clipboard` to POST the payload.
+- Force OCR capture by passing `--mode ocr --roi x,y,width,height` and rely on `grim`/`maim` plus `tesseract` to return the parsed text.
+- Use `--league`/`--realm` if you need to pin the analyze context and `--debug-history` when you want the base64 screenshot stored in history for troubleshooting.
+
+### Watch mode
+- Use `python -m poe_trade.services.exilelens --watch-clipboard` to keep polling the clipboard (`--poll-interval` defaults to 0.4s) and automatically post a detect-worthy PoE item.
+- Cap the runtime with `--max-events N` or interrupt with Ctrl+C once the desired number of captures fires.
+
+### Clipboard copy helpers
+- `--copy-field {est_chaos,list_fast,list_normal,list_patient}` copies the requested price value into the clipboard after a successful analyze (uses the same adapter that reads the clipboard, so the write path cascades through the available tool).
+- Continue to use `--clipboard-text` and `--ocr-text` when running unit tests or reproducing a failure without touching the real clipboard.

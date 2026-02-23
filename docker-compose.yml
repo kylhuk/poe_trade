@@ -3,6 +3,10 @@ version: "3.9"
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_DB: ${CH_DATABASE:-poe_trade}
+      CLICKHOUSE_USER: ${CH_USER:-poe_ingest}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-poe_ingest}
     ports:
       - "8123:8123"
       - "9000:9000"

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
+from unittest import mock
 
 from poe_trade.exilelens.client import ExileLensClient, OCRAdapter
 from poe_trade.exilelens.history import History
 from poe_trade.exilelens.modes import Mode, select_mode
-from poe_trade.exilelens.normalizer import normalize_item_text
 from poe_trade.exilelens.session import ROIConfig, SessionType
+from poe_trade.exilelens.system_clipboard import ClipboardUnavailable, SystemClipboard
+from poe_trade.exilelens.system_ocr import SystemOCR
+from poe_trade.services.exilelens import _copy_price_field
 
 
 class _FixedHttpClient:
@@ -36,9 +40,13 @@ class _FixedHttpClient:
 class _StubClipboard:
     def __init__(self, text: str) -> None:
         self._text = text
+        self.written: list[str] = []
 
     def read_text(self) -> str:
         return self._text
+
+    def write_text(self, value: str) -> None:
+        self.written.append(value)
 
 
 class _StubOCR(OCRAdapter):
@@ -153,6 +161,115 @@ class ExileLensClientTests(unittest.TestCase):
         self.assertNotIn("image_b64", payload)
         self.assertEqual(len(self.history.records()), 1)
         self.assertIsNone(self.history.records()[0].image_b64)
+
+
+class SystemClipboardTests(unittest.TestCase):
+    @mock.patch("poe_trade.exilelens.system_clipboard.shutil.which")
+    @mock.patch("poe_trade.exilelens.system_clipboard.subprocess.run")
+    def test_prefers_wayland_helpers(self, mock_run, mock_which) -> None:
+        mock_which.side_effect = lambda name: f"/bin/{name}" if name in {"wl-paste", "wl-copy"} else None
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="value\n")
+        clipboard = SystemClipboard()
+        self.assertEqual(clipboard.read_text(), "value")
+        clipboard.write_text("price")
+        self.assertEqual(mock_run.call_args_list[-1][0][0], ["wl-copy"])
+
+    @mock.patch("poe_trade.exilelens.system_clipboard.shutil.which")
+    @mock.patch("poe_trade.exilelens.system_clipboard.subprocess.run")
+    def test_fallback_to_xclip_when_wayland_missing(self, mock_run, mock_which) -> None:
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}" if name == "xclip" else None
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="item")
+        clipboard = SystemClipboard()
+        self.assertEqual(clipboard.read_text(), "item")
+        clipboard.write_text("copy")
+        self.assertEqual(mock_run.call_args_list[-1][0][0], ["xclip", "-selection", "clipboard"])
+
+    @mock.patch("poe_trade.exilelens.system_clipboard.shutil.which", return_value=None)
+    def test_missing_tools_raise(self, mock_which) -> None:
+        with self.assertRaises(ClipboardUnavailable):
+            SystemClipboard()
+
+
+class SystemOCRTests(unittest.TestCase):
+    @mock.patch("poe_trade.exilelens.system_ocr.shutil.which")
+    @mock.patch("poe_trade.exilelens.system_ocr.subprocess.run")
+    def test_uses_grim_and_tesseract(self, mock_run, mock_which) -> None:
+        def which(name: str) -> str | None:
+            if name in {"grim", "tesseract"}:
+                return f"/usr/bin/{name}"
+            return None
+
+        mock_which.side_effect = which
+
+        def run_side_effect(cmd, **kwargs):
+            if cmd[0] == "grim":
+                return subprocess.CompletedProcess(args=cmd, returncode=0)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ocr")
+
+        mock_run.side_effect = run_side_effect
+        ocr = SystemOCR(SessionType.WAYLAND)
+        with mock.patch.object(SystemOCR, "_image_to_base64", return_value="encoded"):
+            text, image = ocr.capture_text(ROIConfig(1, 2, 3, 4))
+        self.assertEqual(text, "ocr")
+        self.assertEqual(image, "encoded")
+        first_call = mock_run.call_args_list[0][0][0]
+        self.assertEqual(first_call[0], "grim")
+        self.assertIn("-g", first_call)
+        self.assertIn("1,2 3x4", first_call)
+
+    @mock.patch("poe_trade.exilelens.system_ocr.shutil.which")
+    @mock.patch("poe_trade.exilelens.system_ocr.subprocess.run")
+    def test_falls_back_to_maim_on_x11(self, mock_run, mock_which) -> None:
+        def which(name: str) -> str | None:
+            if name in {"maim", "tesseract"}:
+                return f"/usr/bin/{name}"
+            return None
+
+        mock_which.side_effect = which
+
+        def run_side_effect(cmd, **kwargs):
+            if cmd[0] == "maim":
+                return subprocess.CompletedProcess(args=cmd, returncode=0)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ocr")
+
+        mock_run.side_effect = run_side_effect
+        ocr = SystemOCR(SessionType.X11)
+        with mock.patch.object(SystemOCR, "_image_to_base64", return_value="encoded"):
+            text, image = ocr.capture_text()
+        self.assertEqual(text, "ocr")
+        self.assertEqual(image, "encoded")
+        self.assertEqual(mock_run.call_args_list[0][0][0][0], "maim")
+
+
+class CopyFieldHelperTests(unittest.TestCase):
+    class _RecordingClipboard:
+        def __init__(self) -> None:
+            self.values: list[str] = []
+
+        def write_text(self, value: str) -> None:
+            self.values.append(value)
+
+    def test_copy_field_writes_selected_price(self) -> None:
+        clipboard = self._RecordingClipboard()
+        result = {"price": {"est_chaos": 123}}
+        copied = _copy_price_field(result, "est_chaos", clipboard)
+        self.assertTrue(copied)
+        self.assertEqual(clipboard.values, ["123"])
+
+    def test_copy_field_handles_missing_price(self) -> None:
+        clipboard = self._RecordingClipboard()
+        result: dict = {}
+        copied = _copy_price_field(result, "list_fast", clipboard)
+        self.assertFalse(copied)
+        self.assertEqual(clipboard.values, [])
+
+    def test_copy_field_uses_nested_price_block(self) -> None:
+        clipboard = self._RecordingClipboard()
+        result = {"result": {"price": {"list_normal": "4.5"}}}
+        copied = _copy_price_field(result, "list_normal", clipboard)
+        self.assertTrue(copied)
+        self.assertEqual(clipboard.values, ["4.5"])
+
 
 if __name__ == "__main__":
     unittest.main()

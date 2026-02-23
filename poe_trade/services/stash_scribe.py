@@ -30,18 +30,35 @@ def _configure_logging() -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog=SERVICE_NAME, description="Capture private stash snapshots")
-    parser.add_argument("--league", help="League to capture", required=True)
-    parser.add_argument("--realm", help="Realm identifier", default="")
+    parser = argparse.ArgumentParser(
+        prog=SERVICE_NAME, description="Capture private stash snapshots"
+    )
+    parser.add_argument(
+        "--league", help="League to capture (defaults to first configured league)"
+    )
+    parser.add_argument(
+        "--realm", help="Realm identifier (defaults to first configured realm)"
+    )
     parser.add_argument("--account", help="Account label for snapshots")
     parser.add_argument("--once", action="store_true", help="Run a single capture")
     parser.add_argument("--dry-run", action="store_true", help="Skip ClickHouse writes")
-    parser.add_argument("--poll-interval", type=float, help="Polling interval in seconds")
-    parser.add_argument("--trigger-port", type=int, help="Expose manual trigger HTTP endpoint")
+    parser.add_argument(
+        "--poll-interval", type=float, help="Polling interval in seconds"
+    )
+    parser.add_argument(
+        "--trigger-port", type=int, help="Expose manual trigger HTTP endpoint"
+    )
     args = parser.parse_args(argv)
 
     _configure_logging()
     cfg = config_settings.get_settings()
+    league = args.league or (cfg.leagues[0] if cfg.leagues else "")
+    realm = (
+        args.realm if args.realm is not None else (cfg.realms[0] if cfg.realms else "")
+    )
+    if not league:
+        LOGGER.error("No league configured; set --league or POE_LEAGUES")
+        return 1
     try:
         policy = RateLimitPolicy(
             cfg.rate_limit_max_retries,
@@ -49,7 +66,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             cfg.rate_limit_backoff_max,
             cfg.rate_limit_jitter,
         )
-        api_client = PoeClient(cfg.poe_api_base_url, policy, cfg.poe_user_agent, cfg.poe_request_timeout)
+        api_client = PoeClient(
+            cfg.poe_api_base_url, policy, cfg.poe_user_agent, cfg.poe_request_timeout
+        )
         auth_client = oauth_client_factory(cfg)
     except ValueError as exc:
         LOGGER.error("OAuth configuration error: %s", exc)
@@ -63,14 +82,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ck_client,
         checkpoints,
         status,
-        args.league,
-        args.realm,
+        league,
+        realm,
         account=args.account,
     )
     trigger_server = None
     trigger_thread = None
     if args.trigger_port:
-        trigger_server, trigger_thread = scribe.start_trigger_server(args.trigger_port, cfg.stash_trigger_token or None)
+        trigger_server, trigger_thread = scribe.start_trigger_server(
+            args.trigger_port, cfg.stash_trigger_token or None
+        )
     try:
         interval = args.poll_interval or cfg.stash_poll_interval
         scribe.run(interval=interval, dry_run=args.dry_run, once=args.once)

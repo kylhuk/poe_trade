@@ -57,13 +57,22 @@ class SettingsAliasesTests(unittest.TestCase):
             tmp_file.close()
             os.remove(tmp_file.name)
 
-    def test_oauth_secret_file_missing_raises(self):
+    def test_oauth_secret_file_missing_falls_back_to_env(self):
+        env = {
+            "POE_OAUTH_CLIENT_SECRET_FILE": "/does/not/exist",
+            "POE_OAUTH_CLIENT_SECRET": "env-secret",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.oauth_client_secret, "env-secret")
+
+    def test_oauth_secret_file_missing_without_env_is_empty(self):
         env = {
             "POE_OAUTH_CLIENT_SECRET_FILE": "/does/not/exist",
         }
         with mock.patch.dict(os.environ, env, clear=True):
-            with self.assertRaises(ValueError):
-                Settings.from_env()
+            settings = Settings.from_env()
+        self.assertEqual(settings.oauth_client_secret, "")
 
 
 if __name__ == "__main__":

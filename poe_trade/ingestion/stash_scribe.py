@@ -67,13 +67,15 @@ class OAuthClient:
         return token
 
 
-
 def oauth_client_factory(settings: Any) -> OAuthClient:
-    if not (
-        settings.oauth_client_id
-        and settings.oauth_client_secret
-    ):
+    if not (settings.oauth_client_id and settings.oauth_client_secret):
         raise ValueError("OAuth credentials are missing")
+    grant_type = (settings.oauth_grant_type or "").strip()
+    if grant_type != "client_credentials":
+        raise ValueError("POE_OAUTH_GRANT_TYPE must be 'client_credentials'")
+    scope = (settings.oauth_scope or "").strip()
+    if "service:psapi" not in scope.split():
+        raise ValueError("POE_OAUTH_SCOPE must include 'service:psapi'")
     policy = RateLimitPolicy(
         settings.rate_limit_max_retries,
         settings.rate_limit_backoff_base,
@@ -90,8 +92,8 @@ def oauth_client_factory(settings: Any) -> OAuthClient:
         client,
         settings.oauth_client_id,
         settings.oauth_client_secret,
-        settings.oauth_grant_type,
-        settings.oauth_scope,
+        grant_type,
+        scope,
     )
 
 
@@ -122,7 +124,12 @@ class StashScribe:
         self._capture_lock = threading.Lock()
 
     def run(self, interval: float, dry_run: bool, once: bool) -> None:
-        logger.info("StashScribe starting league=%s realm=%s dry_run=%s", self._league, self._realm, dry_run)
+        logger.info(
+            "StashScribe starting league=%s realm=%s dry_run=%s",
+            self._league,
+            self._realm,
+            dry_run,
+        )
         stop_event = threading.Event()
         try:
             while not stop_event.is_set():
@@ -152,7 +159,9 @@ class StashScribe:
                 params["realm"] = self._realm
             if cursor:
                 params["id"] = cursor
-            payload = self._api_client.request("GET", "account-stash-tabs", params=params)
+            payload = self._api_client.request(
+                "GET", "account-stash-tabs", params=params
+            )
             if isinstance(payload, dict):
                 next_change_id = payload.get("next_change_id")
                 rows = self._rows(payload, now)
@@ -190,7 +199,6 @@ class StashScribe:
                 stalled_since=self._stalled_since,
             )
 
-
     def _ensure_token(self) -> None:
         if self._token is None or self._token.is_expired():
             self._token = self._auth_client.refresh()
@@ -227,7 +235,9 @@ class StashScribe:
         )
         self._clickhouse.execute(query)
 
-    def start_trigger_server(self, port: int, trigger_token: str | None) -> tuple[uvicorn.Server, threading.Thread]:
+    def start_trigger_server(
+        self, port: int, trigger_token: str | None
+    ) -> tuple[uvicorn.Server, threading.Thread]:
         app = create_trigger_app(self, trigger_token)
         config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
         server = uvicorn.Server(config)

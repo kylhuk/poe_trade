@@ -98,7 +98,6 @@ def _parse_service_ports() -> dict[str, int]:
     return ports
 
 
-
 def _read_file_trimmed(path: str) -> str:
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -108,10 +107,15 @@ def _read_file_trimmed(path: str) -> str:
 
 
 def _resolve_oauth_client_secret() -> str:
-    file_path = os.getenv("POE_OAUTH_CLIENT_SECRET_FILE")
-    if file_path:
-        return _read_file_trimmed(file_path)
-    return os.getenv("POE_OAUTH_CLIENT_SECRET", "")
+    env_secret = os.getenv("POE_OAUTH_CLIENT_SECRET", "").strip()
+    file_path = (os.getenv("POE_OAUTH_CLIENT_SECRET_FILE") or "").strip()
+    if not file_path:
+        return env_secret
+    try:
+        secret = _read_file_trimmed(file_path)
+    except ValueError:
+        return env_secret
+    return secret or env_secret
 
 
 @dataclass(frozen=True)
@@ -145,14 +149,24 @@ class Settings:
         return cls(
             realms=_parse_env_list("POE_REALMS", constants.DEFAULT_REALMS),
             leagues=_parse_env_list("POE_LEAGUES", constants.DEFAULT_LEAGUES),
-            chaos_currency=os.getenv("POE_CHAOS_CURRENCY", constants.DEFAULT_CHAOS_CURRENCY),
-            time_buckets=_parse_env_list("POE_TIME_BUCKETS", constants.DEFAULT_TIME_BUCKETS),
+            chaos_currency=os.getenv(
+                "POE_CHAOS_CURRENCY", constants.DEFAULT_CHAOS_CURRENCY
+            ),
+            time_buckets=_parse_env_list(
+                "POE_TIME_BUCKETS", constants.DEFAULT_TIME_BUCKETS
+            ),
             thresholds=_parse_thresholds(),
             clickhouse_url=_resolve_clickhouse_url(),
             service_ports=_parse_service_ports(),
-            poe_api_base_url=_get_env_str("POE_API_BASE_URL", constants.DEFAULT_POE_API_BASE_URL),
-            poe_auth_base_url=_get_env_str("POE_AUTH_BASE_URL", constants.DEFAULT_POE_AUTH_BASE_URL),
-            poe_user_agent=_get_env_str("POE_USER_AGENT", constants.DEFAULT_POE_USER_AGENT),
+            poe_api_base_url=_get_env_str(
+                "POE_API_BASE_URL", constants.DEFAULT_POE_API_BASE_URL
+            ),
+            poe_auth_base_url=_get_env_str(
+                "POE_AUTH_BASE_URL", constants.DEFAULT_POE_AUTH_BASE_URL
+            ),
+            poe_user_agent=_get_env_str(
+                "POE_USER_AGENT", constants.DEFAULT_POE_USER_AGENT
+            ),
             rate_limit_max_retries=_parse_env_int(
                 "POE_RATE_LIMIT_MAX_RETRIES",
                 constants.DEFAULT_RATE_LIMIT_MAX_RETRIES,
@@ -191,8 +205,10 @@ class Settings:
             ),
             oauth_client_id=os.getenv("POE_OAUTH_CLIENT_ID", ""),
             oauth_client_secret=_resolve_oauth_client_secret(),
-            oauth_grant_type=_get_env_str("POE_OAUTH_GRANT_TYPE", "client_credentials"),
-            oauth_scope=_get_env_str("POE_OAUTH_SCOPE", "service:psapi"),
+            oauth_grant_type=_get_env_str(
+                "POE_OAUTH_GRANT_TYPE", constants.DEFAULT_OAUTH_GRANT_TYPE
+            ),
+            oauth_scope=_get_env_str("POE_OAUTH_SCOPE", constants.DEFAULT_OAUTH_SCOPE),
         )
 
 

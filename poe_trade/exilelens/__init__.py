@@ -7,6 +7,8 @@ from .history import History, ScanRecord
 from .modes import Mode, select_mode
 from .normalizer import is_likely_item_text, normalize_item_text
 from .session import ROIConfig, SessionType, detect_session
+from .system_clipboard import ClipboardUnavailable, SystemClipboard
+from .system_ocr import OcrUnavailable, SystemOCR
 
 __all__ = [
     "ExileLensClient",
@@ -19,4 +21,8 @@ __all__ = [
     "ROIConfig",
     "SessionType",
     "detect_session",
+    "ClipboardUnavailable",
+    "SystemClipboard",
+    "OcrUnavailable",
+    "SystemOCR",
 ]
