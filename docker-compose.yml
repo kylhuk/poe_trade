@@ -1,13 +1,155 @@
 version: "3.9"
+
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
     ports:
-      - 8123:8123
-      - 9000:9000
+      - "8123:8123"
+      - "9000:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8123/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  market_harvester:
+    build: .
+    command: ["service", "--name", "market_harvester"]
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+
+  stash_scribe:
+    build: .
+    command: ["service", "--name", "stash_scribe"]
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+
+  etl:
+    build: .
+    command: ["service", "--name", "etl"]
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+
+  chaos_scale:
+    build: .
+    command: ["service", "--name", "chaos_scale"]
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+
+  flip_finder:
+    build: .
+    command: ["service", "--name", "flip_finder"]
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+
+  forge_oracle:
+    build: .
+    command: ["service", "--name", "forge_oracle"]
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+
+  session_ledger:
+    build: .
+    command: ["service", "--name", "session_ledger"]
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+
+  ledger_api:
+    build: .
+    command: ["service", "--name", "ledger_api"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ledger_ui:
+    build: .
+    command: ["service", "--name", "ledger_ui"]
+    ports:
+      - "8501:8501"
+    depends_on:
+      - ledger_api
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8501/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  atlas_api:
+    build: .
+    command: ["service", "--name", "atlas_api"]
+    env_file:
+      - .env
+    depends_on:
+      - ledger_api
+    profiles:
+      - optional
+
+  atlas_forge:
+    build: .
+    command: ["service", "--name", "atlas_forge"]
+    env_file:
+      - .env
+    depends_on:
+      - atlas_api
+    profiles:
+      - optional
+
+  atlas_bench:
+    build: .
+    command: ["service", "--name", "atlas_bench"]
+    env_file:
+      - .env
+    depends_on:
+      - atlas_api
+    profiles:
+      - optional
+
+  atlas_coach:
+    build: .
+    command: ["service", "--name", "atlas_coach"]
+    env_file:
+      - .env
+    depends_on:
+      - atlas_api
+    profiles:
+      - optional
+
+  llm_advisor:
+    build: .
+    command: ["service", "--name", "llm_advisor"]
+    env_file:
+      - .env
+    depends_on:
+      - ledger_api
+    profiles:
+      - optional
 
 volumes:
   clickhouse_data:

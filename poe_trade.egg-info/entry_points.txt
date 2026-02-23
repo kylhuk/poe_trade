@@ -1,0 +1,18 @@
+[console_scripts]
+atlas_api = poe_trade.services.atlas_api:main
+atlas_bench = poe_trade.services.atlas_bench:main
+atlas_coach = poe_trade.services.atlas_coach:main
+atlas_forge = poe_trade.services.atlas_forge:main
+chaos_scale = poe_trade.services.chaos_scale:main
+etl = poe_trade.services.etl:main
+exilelens = poe_trade.services.exilelens:main
+flip_finder = poe_trade.services.flip_finder:main
+forge_oracle = poe_trade.services.forge_oracle:main
+ledger_api = poe_trade.services.ledger_api:main
+ledger_ui = poe_trade.services.ledger_ui:main
+llm_advisor = poe_trade.services.llm_advisor:main
+market_harvester = poe_trade.services.market_harvester:main
+poe-ledger-cli = poe_trade.cli:main
+poe-migrate = poe_trade.services.migrator:main
+session_ledger = poe_trade.services.session_ledger:main
+stash_scribe = poe_trade.services.stash_scribe:main
