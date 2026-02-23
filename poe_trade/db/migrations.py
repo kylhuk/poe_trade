@@ -16,8 +16,20 @@ from .clickhouse import ClickHouseClient, ClickHouseClientError
 from ..config import settings as config_settings
 
 
-ROOT = Path(__file__).resolve().parents[2]
-MIGRATIONS_DIR = ROOT / "schema" / "migrations"
+def _resolve_migrations_dir(module_path: Path | None = None) -> Path:
+    resolved = module_path or Path(__file__).resolve()
+    candidates = (
+        resolved.parents[1] / "schema" / "migrations",
+        resolved.parents[2] / "schema" / "migrations",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    attempted = ", ".join(str(path) for path in candidates)
+    raise RuntimeError(f"Migrations directory missing. Checked: {attempted}")
+
+
+MIGRATIONS_DIR = _resolve_migrations_dir()
 METADATA_TABLE = "poe_schema_migrations"
 LOGGER = logging.getLogger(__name__)
 
