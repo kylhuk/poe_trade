@@ -31,6 +31,8 @@ poe_trade/atlas/models.py
 poe_trade/atlas/patch_radar.py
 poe_trade/atlas/ranking.py
 poe_trade/atlas/rare_templates.py
+poe_trade/bridge/__init__.py
+poe_trade/bridge/local_bridge.py
 poe_trade/config/__init__.py
 poe_trade/config/constants.py
 poe_trade/config/settings.py
@@ -79,4 +81,6 @@ poe_trade/services/session_ledger.py
 poe_trade/services/stash_scribe.py
 poe_trade/ui/__init__.py
 poe_trade/ui/app.py
+poe_trade/ui/bridge_controls.py
 poe_trade/ui/client.py
+poe_trade/ui/ops_runtime.py

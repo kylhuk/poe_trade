@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import os
 from typing import Dict, List
 
 from ..analytics.flip_finder import FlipOpportunity, find_flip_opportunities
@@ -12,10 +13,42 @@ from ..analytics.price_stats import compute_price_stats
 from ..analytics.session_ledger import SessionSnapshot, summarize_session
 from ..analytics.strategy_backtest import StrategyRegistry
 from ..atlas import UpgradeStep
+from ..bridge.local_bridge import (
+    BridgeResult,
+    ClipboardAdapter,
+    OCRAdapter,
+    capture_screen_text,
+    clipboard_read,
+    clipboard_write,
+    push_overlay_payload,
+    write_item_filter,
+)
 from ..etl.models import ListingCanonical
 from .atlas_orchestrator import AtlasOrchestrator
 from .atlas_types import AtlasBuildRecord
-from ..ops.slo import detect_checkpoint_drift, detect_repeated_rate_errors, evaluate_ingest_freshness
+from ..ops.slo import (
+    detect_checkpoint_drift,
+    detect_repeated_rate_errors,
+    evaluate_ingest_freshness,
+)
+
+try:  # pragma: no cover - platform/runtime optional dependency
+    from ..exilelens.system_clipboard import ClipboardUnavailable, SystemClipboard
+
+    _clipboard_import_error: str | None = None
+except Exception as exc:  # pragma: no cover
+    ClipboardUnavailable = RuntimeError  # type: ignore[assignment]
+    SystemClipboard = None  # type: ignore[assignment]
+    _clipboard_import_error = str(exc)
+
+try:  # pragma: no cover - platform/runtime optional dependency
+    from ..exilelens.system_ocr import OcrUnavailable, SystemOCR
+
+    _ocr_import_error: str | None = None
+except Exception as exc:  # pragma: no cover
+    OcrUnavailable = RuntimeError  # type: ignore[assignment]
+    SystemOCR = None  # type: ignore[assignment]
+    _ocr_import_error = str(exc)
 
 from .schemas import (
     AdvisorPlanItem,
@@ -33,6 +66,12 @@ from .schemas import (
     CraftCandidate,
     CraftListResponse,
     CraftOpportunitySchema,
+    BridgeCaptureScreenRequest,
+    BridgeClipboardReadRequest,
+    BridgeClipboardWriteRequest,
+    BridgeFilterWriteRequest,
+    BridgeOverlayPushRequest,
+    BridgeResponse,
     FlipListResponse,
     FlipOpportunitySchema,
     ItemEstimateResponse,
@@ -55,6 +94,11 @@ from .schemas import (
     RateLimitAlertSchema,
 )
 
+
+_OVERLAY_QUEUE_PATH = "/tmp/overlay_payload_queue.ndjson"
+_FILTER_PATH = "/tmp/manual.filter"
+_FILTER_BACKUP_PATH = "/tmp/manual.filter.bak"
+_MANUAL_REQUIRED_MESSAGE = "manual trigger required for local bridge actions"
 
 
 @dataclass(frozen=True)
@@ -149,11 +193,15 @@ class LedgerWorkflowService:
             notes="seeded delve",
         )
         self._completed_sessions: List[SessionSnapshot] = [snapshot_a, snapshot_b]
-        self._leaderboard = [summarize_session(snapshot) for snapshot in self._completed_sessions]
+        self._leaderboard = [
+            summarize_session(snapshot) for snapshot in self._completed_sessions
+        ]
         self._active_sessions: Dict[str, ActiveSession] = {}
         self._strategy_registry = StrategyRegistry.with_builtin_strategies()
         self._deterministic_anchor = datetime(2025, 2, 15, 8, 0, tzinfo=timezone.utc)
         self._atlas_orchestrator = AtlasOrchestrator(self._deterministic_anchor)
+        self._clipboard_adapter: ClipboardAdapter | None = None
+        self._ocr_adapter: OCRAdapter | None = None
 
     def analyze_item(
         self,
@@ -174,9 +222,13 @@ class LedgerWorkflowService:
         craft_candidates = self._build_craft_candidates(fp_loose)
         flags = [] if image_b64 is None else ["has_image"]
         price = self._build_price_estimate(fp_loose, stats)
-        return AnalyzeResponse(parsed=parsed, price=price, craft=craft_candidates, flags=flags)
+        return AnalyzeResponse(
+            parsed=parsed, price=price, craft=craft_candidates, flags=flags
+        )
 
-    def pricing_snapshot(self, request: PricingSnapshotEstimateRequest) -> PricingSnapshotEstimateResponse:
+    def pricing_snapshot(
+        self, request: PricingSnapshotEstimateRequest
+    ) -> PricingSnapshotEstimateResponse:
         estimates: List[PricingSnapshotEstimateItem] = []
         for item in request.items:
             stats = self._price_stats.get(item.fp_loose, self._strategy_stats)
@@ -188,10 +240,10 @@ class LedgerWorkflowService:
                     fp_loose=item.fp_loose,
                     count=item.count,
                     price=price,
-                    total_est=totals['est'],
-                    total_list_fast=totals['list_fast'],
-                    total_list_normal=totals['list_normal'],
-                    total_list_patient=totals['list_patient'],
+                    total_est=totals["est"],
+                    total_list_fast=totals["list_fast"],
+                    total_list_normal=totals["list_normal"],
+                    total_list_patient=totals["list_patient"],
                 )
             )
         return PricingSnapshotEstimateResponse(estimates=estimates)
@@ -212,7 +264,9 @@ class LedgerWorkflowService:
                     continue
                 seen.add(opportunity.query_key)
                 opportunities.append(opportunity)
-        flips = [self._from_flip_opportunity(opportunity) for opportunity in opportunities]
+        flips = [
+            self._from_flip_opportunity(opportunity) for opportunity in opportunities
+        ]
         return FlipListResponse(flips=flips)
 
     def crafts(self) -> CraftListResponse:
@@ -283,7 +337,9 @@ class LedgerWorkflowService:
         return SessionLeaderboardResponse(leaderboard=items)
 
     def strategy_backtest(self) -> StrategyBacktestResponse:
-        results = self._strategy_registry.backtest(self._completed_sessions, self._strategy_stats)
+        results = self._strategy_registry.backtest(
+            self._completed_sessions, self._strategy_stats
+        )
         strategies = [self._from_strategy_result(result) for result in results]
         return StrategyBacktestResponse(strategies=strategies)
 
@@ -312,7 +368,10 @@ class LedgerWorkflowService:
         return AdvisorPlanResponse(plan_items=plan_items)
 
     def atlas_builds(self) -> List[AtlasBuildSummary]:
-        return [self._build_summary(state.record) for state in self._atlas_orchestrator.build_states()]
+        return [
+            self._build_summary(state.record)
+            for state in self._atlas_orchestrator.build_states()
+        ]
 
     def atlas_build_detail(self, build_id: str) -> AtlasBuildDetail | None:
         state = self._atlas_orchestrator.build_state(build_id)
@@ -447,8 +506,203 @@ class LedgerWorkflowService:
             ],
         )
 
+    def bridge_capture_screen(
+        self, request: BridgeCaptureScreenRequest
+    ) -> BridgeResponse:
+        blocked = self._manual_bridge_guard(
+            action="capture_screen_text",
+            manual_trigger=request.manual_trigger,
+            manual_token=request.manual_token,
+        )
+        if blocked is not None:
+            return blocked
 
-    def _from_flip_opportunity(self, opportunity: FlipOpportunity) -> FlipOpportunitySchema:
+        ocr, error = self._resolve_ocr_adapter()
+        if error is not None or ocr is None:
+            return self._bridge_failure_response(
+                action="capture_screen_text",
+                manual_trigger=request.manual_trigger,
+                message=error or "ocr unavailable",
+            )
+
+        return self._bridge_response_from_result(
+            capture_screen_text(ocr=ocr, manual_trigger=request.manual_trigger)
+        )
+
+    def bridge_clipboard_read(
+        self, request: BridgeClipboardReadRequest
+    ) -> BridgeResponse:
+        blocked = self._manual_bridge_guard(
+            action="clipboard_read",
+            manual_trigger=request.manual_trigger,
+            manual_token=request.manual_token,
+        )
+        if blocked is not None:
+            return blocked
+
+        clipboard, error = self._resolve_clipboard_adapter()
+        if error is not None or clipboard is None:
+            return self._bridge_failure_response(
+                action="clipboard_read",
+                manual_trigger=request.manual_trigger,
+                message=error or "clipboard unavailable",
+            )
+
+        return self._bridge_response_from_result(
+            clipboard_read(clipboard=clipboard, manual_trigger=request.manual_trigger)
+        )
+
+    def bridge_clipboard_write(
+        self, request: BridgeClipboardWriteRequest
+    ) -> BridgeResponse:
+        blocked = self._manual_bridge_guard(
+            action="clipboard_write",
+            manual_trigger=request.manual_trigger,
+            manual_token=request.manual_token,
+        )
+        if blocked is not None:
+            return blocked
+
+        clipboard, error = self._resolve_clipboard_adapter()
+        if error is not None or clipboard is None:
+            return self._bridge_failure_response(
+                action="clipboard_write",
+                manual_trigger=request.manual_trigger,
+                message=error or "clipboard unavailable",
+            )
+
+        return self._bridge_response_from_result(
+            clipboard_write(
+                clipboard=clipboard,
+                value=request.value,
+                manual_trigger=request.manual_trigger,
+            )
+        )
+
+    def bridge_overlay_push(self, request: BridgeOverlayPushRequest) -> BridgeResponse:
+        blocked = self._manual_bridge_guard(
+            action="push_overlay_payload",
+            manual_trigger=request.manual_trigger,
+            manual_token=request.manual_token,
+        )
+        if blocked is not None:
+            return blocked
+
+        queue_path = request.queue_path or _OVERLAY_QUEUE_PATH
+        return self._bridge_response_from_result(
+            push_overlay_payload(
+                queue_path=queue_path,
+                payload=request.payload,
+                manual_trigger=request.manual_trigger,
+            )
+        )
+
+    def bridge_filter_write(self, request: BridgeFilterWriteRequest) -> BridgeResponse:
+        blocked = self._manual_bridge_guard(
+            action="write_item_filter",
+            manual_trigger=request.manual_trigger,
+            manual_token=request.manual_token,
+        )
+        if blocked is not None:
+            return blocked
+
+        filter_path = request.filter_path or _FILTER_PATH
+        if request.backup_path is None:
+            backup_path: str | None = _FILTER_BACKUP_PATH
+        elif request.backup_path == "":
+            backup_path = None
+        else:
+            backup_path = request.backup_path
+
+        return self._bridge_response_from_result(
+            write_item_filter(
+                filter_path=filter_path,
+                contents=request.contents,
+                manual_trigger=request.manual_trigger,
+                backup_path=backup_path,
+            )
+        )
+
+    def _resolve_clipboard_adapter(self) -> tuple[ClipboardAdapter | None, str | None]:
+        if _clipboard_import_error is not None:
+            return None, f"clipboard helper unavailable: {_clipboard_import_error}"
+
+        if self._clipboard_adapter is not None:
+            return self._clipboard_adapter, None
+
+        if SystemClipboard is None:
+            return None, "clipboard helper unavailable"
+
+        try:
+            self._clipboard_adapter = SystemClipboard()
+        except ClipboardUnavailable as exc:
+            self._clipboard_adapter = None
+            return None, f"clipboard unavailable: {exc}"
+        return self._clipboard_adapter, None
+
+    def _resolve_ocr_adapter(self) -> tuple[OCRAdapter | None, str | None]:
+        if _ocr_import_error is not None:
+            return None, f"ocr helper unavailable: {_ocr_import_error}"
+
+        if self._ocr_adapter is not None:
+            return self._ocr_adapter, None
+
+        if SystemOCR is None:
+            return None, "ocr helper unavailable"
+
+        try:
+            self._ocr_adapter = SystemOCR()
+        except OcrUnavailable as exc:
+            self._ocr_adapter = None
+            return None, f"ocr unavailable: {exc}"
+        return self._ocr_adapter, None
+
+    @staticmethod
+    def _bridge_response_from_result(result: BridgeResult) -> BridgeResponse:
+        return BridgeResponse(
+            action=result.action,
+            success=result.success,
+            message=result.message,
+            payload=result.payload,
+        )
+
+    @staticmethod
+    def _bridge_failure_response(
+        *, action: str, manual_trigger: bool, message: str
+    ) -> BridgeResponse:
+        return BridgeResponse(
+            action=action,
+            success=False,
+            message=message,
+            payload={"manual_trigger": manual_trigger},
+        )
+
+    def _manual_bridge_guard(
+        self, *, action: str, manual_trigger: bool, manual_token: str | None
+    ) -> BridgeResponse | None:
+        if manual_trigger:
+            expected_token = os.getenv("POE_LEDGER_BRIDGE_MANUAL_TOKEN")
+            if expected_token and manual_token != expected_token:
+                return self._bridge_failure_response(
+                    action=action,
+                    manual_trigger=manual_trigger,
+                    message=(
+                        "manual trigger token missing or invalid; API uses "
+                        "POE_LEDGER_BRIDGE_MANUAL_TOKEN and callers must send "
+                        "the same value as manual_token "
+                        "(for UI, set POE_LEDGER_UI_BRIDGE_MANUAL_TOKEN)"
+                    ),
+                )
+            return None
+        return self._bridge_failure_response(
+            action=action,
+            manual_trigger=manual_trigger,
+            message=_MANUAL_REQUIRED_MESSAGE,
+        )
+
+    def _from_flip_opportunity(
+        self, opportunity: FlipOpportunity
+    ) -> FlipOpportunitySchema:
         metadata = {key: str(value) for key, value in opportunity.metadata.items()}
         return FlipOpportunitySchema(
             detected_at=opportunity.detected_at,
@@ -472,7 +726,9 @@ class LedgerWorkflowService:
             "list_patient": round(price.list_patient * multiplier, 3),
         }
 
-    def _build_price_estimate(self, fp_loose: str, stats: Dict[str, float]) -> PriceEstimate:
+    def _build_price_estimate(
+        self, fp_loose: str, stats: Dict[str, float]
+    ) -> PriceEstimate:
         listing_count = int(stats.get("listing_count", 0))
         median = stats.get("p50", 0.0)
         fast = median * 0.85 if median else 0.0
@@ -494,7 +750,9 @@ class LedgerWorkflowService:
                 return candidate
         return next(iter(self._price_samples))
 
-    def _detect_tags(self, text: str, league: str | None, realm: str | None) -> List[str]:
+    def _detect_tags(
+        self, text: str, league: str | None, realm: str | None
+    ) -> List[str]:
         tags: List[str] = []
         if league:
             tags.append(f"league:{league}")

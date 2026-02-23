@@ -5,8 +5,9 @@ services:
     image: clickhouse/clickhouse-server:latest
     environment:
       CLICKHOUSE_DB: ${CH_DATABASE:-poe_trade}
-      CLICKHOUSE_USER: ${CH_USER:-poe_ingest}
-      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-poe_ingest}
+      CLICKHOUSE_USER: ${CH_ADMIN_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD:-poe_admin}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -26,6 +27,9 @@ services:
     command: ["--apply"]
     env_file:
       - .env
+    environment:
+      POE_CLICKHOUSE_USER: ${CH_ADMIN_USER:-default}
+      POE_CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD:-poe_admin}
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -123,7 +127,7 @@ services:
     env_file:
       - .env
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import sys, urllib.request as r; resp = r.urlopen(\"http://localhost:8000/healthz\", timeout=5); sys.exit(0 if 200 <= resp.getcode() < 400 else 1)'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -131,7 +135,7 @@ services:
   ledger_ui:
     build: .
     entrypoint: ["streamlit"]
-    command: ["run", "-m", "poe_trade.ui.app", "--server.port", "8501", "--server.address", "0.0.0.0"]
+    command: ["run", "poe_trade/ui/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
     ports:
       - "8501:8501"
     depends_on:
@@ -140,7 +144,7 @@ services:
     env_file:
       - .env
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8501/ || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import sys, urllib.request as r; resp = r.urlopen(\"http://localhost:8501/\", timeout=5); sys.exit(0 if 200 <= resp.getcode() < 400 else 1)'"]
       interval: 30s
       timeout: 5s
       retries: 3

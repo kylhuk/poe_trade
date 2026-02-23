@@ -14,6 +14,7 @@ class UiPagesTest(unittest.TestCase):
             "Farming ROI",
             "BuildAtlas",
             "Daily Plan",
+            "Ops & Runtime",
         }
         self.assertTrue(expected.issubset(PAGE_REGISTRY.keys()))
 
@@ -27,6 +28,13 @@ class UiPagesTest(unittest.TestCase):
         plan = client.advisor_daily_plan()
         self.assertTrue(hasattr(plan, "plan_items"))
         self.assertIsInstance(plan.plan_items, list)
+
+    def test_ops_dashboard_shape(self) -> None:
+        client = LedgerApiClient(local_mode=True)
+        telemetry = client.ops_dashboard()
+        self.assertGreater(telemetry.ingest_rate.public_stash_records_per_minute, 0)
+        self.assertTrue(telemetry.rate_limit_alerts)
+        self.assertIsInstance(telemetry.checkpoint_health, list)
 
     def test_format_stash_export_text(self) -> None:
         rows = [

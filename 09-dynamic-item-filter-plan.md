@@ -52,7 +52,18 @@
 - Market signals used to bump relevant bases; regressions covered by safety rollbacks.
 
 11) Evidence checklist (docs-only)
-- [ ] NeverSink template parsing documented
-- [ ] Market signal merge strategy outlined
-- [ ] Example scenario (level 13 R-B-B chest) captured in plan
-- [ ] Reload + safety guardrails described
+- Docs-only verification: NeverSink template parsing recorded in section 4 references and matching plan steps; Tests/lint: not run / N/A
+- Docs-only verification: market signal merge strategy detailed in section 4 along with freshness fallback notes; Tests/lint: not run / N/A
+- Docs-only verification: level 13 R-B-B chest example retained in section 3 and referenced in rule synthesis; Tests/lint: not run / N/A
+- Docs-only verification: reload guardrails and manual trigger policy explained in sections 6 and 7; Tests/lint: not run / N/A
+
+12) Delivery backlog mapping (aligned to 10-comprehensive-feature-backlog.md)
+- P4-T01 NeverSink delta recompute owner: go-fast/build engineer; dependencies: ClickHouse market snapshots (A5) and build telemetry ingestion with policy metadata (A6); outputs: `services/filter/delta-compute.md` plus telemetry outlining freshness flags and fallback behavior; acceptance signal: `python -m poe_trade.cli filter delta --build-state sample.json` shows diff summary with freshness flag while baseline fallback kicks in when data ages past 15m.
+- P4-T02 Filter validation and rollback flow owner: go-fast engineer; dependencies: manual trigger policy, filter text fixtures, dry-run parser, and diff smoke-test tooling; outputs: `services/filter/reload-flow.md`, documented rollback commands, and smoke-test telemetry/diff records; acceptance signal: `python -m poe_trade.cli filter reload --trigger manual --file new.filter` reports validation success, diff assertions, and rollback registration.
+- P4-T03 Market guardrails and throttling owner: devops/platform lead; dependencies: ClickHouse snapshot availability and rate-limit-aware upload hooks; outputs: `dashboards/market-freshness.md`, throttling behavior notes, and dashboard metrics for freshness and 429 handling; acceptance signal: `python -m poe_trade.cli filter market-check --age 900` warns about stale data, confirms baseline fallback, and records throttling metrics.
+
+13) Safety validation matrix
+- Manual trigger enforcement | control point: reload command invoked only after explicit user action or approved automation hook; evidence: `filter reload --trigger manual` logs and the audit field `trigger:manual` emitted to telemetry; failure signal: reload attempted without documented trigger, audit log flags; operator action: cancel reload, re-issue via manual path, document violation.
+- Validate-before-apply | control point: dry-run parse + diff assertion before atomic swap; evidence: dry-run telemetry from `filter reload --dry-run` and diff smoke-test metrics that compare serialized filters; failure signal: validation/parsing errors or unexpected diff detected; operator action: retain previous filter, log issue, investigate delta inputs before retry.
+- Stale market fallback (>15m) | control point: market feed freshness checker; evidence: freshness flag telemetry from `filter delta --build-state sample.json` or `filter market-check --age 900`, including `freshness_state` and `fallback` metrics; failure signal: telemetry warning about stale data 15+ minutes old; operator action: keep baseline-only weights, note degraded signal in logs, do not reload until feed recovers.
+- Rollback path | control point: backup of prior filter before swap; evidence: reload-flow logs noting rollback command registration plus smoke-test telemetry tracing `filter reload --rollback`; failure signal: post-reload visibility regression or safety smoke test failure; operator action: restore backup, halt automatic reloads, trigger incident review.

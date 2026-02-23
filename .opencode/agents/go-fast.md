@@ -3,7 +3,7 @@ description: Legacy go-fast identifier now drives Python implementation builder 
 mode: subagent
 model: openai/gpt-5.1-codex-mini
 options:
-  reasoningEffort: low
+  reasoningEffort: high
 permission:
   task: deny
   edit:

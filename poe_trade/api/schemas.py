@@ -227,7 +227,6 @@ class AtlasCoachPlanResponse(BaseModel):
     actions: List[CoachAction]
 
 
-
 class OpsIngestRate(BaseModel):
     window_minutes: int
     public_stash_records_per_minute: float
@@ -273,3 +272,38 @@ class OpsDashboardResponse(BaseModel):
     request_rate: OpsRequestRate
     slo_status: List[OpsSLOStatus]
     rate_limit_alerts: List[RateLimitAlertSchema]
+
+
+class BridgeResponse(BaseModel):
+    action: str
+    success: bool
+    message: str
+    payload: Dict[str, object]
+
+
+class BridgeRequest(BaseModel):
+    manual_trigger: bool = False
+    manual_token: Optional[str] = None
+
+
+class BridgeCaptureScreenRequest(BridgeRequest):
+    pass
+
+
+class BridgeClipboardReadRequest(BridgeRequest):
+    pass
+
+
+class BridgeClipboardWriteRequest(BridgeRequest):
+    value: str
+
+
+class BridgeOverlayPushRequest(BridgeRequest):
+    payload: Dict[str, object]
+    queue_path: Optional[str] = None
+
+
+class BridgeFilterWriteRequest(BridgeRequest):
+    contents: str
+    filter_path: Optional[str] = None
+    backup_path: Optional[str] = None

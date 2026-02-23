@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS poe_trade.item_canonical (
     fp_exact String,
     fp_loose String,
     payload_json String
-) ENGINE = ReplacingMergeTree(fp_exact)
+) ENGINE = ReplacingMergeTree(captured_at)
 PARTITION BY (league, toYYYYMMDD(captured_at))
 ORDER BY (league, item_uid)
 TTL captured_at + INTERVAL 180 DAY;
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS poe_trade.listing_canonical (
     last_seen_at DateTime64(3, 'UTC'),
     fp_loose String,
     payload_json String
-) ENGINE = ReplacingMergeTree(listing_uid)
+) ENGINE = ReplacingMergeTree(last_seen_at)
 PARTITION BY (league, toYYYYMMDD(listed_at))
 ORDER BY (league, listing_uid)
 TTL listed_at + INTERVAL 180 DAY;
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS poe_trade.currency_rates (
     volume UInt64,
     source String,
     updated_at DateTime64(3, 'UTC')
-) ENGINE = ReplacingMergeTree((league, currency, time_bucket))
+) ENGINE = ReplacingMergeTree(updated_at)
 PARTITION BY (league, toYYYYMMDD(time_bucket))
 ORDER BY (league, currency, time_bucket)
 TTL time_bucket + INTERVAL 365 DAY;

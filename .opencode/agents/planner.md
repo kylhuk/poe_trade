@@ -1,9 +1,9 @@
 ---
 description: Planning-only subagent: decompose work into small testable todos with acceptance criteria and required evidence.
 mode: subagent
-model: openai/gpt-5.1-codex-mini
+model: openai/gpt-5.2-codex
 options:
-  reasoningEffort: low
+  reasoningEffort: xhigh
 permission:
   task: deny
   edit: deny

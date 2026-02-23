@@ -1,4 +1,3 @@
-
 """Migration tooling for ClickHouse schema baseline."""
 
 from __future__ import annotations
@@ -73,7 +72,13 @@ class MigrationRunner:
             sql = path.read_text()
             checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
             migrations.append(
-                Migration(version=version, description=description, path=path, sql=sql, checksum=checksum)
+                Migration(
+                    version=version,
+                    description=description,
+                    path=path,
+                    sql=sql,
+                    checksum=checksum,
+                )
             )
         return migrations
 
@@ -83,7 +88,9 @@ class MigrationRunner:
         for migration in self.migrations:
             stored_checksum = applied.get(migration.version)
             applied_flag = stored_checksum is not None
-            checksum_match = stored_checksum == migration.checksum if applied_flag else True
+            checksum_match = (
+                stored_checksum == migration.checksum if applied_flag else True
+            )
             results.append(
                 MigrationStatus(
                     migration=migration,
@@ -101,11 +108,15 @@ class MigrationRunner:
             LOGGER.info("%s %s%s", status.migration.version, state, checksum_note)
         pending = [st for st in statuses if not st.applied]
         if pending:
-            LOGGER.info("pending migrations: %s", [m.migration.version for m in pending])
+            LOGGER.info(
+                "pending migrations: %s", [m.migration.version for m in pending]
+            )
         else:
             LOGGER.info("all migrations applied")
 
     def apply(self) -> None:
+        if not self.dry_run:
+            self._ensure_metadata_table()
         statuses = self.status()
         pending = [st.migration for st in statuses if not st.applied]
         if not pending:
@@ -114,15 +125,39 @@ class MigrationRunner:
         for migration in pending:
             LOGGER.info("applying %s (%s)", migration.version, migration.description)
             if self.dry_run:
-                LOGGER.info("dry-run enabled: skipping execution of %s", migration.path.name)
+                LOGGER.info(
+                    "dry-run enabled: skipping execution of %s", migration.path.name
+                )
                 continue
-            self.client.execute(migration.sql)
+            for statement in self._split_sql_statements(migration.sql):
+                self.client.execute(statement)
             self._record_applied(migration)
         LOGGER.info("migration run complete")
 
+    def _ensure_metadata_table(self) -> None:
+        self.client.execute(f"CREATE DATABASE IF NOT EXISTS {self.database}")
+        table = f"{self.database}.{METADATA_TABLE}"
+        create_table_sql = f"""CREATE TABLE IF NOT EXISTS {table} (
+    version String,
+    description String,
+    checksum String,
+    applied_at DateTime64(3, 'UTC') DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree()
+ORDER BY (version)
+SETTINGS index_granularity = 8192"""
+        self.client.execute(create_table_sql)
+
+    @staticmethod
+    def _split_sql_statements(sql: str) -> list[str]:
+        # ClickHouse HTTP endpoint rejects multi-statement payloads.
+        return [statement.strip() for statement in sql.split(";") if statement.strip()]
+
     def _fetch_applied(self) -> dict[str, str]:
         table = f"{self.database}.{METADATA_TABLE}"
-        query = f"SELECT version, checksum FROM {table} ORDER BY version FORMAT JSONEachRow"
+        query = (
+            f"SELECT version, checksum FROM {table} ORDER BY version FORMAT JSONEachRow"
+        )
         try:
             payload = self.client.execute(query)
         except ClickHouseClientError as exc:
@@ -135,7 +170,9 @@ class MigrationRunner:
         for line in cleaned.splitlines():
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError:  # pragma: no cover - depends on ClickHouse format
+            except (
+                json.JSONDecodeError
+            ):  # pragma: no cover - depends on ClickHouse format
                 continue
             version = record.get("version")
             checksum = record.get("checksum")
@@ -165,7 +202,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="poe-migrate")
     parser.add_argument("--status", action="store_true", help="Show migration status")
     parser.add_argument("--apply", action="store_true", help="Apply pending migrations")
-    parser.add_argument("--dry-run", action="store_true", help="Do not execute SQL statements")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Do not execute SQL statements"
+    )
     parser.add_argument(
         "--database",
         default=os.getenv("POE_CLICKHOUSE_DATABASE", "poe_trade"),
@@ -181,7 +220,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     cfg = config_settings.get_settings()
     client = ClickHouseClient.from_env(cfg.clickhouse_url, database=args.database)
-    runner = MigrationRunner(client=client, database=args.database, dry_run=args.dry_run)
+    runner = MigrationRunner(
+        client=client, database=args.database, dry_run=args.dry_run
+    )
     if args.status:
         runner.log_status()
     if args.apply:

@@ -82,12 +82,26 @@ class MarketHarvester:
                 params["id"] = cursor
             payload = self._client.request("GET", "public-stash-tabs", params=params)
             if isinstance(payload, dict):
-                next_change_id = payload.get("next_change_id")
-                rows = self._rows_from_payload(payload, realm, league, cursor)
-                if rows and not dry_run:
-                    self._write(rows)
-                if next_change_id and not dry_run:
-                    self._checkpoints.write(key, next_change_id)
+                next_change_id, stashes = self._validate_payload(payload, key)
+                if cursor and next_change_id == cursor:
+                    logger.warning(
+                        "Stale cursor for %s: %s matches checkpoint, skipping emit",
+                        key,
+                        next_change_id,
+                    )
+                    status_text = "stale cursor"
+                else:
+                    rows = self._rows_from_payload(
+                        stashes=stashes,
+                        realm=realm,
+                        league=league,
+                        cursor=cursor,
+                        next_change_id=next_change_id,
+                    )
+                    if rows and not dry_run:
+                        self._write(rows)
+                    if next_change_id and not dry_run:
+                        self._checkpoints.write(key, next_change_id)
             else:
                 logger.warning("Unexpected payload from PoE: %s", payload)
                 status_text = "unexpected payload"
@@ -125,27 +139,43 @@ class MarketHarvester:
             self._token = self._auth_client.refresh()
             self._client.set_bearer_token(self._token.access_token)
 
+    def _validate_payload(
+        self, payload: dict[str, Any], key: str
+    ) -> tuple[str, list[dict[str, Any]]]:
+        next_change_id = payload.get("next_change_id")
+        if not isinstance(next_change_id, str) or not next_change_id:
+            raise ValueError(f"next_change_id missing or empty for {key}")
+        stashes = payload.get("stashes")
+        if not isinstance(stashes, list):
+            raise ValueError(f"stashes list missing for {key}")
+        return next_change_id, stashes
 
     def _rows_from_payload(
         self,
-        payload: dict[str, Any],
+        stashes: list[dict[str, Any]],
         realm: str,
         league: str,
         cursor: str | None,
+        next_change_id: str,
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        next_change_id = payload.get("next_change_id")
-        for stash in payload.get("stashes", []):
-            stash_id = stash.get("id") or stash.get("stash_id") or ""
+        seen_stash_ids: set[str] = set()
+        for stash in stashes:
+            stash_id_value = stash.get("id") or stash.get("stash_id")
+            stash_id = str(stash_id_value) if stash_id_value is not None else ""
+            if stash_id:
+                if stash_id in seen_stash_ids:
+                    continue
+                seen_stash_ids.add(stash_id)
             rows.append(
                 {
                     "ingested_at": now,
                     "realm": realm,
                     "league": league,
-                    "stash_id": str(stash_id),
+                    "stash_id": stash_id,
                     "checkpoint": cursor or "",
-                    "next_change_id": next_change_id or "",
+                    "next_change_id": next_change_id,
                     "payload_json": json.dumps(stash, ensure_ascii=False),
                 }
             )

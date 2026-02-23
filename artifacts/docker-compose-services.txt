@@ -1,0 +1,16 @@
+atlas_api | profiles: optional | ports: none
+atlas_bench | profiles: optional | ports: none
+atlas_coach | profiles: optional | ports: none
+atlas_forge | profiles: optional | ports: none
+chaos_scale | profiles: default | ports: none
+clickhouse | profiles: default | ports: 8123:8123/tcp, 9000:9000/tcp
+etl | profiles: default | ports: none
+flip_finder | profiles: default | ports: none
+forge_oracle | profiles: default | ports: none
+ledger_api | profiles: default | ports: 8000:8000/tcp
+ledger_ui | profiles: default | ports: 8501:8501/tcp
+llm_advisor | profiles: optional | ports: none
+market_harvester | profiles: default | ports: none
+schema_migrator | profiles: default | ports: none
+session_ledger | profiles: default | ports: none
+stash_scribe | profiles: optional | ports: none

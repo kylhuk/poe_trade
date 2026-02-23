@@ -56,7 +56,22 @@
 - Gem setup reminders fire only when detected sockets/gems diverge from the recommendation for the next major fight so repeat alerts are suppressed.
 
 ## 11) Evidence checklist (docs-only)
-- [ ] Knowledge model documented with act/zone/quest heuristics
-- [ ] Runtime detection strategy noted
-- [ ] Recommendation engines outlined with ranking factors
-- [ ] UI plan lists interactions and badge semantics
+- Docs-only verification: knowledge model, runtime detection, recommendation engines, and UI plan already outlined earlier in this doc; coverage remains conceptual without runtime implementation.
+- Tests/lint: not run / N/A (docs-only change).
+
+## 12) Delivery backlog mapping (aligned to 10-comprehensive-feature-backlog.md)
+- **P3-T01** quest runtime owner — Dependencies: telemetry adapters for overlay API and log ingestion plus manual override/api trigger policy reminders (manual override/manual trigger constraints still apply).
+  Outputs: deterministic act/quest graph feed, waypoint sync hooks, and next-step card payload schema.
+  Acceptance signal: next-step state changes appear in tracked workspace with gating items resolved per documented quests.
+- **P3-T02** routing owner — Dependencies: P3-T01 act graph output, procedural map heuristics table, and level gate rules.
+  Outputs: shortest-path solver config, transition heuristics, and detour policy knobs surfaced to UI team.
+  Acceptance signal: routing recommendations align with handoff tests for acts 1-5 without extra clears or unnecessary warp commands.
+- **P3-T03** rewards owner — Dependencies: pricing API stub, build tag matrix, and gem setup heuristics from P3-T02.
+  Outputs: ranked reward list, loot priority labels, and gem reminder hook that ties into existing UI chips.
+  Acceptance signal: reward board lists ≥2 options with rationale while loot/gem hints suppress once criteria met (documented in backlog traceability).
+
+## 13) Execution order and handoff
+- Start with P3-T01 to stabilize act/quest state capture before routing or reward work begins.
+- Hand off act graph and manual override policy notes to P3-T02 so deterministic routing can plug into the same dataset.
+- Once routing outputs are surfaced, route-confirmed state flows to P3-T03 for reward ranking and loot/gem hint attachment.
+- Final handoff to UI/integration team occurs after acceptance signals are met, with confirmation that the manual override/manual trigger guardrails remain documented and enforced.

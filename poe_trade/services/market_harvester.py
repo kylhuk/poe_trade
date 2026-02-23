@@ -45,6 +45,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.dry_run,
         poll_interval,
     )
+    try:
+        auth_client = oauth_client_factory(cfg)
+    except ValueError as exc:
+        required = " and ".join(("POE_OAUTH_CLIENT_ID", "POE_OAUTH_CLIENT_SECRET"))
+        LOGGER.error(
+            "Missing or invalid OAuth configuration for %s: %s."
+            " Ensure %s are set with valid values.",
+            SERVICE_NAME,
+            exc,
+            required,
+        )
+        return 1
+
     policy = RateLimitPolicy(
         cfg.rate_limit_max_retries,
         cfg.rate_limit_backoff_base,
@@ -55,12 +68,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     ck_client = ClickHouseClient.from_env(cfg.clickhouse_url)
     status = StatusReporter(ck_client, SERVICE_NAME)
     checkpoints = CheckpointStore(cfg.checkpoint_dir)
-    auth_client = None
-    if cfg.oauth_client_id and cfg.oauth_client_secret:
-        try:
-            auth_client = oauth_client_factory(cfg)
-        except ValueError as exc:
-            LOGGER.warning("OAuth credentials invalid for %s: %s", SERVICE_NAME, exc)
 
     harvester = MarketHarvester(client, ck_client, checkpoints, status, auth_client=auth_client)
     harvester.run(realms, leagues, poll_interval, dry_run=args.dry_run, once=args.once)

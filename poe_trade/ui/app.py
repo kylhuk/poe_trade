@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+from datetime import datetime, timezone
+
 from dataclasses import dataclass
 from typing import Callable
 
@@ -10,7 +14,20 @@ try:
 except ImportError:  # pragma: no cover - optional UI dependency
     st = None  # type: ignore[assignment]
 
-from .client import LedgerApiClient
+try:
+    from poe_trade.ui.client import LedgerApiClient
+except ImportError:  # pragma: no cover - streamlit script run without package context
+    from .client import LedgerApiClient
+
+try:
+    from poe_trade.ui.bridge_controls import render_bridge_controls
+except ImportError:  # pragma: no cover - streamlit script run without package context
+    from .bridge_controls import render_bridge_controls
+
+try:
+    from poe_trade.ui.ops_runtime import age_minutes, build_ops_summary, format_age
+except ImportError:  # pragma: no cover - streamlit script run without package context
+    from .ops_runtime import age_minutes, build_ops_summary, format_age
 
 DESCRIPTION = "Wraeclast Ledger dashboard".strip()
 
@@ -181,6 +198,209 @@ def render_daily_plan(client: LedgerApiClient) -> None:
     st.table(rows)
 
 
+def render_ops_runtime(client: LedgerApiClient) -> None:
+    st.subheader("Ops & Runtime")
+    st.caption(
+        "Operational telemetry with action queue, severity rollup, and refresh controls."
+    )
+    mode_label = "Local (in-process service)" if client.local_mode else "Remote API"
+    st.metric("API mode", mode_label)
+
+    state = st.session_state
+    refresh_controls = st.columns((1.2, 1.4, 1.2, 2.2))
+    refresh_clicked = refresh_controls[0].button(
+        "Refresh now", key="ops_refresh_now", use_container_width=True
+    )
+    auto_refresh = refresh_controls[1].toggle(
+        "Auto-refresh", value=True, key="ops_auto_refresh"
+    )
+    refresh_interval = refresh_controls[2].selectbox(
+        "Interval (sec)",
+        options=[10, 30, 60, 120],
+        key="ops_refresh_interval",
+        disabled=not auto_refresh,
+    )
+    last_success_at = state.get("ops_last_success_at")
+    if isinstance(last_success_at, datetime):
+        refresh_controls[3].write(
+            f"Last successful refresh: `{_display_timestamp(last_success_at)}`"
+        )
+        refresh_controls[3].write(
+            f"Snapshot age: `{format_age(age_minutes(last_success_at))}`"
+        )
+    else:
+        refresh_controls[3].write("Last successful refresh: `none`")
+
+    if refresh_clicked and hasattr(st, "rerun"):
+        st.rerun()
+
+    run_every = (
+        f"{refresh_interval}s" if auto_refresh and hasattr(st, "fragment") else None
+    )
+    if auto_refresh and not hasattr(st, "fragment"):
+        st.info("Auto-refresh is unavailable in this Streamlit build; use Refresh now.")
+
+    def _render_ops_snapshot() -> None:
+        telemetry = None
+        try:
+            telemetry = client.ops_dashboard()
+            state["ops_last_telemetry"] = telemetry
+            state["ops_last_success_at"] = datetime.now(timezone.utc)
+            state["ops_last_error"] = None
+        except Exception as exc:  # pragma: no cover - runtime path
+            telemetry = state.get("ops_last_telemetry")
+            state["ops_last_error"] = str(exc)
+            if telemetry is None:
+                st.error("Unable to load operational telemetry.")
+                st.caption(
+                    "Verify API/service reachability and credentials, then refresh again."
+                )
+                st.code(str(exc))
+                return
+            st.error(
+                "Live refresh failed; showing the last successful telemetry snapshot."
+            )
+            st.caption(f"Refresh error: {exc}")
+
+        summary = build_ops_summary(telemetry)
+        issue_count = len(summary.issues)
+        banner = f"System status: {summary.severity.upper()}"
+        detail = f"{summary.headline} (issues: {issue_count})"
+        if summary.severity == "critical":
+            st.error(f"{banner} - {detail}")
+        elif summary.severity == "warning":
+            st.warning(f"{banner} - {detail}")
+        else:
+            st.success(f"{banner} - {detail}")
+
+        st.markdown("#### Action queue")
+        if summary.issues:
+            for issue in summary.issues:
+                st.markdown(
+                    f"- **[{issue.severity.upper()}] {issue.title}** - "
+                    f"{issue.detail} Action: {issue.remediation}"
+                )
+        else:
+            st.success("All clear: no active operational issues detected.")
+
+        ingest = telemetry.ingest_rate
+        public_age = age_minutes(ingest.public_stash_last_seen)
+        currency_age = age_minutes(ingest.currency_last_seen)
+        telemetry_age = age_minutes(telemetry.timestamp)
+        freshness_col1, freshness_col2, freshness_col3 = st.columns(3)
+        freshness_col1.metric(
+            "Public stash rec/min",
+            f"{ingest.public_stash_records_per_minute:.1f}",
+            delta=f"last seen {format_age(public_age)} ago",
+        )
+        freshness_col2.metric(
+            "Currency rec/min",
+            f"{ingest.currency_records_per_minute:.1f}",
+            delta=f"last seen {format_age(currency_age)} ago",
+        )
+        freshness_col3.metric(
+            "Telemetry snapshot age",
+            format_age(telemetry_age),
+            delta=f"at {_display_timestamp(telemetry.timestamp)}",
+        )
+
+        request_rate = telemetry.request_rate
+        req_col1, req_col2, req_col3 = st.columns(3)
+        req_col1.metric("Requests/min", f"{request_rate.requests_per_minute:.1f}")
+        req_col2.metric("Error rate (%)", f"{request_rate.error_rate_percent:.1f}")
+        req_col3.metric("Throttled (%)", f"{request_rate.throttled_percent:.1f}")
+
+        if telemetry.checkpoint_health:
+            st.markdown("#### Checkpoint health")
+            st.table(
+                [
+                    {
+                        "Cursor": entry.cursor_name,
+                        "Last checkpoint": _display_timestamp(entry.last_checkpoint),
+                        "Expected interval (min)": entry.expected_interval_minutes,
+                        "Drift (min)": round(entry.drift_minutes, 2),
+                        "Status": "Alert" if entry.alert else "OK",
+                    }
+                    for entry in telemetry.checkpoint_health
+                ]
+            )
+        else:
+            st.info("No checkpoint health data yet.")
+
+        if telemetry.slo_status:
+            st.markdown("#### SLO status")
+            st.table(
+                [
+                    {
+                        "Stream": status.stream_name,
+                        "Target (min)": status.target_minutes,
+                        "Observed (min)": round(status.observed_minutes, 2),
+                        "Within SLO": status.within_slo,
+                        "Note": status.note or "",
+                    }
+                    for status in telemetry.slo_status
+                ]
+            )
+        else:
+            st.info("No SLO entries reported yet.")
+
+        if telemetry.rate_limit_alerts:
+            st.markdown("#### Rate limit alerts")
+            st.table(
+                [
+                    {
+                        "Status code": alert.status_code,
+                        "Occurrences": alert.occurrences,
+                        "Window (min)": alert.window_minutes,
+                        "Severity": alert.severity,
+                        "Alert": alert.alert,
+                    }
+                    for alert in telemetry.rate_limit_alerts
+                ]
+            )
+        else:
+            st.success("No rate limit alerts currently active.")
+
+        clipboard_command = "python -m poe_trade.services.exilelens --endpoint http://localhost/v1/item/analyze --mode clipboard"
+        watch_command = "python -m poe_trade.services.exilelens --watch-clipboard --endpoint http://localhost/v1/item/analyze"
+        clipboard_available = shutil.which("exilelens")
+        with st.expander("Clipboard capture helper (local only)"):
+            if clipboard_available:
+                st.success(f"`exilelens` entry point found at {clipboard_available}")
+            else:
+                st.warning(
+                    "`exilelens` is not on PATH; install the package or activate the console script on your workstation."
+                )
+            st.caption(
+                "This helper must run on your local machine to access the Path of Exile clipboard data."
+            )
+            st.markdown("**One-shot capture:**")
+            st.code(clipboard_command, language="bash")
+            st.markdown("**Watch mode:**")
+            st.code(watch_command, language="bash")
+        with st.expander("Raw telemetry JSON"):
+            st.code(
+                json.dumps(telemetry.model_dump(), default=str, indent=2),
+                language="json",
+            )
+
+    if hasattr(st, "fragment"):
+
+        @st.fragment(run_every=run_every)
+        def _ops_fragment() -> None:
+            _render_ops_snapshot()
+
+        _ops_fragment()
+    else:  # pragma: no cover - fallback for older streamlit
+        _render_ops_snapshot()
+
+
+def _display_timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
 PAGE_REGISTRY: dict[str, Page] = {
     "Market Overview": Page(
         label="Market Overview",
@@ -216,6 +436,16 @@ PAGE_REGISTRY: dict[str, Page] = {
         label="Daily Plan",
         description="Advisor daily plan generated from services.",
         render=render_daily_plan,
+    ),
+    "Ops & Runtime": Page(
+        label="Ops & Runtime",
+        description="Operational telemetry, rate limits, and clipboard guidance.",
+        render=render_ops_runtime,
+    ),
+    "Bridge Controls": Page(
+        label="Bridge Controls",
+        description="Manual local bridge actions for capture, clipboard, overlay, and filters.",
+        render=render_bridge_controls,
     ),
 }
 

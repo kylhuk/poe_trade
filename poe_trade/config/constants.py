@@ -39,7 +39,7 @@ DEFAULT_SERVICE_PORTS = {
     "atlas_api": 8400,
 }
 
-DEFAULT_POE_API_BASE_URL = "https://www.pathofexile.com/api"
+DEFAULT_POE_API_BASE_URL = "https://api.pathofexile.com"
 DEFAULT_POE_AUTH_BASE_URL = "https://www.pathofexile.com/oauth"
 DEFAULT_POE_USER_AGENT = "poe-trade/0.1"
 DEFAULT_RATE_LIMIT_MAX_RETRIES = 3

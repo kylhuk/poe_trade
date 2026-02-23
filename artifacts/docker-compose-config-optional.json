@@ -1,0 +1,849 @@
+{
+  "name": "poe_trade",
+  "networks": {
+    "default": {
+      "name": "poe_trade_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "atlas_api": {
+      "profiles": [
+        "optional"
+      ],
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "atlas_api"
+      ],
+      "depends_on": {
+        "ledger_api": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "atlas_bench": {
+      "profiles": [
+        "optional"
+      ],
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "atlas_bench"
+      ],
+      "depends_on": {
+        "atlas_api": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "atlas_coach": {
+      "profiles": [
+        "optional"
+      ],
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "atlas_coach"
+      ],
+      "depends_on": {
+        "atlas_api": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "atlas_forge": {
+      "profiles": [
+        "optional"
+      ],
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "atlas_forge"
+      ],
+      "depends_on": {
+        "atlas_api": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "chaos_scale": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "chaos_scale"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "clickhouse": {
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "CLICKHOUSE_DB": "poe_trade",
+        "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT": "1",
+        "CLICKHOUSE_PASSWORD": "poe_admin",
+        "CLICKHOUSE_USER": "default"
+      },
+      "healthcheck": {
+        "test": [
+          "CMD-SHELL",
+          "clickhouse-client -q 'SELECT 1' \u003e/dev/null 2\u003e\u00261 || exit 1"
+        ],
+        "timeout": "5s",
+        "interval": "10s",
+        "retries": 5
+      },
+      "image": "clickhouse/clickhouse-server:latest",
+      "networks": {
+        "default": null
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "target": 8123,
+          "published": "8123",
+          "protocol": "tcp"
+        },
+        {
+          "mode": "ingress",
+          "target": 9000,
+          "published": "9000",
+          "protocol": "tcp"
+        }
+      ],
+      "restart": "unless-stopped",
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "clickhouse_data",
+          "target": "/var/lib/clickhouse",
+          "volume": {}
+        },
+        {
+          "type": "bind",
+          "source": "/home/wenga/src/poe_trade/config/clickhouse/docker_related_config.xml",
+          "target": "/etc/clickhouse-server/config.d/docker_related_config.xml",
+          "read_only": true,
+          "bind": {}
+        }
+      ]
+    },
+    "etl": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "etl"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "flip_finder": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "flip_finder"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "forge_oracle": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "forge_oracle"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "ledger_api": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "ledger_api"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "healthcheck": {
+        "test": [
+          "CMD-SHELL",
+          "python -c 'import sys, urllib.request as r; resp = r.urlopen(\"http://localhost:8000/healthz\", timeout=5); sys.exit(0 if 200 \u003c= resp.getcode() \u003c 400 else 1)'"
+        ],
+        "timeout": "5s",
+        "interval": "10s",
+        "retries": 5
+      },
+      "networks": {
+        "default": null
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "target": 8000,
+          "published": "8000",
+          "protocol": "tcp"
+        }
+      ]
+    },
+    "ledger_ui": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "run",
+        "poe_trade/ui/app.py",
+        "--server.port",
+        "8501",
+        "--server.address",
+        "0.0.0.0"
+      ],
+      "depends_on": {
+        "ledger_api": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": [
+        "streamlit"
+      ],
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "healthcheck": {
+        "test": [
+          "CMD-SHELL",
+          "python -c 'import sys, urllib.request as r; resp = r.urlopen(\"http://localhost:8501/\", timeout=5); sys.exit(0 if 200 \u003c= resp.getcode() \u003c 400 else 1)'"
+        ],
+        "timeout": "5s",
+        "interval": "30s",
+        "retries": 3
+      },
+      "networks": {
+        "default": null
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "target": 8501,
+          "published": "8501",
+          "protocol": "tcp"
+        }
+      ]
+    },
+    "llm_advisor": {
+      "profiles": [
+        "optional"
+      ],
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "llm_advisor"
+      ],
+      "depends_on": {
+        "ledger_api": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "market_harvester": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "market_harvester"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "schema_migrator": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "--apply"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        }
+      },
+      "entrypoint": [
+        "poe-migrate"
+      ],
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_admin",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "default",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      },
+      "restart": "no"
+    },
+    "session_ledger": {
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "session_ledger"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "stash_scribe": {
+      "profiles": [
+        "optional"
+      ],
+      "build": {
+        "context": "/home/wenga/src/poe_trade",
+        "dockerfile": "Dockerfile"
+      },
+      "command": [
+        "service",
+        "--name",
+        "stash_scribe"
+      ],
+      "depends_on": {
+        "clickhouse": {
+          "condition": "service_healthy",
+          "required": true
+        },
+        "schema_migrator": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      },
+      "entrypoint": null,
+      "environment": {
+        "CH_ADMIN_PASSWORD": "poe_admin",
+        "CH_ADMIN_USER": "default",
+        "CH_DATABASE": "poe_trade",
+        "CH_HOST": "clickhouse",
+        "CH_PASSWORD": "poe_ingest",
+        "CH_PORT": "8123",
+        "CH_USER": "poe_ingest",
+        "POE_API_BASE_URL": "https://api.pathofexile.com",
+        "POE_CHECKPOINT_DIR": ".state/cursors",
+        "POE_CLICKHOUSE_DATABASE": "poe_trade",
+        "POE_CLICKHOUSE_PASSWORD": "poe_ingest",
+        "POE_CLICKHOUSE_URL": "http://clickhouse:8123",
+        "POE_CLICKHOUSE_USER": "poe_ingest",
+        "POE_CURSOR_DIR": ".state/cursors",
+        "POE_LEAGUES": "Synthesis",
+        "POE_LEDGER_UI_LOCAL": "1",
+        "POE_OAUTH_CLIENT_ID": "poeml",
+        "POE_OAUTH_CLIENT_SECRET": "Wgq8D6anGM2K",
+        "POE_OAUTH_GRANT_TYPE": "client_credentials",
+        "POE_OAUTH_SCOPE": "service:psapi",
+        "POE_REALMS": "pc",
+        "POE_STASH_TRIGGER_TOKEN": "change-me",
+        "POE_USER_AGENT": "poeml/1.0.0 (contact: gaffe_nearest606@bananabeer.org) Love you!"
+      },
+      "networks": {
+        "default": null
+      }
+    }
+  },
+  "volumes": {
+    "clickhouse_data": {
+      "name": "poe_trade_clickhouse_data"
+    }
+  }
+}

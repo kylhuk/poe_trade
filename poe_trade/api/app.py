@@ -29,6 +29,12 @@ from .schemas import (
     SessionStartRequest,
     StrategyBacktestResponse,
     OpsDashboardResponse,
+    BridgeCaptureScreenRequest,
+    BridgeClipboardReadRequest,
+    BridgeClipboardWriteRequest,
+    BridgeFilterWriteRequest,
+    BridgeOverlayPushRequest,
+    BridgeResponse,
 )
 from .services import LedgerWorkflowService
 
@@ -184,6 +190,31 @@ def atlas_coach_plan() -> AtlasCoachPlanResponse:
 def ops_dashboard() -> OpsDashboardResponse:
     return service.ops_dashboard()
 
+
+
+@app.post("/v1/bridge/capture-screen", response_model=BridgeResponse)
+def bridge_capture_screen(request: BridgeCaptureScreenRequest) -> BridgeResponse:
+    return service.bridge_capture_screen(request)
+
+
+@app.post("/v1/bridge/clipboard/read", response_model=BridgeResponse)
+def bridge_clipboard_read(request: BridgeClipboardReadRequest) -> BridgeResponse:
+    return service.bridge_clipboard_read(request)
+
+
+@app.post("/v1/bridge/clipboard/write", response_model=BridgeResponse)
+def bridge_clipboard_write(request: BridgeClipboardWriteRequest) -> BridgeResponse:
+    return service.bridge_clipboard_write(request)
+
+
+@app.post("/v1/bridge/overlay/push", response_model=BridgeResponse)
+def bridge_overlay_push(request: BridgeOverlayPushRequest) -> BridgeResponse:
+    return service.bridge_overlay_push(request)
+
+
+@app.post("/v1/bridge/filter/write", response_model=BridgeResponse)
+def bridge_filter_write(request: BridgeFilterWriteRequest) -> BridgeResponse:
+    return service.bridge_filter_write(request)
 
 
 @app.get("/v1/meta/health")

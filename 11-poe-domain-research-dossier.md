@@ -53,9 +53,50 @@ Data-model implications by feature
 
 Open questions and validation backlog
 
-- Confirm exact stash payload path for placement fields (`x/y` in root vs nested structures) across endpoints and leagues.
-- Verify specialized stash tab behavior for overlay mapping (currency/map/fragment tabs are not simple rectangular inventories).
-- Build Cargo ingestion POC for `areas` and `quest_rewards`, including pagination and schema-drift detection.
-- Validate quest-reward normalization for class-specific rows and duplicate rewards across patches.
-- Benchmark filter validation/upload cadence under real API limits and define safe throttle defaults.
-- Build parser test corpus for `Client.txt` event extraction (`entered area`, whispers, quest transitions) with confidence scoring.
+- validation objective/title: Confirm stash payload placement fields (`x`, `y`) resolve to consistent roots vs nested paths per league before overlay layouts build the grid mapping.
+  confidence: high
+  owner_role: overlay_engineer
+  depends_on: P0-T01
+  command: python -m poe_trade.cli stash-schema --sample-league "Standard" --path-check
+  pass_condition: log lists `x`, `y` values at expected root and matches documented tab_id mappings for each sample league
+  evidence_requirement: retain `/tmp/stash-schema-paths.log` with league, endpoint, and placement-field locations
+
+- validation objective/title: Verify specialized stash tab handling (currency, map, fragment) to ensure they do not break overlay rectangles.
+  confidence: medium
+  owner_role: overlay_engineer
+  depends_on: P0-T01
+  command: python -m poe_trade.cli stash-schema --tab-type currency,map,fragment --validate
+  pass_condition: command flags any tab_type that deviates from regular grid dimensions and documents alternate placement handling
+  evidence_requirement: annotated doc showing tab_type dimensions and overlay workarounds
+
+- validation objective/title: Prove PoE Wiki Cargo API ingestion for `areas`/`quest_rewards` can paginate and flag schema drift before downstream normalization.
+  confidence: medium
+  owner_role: data_engineer
+  depends_on: P0-T04
+  command: python -m poe_trade.cli cargo-fetch --tables areas,quest_rewards --drift-check
+  pass_condition: ingestion report shows pagination completed and drift warnings emitted only for new columns
+  evidence_requirement: `/tmp/cargo-ingest-report.json` with pagination offsets plus schema-drift annotations.txt
+
+- validation objective/title: Validate quest reward normalization rules for class-specific rows and duplicate patches so recommendations stay deterministic.
+  confidence: medium
+  owner_role: data_engineer
+  depends_on: P0-T02
+  command: python -m poe_trade.cli quest-rewards --normalize --class-tokenizer
+  pass_condition: normalized CSV deduplicates duplicates, associates each `quest_id+class+patch`, and reports confidence tags
+  evidence_requirement: committed `/artifacts/quest_rewards/normalized.csv` plus normalization spec note describing tie-breakers
+
+- validation objective/title: Benchmark filter validation/upload cadence under PoE API limits and derive safe throttle defaults.
+  confidence: medium
+  owner_role: filter_engineer
+  depends_on: P4-T02, P4-T03
+  command: python -m poe_trade.cli filter reload --file sample.filter --trigger manual --rate-limit test
+  pass_condition: CLI logs show Retry-After handling, waiting periods, and throttle defaults recorded for subsequent uploads
+  evidence_requirement: throttle log snippet and rate-limit summary saved as `/artifacts/filter/throttle-report.md`
+
+- validation objective/title: Build parser test corpus for `Client.txt` events (`entered area`, whispers, quest transitions) and estimate confidence scoring stability.
+  confidence: medium
+  owner_role: telemetry_engineer
+  depends_on: P0-T03
+  command: python -m poe_trade.cli log-parse --corpus /artifacts/logs/Client.txt --confidence-report
+  pass_condition: parser outputs `entered area`, quest events, and whisper counts with confidence scores plus drift warnings for altered lines
+  evidence_requirement: `/reports/log-parser-corpus.md` documenting extracted events and confidence tiers

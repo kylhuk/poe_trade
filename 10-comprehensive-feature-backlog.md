@@ -10,6 +10,11 @@
 2. **Compatibility:** additive ClickHouse schema changes only; telemetry contracts must version per phase; NeverSink baselines stay intact and remain authoritative when market data ages beyond 15m.
 3. **Operational guardrails:** log parser/ingestion health checks must detect schema drift, stash payload placements must be validated per league, and specialized tabs require explicit mapping before rendering.
 
+## Multi-agent execution control plane
+- **Status ledger schema:** track `task_id`, `status`, `owner_role`, `claim_token`, `locked_artifacts`, `updated_at_utc`, `evidence_ref` so every agent reads/writes the same fields.
+- **Allowed statuses & transitions:** unclaimed → claimed → in_progress → in_review → done, with a blocked branch from in_progress when downstream traces fail; no other transitions permitted without documented rollback.
+- **Claiming/locking protocol:** only one writer may claim a task/artifact, use `claim_token` renewals, implement stale-lock timeout to release after inactivity, and require explicit handoff notes before next owner writes.
+
 ## 3 Phase Roadmap (P0–P6)
 - **P0 – Discovery & Validation:** validate payload positions, specialized tabs, quest reward normalization, log parser reliability, API limit behavior.
 - **P1 – Contracts & Telemetry:** define schemas, ingestion, shared caches, and rate-limit-aware pipelines.
@@ -27,7 +32,7 @@
 - **A5 – market snapshot fixture:** `/artifacts/market/snapshot.json` mirroring ClickHouse columns plus `X-Rate-Limit-*` headers to test throttle responses and freshness switches.
 - **A6 – telemetry contract JSON schemas:** `/artifacts/contracts/selection.json` plus policy metadata (manual trigger flag, rate-limit evidence, validation status) consumed by ingestion and overlay.
 - **A7 – renderer harness stub:** `/artifacts/render/harness_stub.py` that consumes `A1`, exposes polygon verification, and logs render timing hooks for P2.
-- **A8 – integration event mock stream:** `/artifacts/integration/mock_events.jsonl` with quest pins, overlay signals, and filter reload intents so integration tests replay known sequences without live services.
+- **A8 – integration event mock stream:** `/artifacts/integration/mock_events.jsonl` with quest pins, overlay signals, and filter reload intents; each event line records `trigger_source=manual` so integration tests can assert manual replay provenance.
 
 ## Policy compliance audit checklist
 - **Manual trigger requirement:** Run `python -m poe_trade.cli contract lint docs/contracts/selection.json` against `A6`; confirm output logs `manualTrigger` field exists and lint reports no missing policy flag.
@@ -55,6 +60,18 @@ Each task entry must include the following metadata fields so agents can execute
 - `handoff_on_success` – how to transfer ownership or notify teams.
 - `handoff_on_failure` – what to document/notify when blocked.
 - `definition_of_done` – final sign-off criteria.
+
+## Done-gate checklist (applies to every task)
+- acceptance criteria verified against documented objective and dependencies.
+- verification command recorded with command text + pass condition, and pass status logged.
+- completion evidence artifact path or log snippet captured and linked.
+- policy constraints re-checked for the task context and noted in handoff.
+- all locks released and handoff notes appended once claim_token handed to next owner.
+
+## Integration manual-trigger proof guardrail
+- integrations must prove manual trigger origin by setting CLI flags (e.g., `--trigger manual`) or fixture assertions (`trigger_source=manual`).
+- verification logs must record e.g. `trigger_source=manual` or equivalent assertion to prove human initiation.
+- evidence artifacts (logs or fixtures) must include mention of the manual trigger flag or field before closing the task.
 
 ## 5 Detailed Atomic Backlog by Phase
 
@@ -94,19 +111,20 @@ definition_of_done: Stash schema doc updated with tab matrix, acceptance criteri
 ```
 
 #### Quest reward normalization verification
-Summary: Deduplicate quest reward rows so recommendations stay consistent across classes.
+Summary: Deduplicate PoE Wiki Cargo API (MediaWiki) quest reward rows so recommendations stay consistent across classes.
 ```yaml
 id: P0-T02
 phase: P0
 title: Quest reward normalization validation
-objective: Normalize Cargo `quest_rewards` entries by resolution rules (patch preference, confidence tags) to serve canonical CSVs.
+objective: Normalize PoE Wiki Cargo API (MediaWiki) `quest_rewards` entries by resolution rules (patch preference, confidence tags) to serve canonical CSVs.
 why_now: Reward recommendations downstream need deterministic identifiers before overlay integration.
 task_type: discovery
 recommended_agent_type: proto-engineer
 inputs:
   - Cargo quest_rewards table
 dependencies:
-  - https://www.poewiki.net/w/api.php
+  - P0-T04
+  - PoE Wiki Cargo API (MediaWiki)
 outputs:
   - A3
   - docs/discovery/quest-rewards-normalization.md
@@ -125,6 +143,41 @@ completion_evidence: Normalization spec plus canonical CSV imported without sche
 handoff_on_success: Share canonical CSV and spec with quest-reward consumers and log in discovery tracker.
 handoff_on_failure: Document the schema drift in the discovery notes and notify data owner.
 definition_of_done: Normalization spec and CSV reviewed, validation tool passes, dependencies noted.
+```
+
+#### Cargo table ingestion and schema drift probe
+Summary: Scope PoE Wiki Cargo API (MediaWiki) `areas` plus `quest_rewards` ingestion, pagination, and early schema-drift detection before downstream normalization.
+```yaml
+id: P0-T04
+phase: P0
+title: Cargo table ingestion and schema drift probe
+objective: Confirm PoE Wiki Cargo API (MediaWiki) `areas` and `quest_rewards` tables page cleanly and expose schema drift before normalization or routing consumes the rows.
+why_now: Upstream ingestion reliability gates boss discovery and ensures downstream normalization has stable inputs.
+task_type: discovery
+recommended_agent_type: data_engineer
+inputs:
+  - Cargo areas table
+  - Cargo quest_rewards table
+dependencies:
+  - PoE Wiki Cargo API (MediaWiki)
+outputs:
+  - docs/discovery/cargo-ingest-probe.md
+  - /tmp/cargo-ingest-report.json
+atomic_subtasks:
+  - Paginate through Cargo `areas` and `quest_rewards` tables, verifying each offset page hits expected row counts and tokens.
+  - Record schema signatures per page (column names/types) and flag any drift beyond documented Cargo fields.
+  - Surface pagination state plus schema warnings so normalization and routing teams can digest ingestion health.
+verification_commands:
+  - command: python -m poe_trade.cli cargo-fetch --tables areas,quest_rewards --drift-check
+    pass_condition: CLI reports pagination finished and only drift alerts reference newly added columns
+policy_constraints:
+  - Respect manual trigger expectations for Cargo snapshots and honor rate-limit headers/backoff from PoE APIs.
+blocking_conditions:
+  - Cargo API pagination token missing or rate limit responses block page advancement.
+completion_evidence: Cache of schema-signature snapshots plus ingest report showing pagination offsets and drift annotations.
+handoff_on_success: Share `docs/discovery/cargo-ingest-probe.md` and ingest report with normalization owners.
+handoff_on_failure: Log pagination failures and drift blockers in discovery tracker with retry recommendations.
+definition_of_done: Cargo pagination validated, schema drift annotated, downstream teams notified, and evidence saved.
 ```
 
 #### Log parser drift detection
@@ -550,6 +603,7 @@ definition_of_done: Guardrails enforced, dashboard updated, stale data flow docu
 ```
 
 ### P5 – Integration
+- Integration tasks follow the **Multi-agent execution control plane**, **Done-gate checklist (applies to every task)**, and **Integration manual-trigger proof guardrail** above.
 
 #### Overlay and quest companion sync
 Summary: Connect quest reward pins to overlay highlights and metadata tooltips.
@@ -572,13 +626,13 @@ atomic_subtasks:
   - Signal overlay to highlight candidate stash rectangles when quest pins reward, retaining full footprint highlight.
   - Surface quest level/location metadata on overlay tooltip with collapsible summary.
 verification_commands:
-  - command: python -m poe_trade.cli integration overlay-quest --pin "The Blood Altar"
-    pass_condition: overlay highlights and tooltip shows location data
+  - command: python -m poe_trade.cli integration overlay-quest --pin "The Blood Altar" --trigger manual
+    pass_condition: overlay highlights and tooltip shows location data with logs citing trigger_source=manual
 policy_constraints:
   - Manual trigger requirement for quest pin events in `A8` fixture.
 blocking_conditions:
   - Missing quest pin events in the integration stream.
-completion_evidence: Integration log capturing highlight events and tooltip metadata.
+completion_evidence: Integration log capturing highlight events, tooltip metadata, and manual-trigger proof (`trigger_source=manual`).
 handoff_on_success: Confirm with overlay and quest teams that sync is functional.
 handoff_on_failure: Note missing pin events and expand discovery entry.
 definition_of_done: Overlay/quest sync confirmed, metadata tooltip tested, dim mask preserved.
@@ -605,13 +659,13 @@ atomic_subtasks:
   - Push quest-stage constraints (e.g., require R-B-B chest) into filter delta priority lists.
   - Display quest UI confirmation when filter reload is queued/completed, referencing reason and telemetry.
 verification_commands:
-  - command: python -m poe_trade.cli integration quest-filter --stage "Act 1"
-    pass_condition: delta requests queue and UI log message appear
+  - command: python -m poe_trade.cli integration quest-filter --stage "Act 1" --trigger manual
+    pass_condition: delta requests queue, UI log message cites trigger_source=manual, and manual evidence captured
 policy_constraints:
   - Manual trigger enforcement for filter reload confirmations.
 blocking_conditions:
   - Quest telemetry missing stage ID.
-completion_evidence: Logs showing quest constraints and confirmation messages.
+completion_evidence: Logs showing quest constraints, confirmation messages, and manual-trigger artifacts referencing `trigger_source=manual`.
 handoff_on_success: Share confirmation flow with UI owners and telemetry team.
 handoff_on_failure: Document missing stage ID and request telemetry fix.
 definition_of_done: Quest-filter linkage documented, UI confirmation flow reviewed.
@@ -639,13 +693,13 @@ atomic_subtasks:
   - Emit telemetry linking selection IDs to filter boost decisions along with policy flags.
   - Record metrics for selection accuracy, reload rate, and manual overrides per rollout stage.
 verification_commands:
-  - command: python -m poe_trade.cli telemetry self-check --metrics overlay,filter
-    pass_condition: writes metrics and reports no missing fields
+  - command: python -m poe_trade.cli telemetry self-check --metrics overlay,filter --trigger manual
+    pass_condition: writes metrics, reports no missing fields, and logs include trigger_source=manual
 policy_constraints:
   - Ensure telemetry records include policy context from `A6`.
 blocking_conditions:
   - Telemetry sink unreachable.
-completion_evidence: Shared telemetry table populated and dashboard queries validated.
+completion_evidence: Shared telemetry table populated, dashboard queries validated, and manual-trigger artifacts/logs referencing `trigger_source=manual`.
 handoff_on_success: Provide dashboard updates to release analytics.
 handoff_on_failure: Log sink outage and pause dashboard publishing.
 definition_of_done: Shared telemetry pipeline documented, dashboard queries validated.
