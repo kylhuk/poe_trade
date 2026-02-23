@@ -26,6 +26,19 @@ def test_installed_package_uses_package_schema(tmp_path: Path) -> None:
     assert _resolve_migrations_dir(module_path) == package_schema
 
 
+def test_installed_package_falls_back_to_cwd_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    site_packages = tmp_path / "python" / "lib" / "python3.12" / "site-packages"
+    module_path = site_packages / "poe_trade" / "db" / "migrations.py"
+    module_path.parent.mkdir(parents=True, exist_ok=True)
+    cwd_schema = tmp_path / "schema" / "migrations"
+    cwd_schema.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+
+    assert _resolve_migrations_dir(module_path) == cwd_schema
+
+
 def test_installed_package_prefers_package_schema_when_both_exist(
     tmp_path: Path,
 ) -> None:
@@ -40,9 +53,13 @@ def test_installed_package_prefers_package_schema_when_both_exist(
     assert _resolve_migrations_dir(module_path) == package_schema
 
 
-def test_missing_paths_reports_attempted_candidates(tmp_path: Path) -> None:
+def test_missing_paths_reports_attempted_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     module_path = tmp_path / "env" / "poe_trade" / "db" / "migrations.py"
     module_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path / "missing-cwd")
 
     with pytest.raises(RuntimeError) as excinfo:
         _resolve_migrations_dir(module_path)

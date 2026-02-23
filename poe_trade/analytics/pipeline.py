@@ -7,12 +7,12 @@ from typing import Iterable, Mapping, Sequence
 from ..etl.models import CurrencySnapshot
 from ..etl.pipeline import run_etl_pipeline
 from .chaos_scale import ChaosScaleEngine
-from .flip_finder import FlipOpportunity, find_flip_opportunities
+from .flip_finder import find_flip_opportunities
 from .forge_oracle import CraftAction, CraftOpportunity, ForgeOracle
 from .price_stats import PriceStatsRow, compute_price_stats
-from .session_ledger import FarmingSessionRow, SessionSnapshot, summarize_session
+from .session_ledger import SessionSnapshot, summarize_session
 from .strategy_backtest import StrategyRegistry
-from .stash_pricer import StashPriceSuggestion, StashPricer
+from .stash_pricer import StashPricer
 
 
 @dataclass
@@ -34,7 +34,9 @@ def orchestrate_analytics(
     etl_result = run_etl_pipeline(rows)
     chaos = ChaosScaleEngine.from_snapshots(currency_snapshots)
     normalized_values = {
-        listing.listing_uid: chaos.normalize_listing(listing.price_amount, listing.price_currency)
+        listing.listing_uid: chaos.normalize_listing(
+            listing.price_amount, listing.price_currency
+        )
         for listing in etl_result.listings
     }
     price_stats = compute_price_stats(normalized_values.values())
@@ -88,7 +90,9 @@ def orchestrate_analytics(
             "listing_uid": listing.listing_uid,
             "price_amount": listing.price_amount,
             "currency": listing.price_currency,
-            "price_chaos": normalized_values.get(listing.listing_uid, listing.price_amount),
+            "price_chaos": normalized_values.get(
+                listing.listing_uid, listing.price_amount
+            ),
         }
         for listing in etl_result.listings
     ]

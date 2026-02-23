@@ -10,7 +10,9 @@ if "poe_trade" not in sys.modules:
     poe_trade_stub.__path__ = [str(poe_trade_dir)]
     sys.modules["poe_trade"] = poe_trade_stub
 
-if "fastapi" not in sys.modules:
+try:
+    import fastapi  # type: ignore[import]
+except ImportError:  # pragma: no cover - availability varies
     class FastAPIStub:
         def __init__(self, **kwargs):
             self._routes = []
@@ -27,12 +29,34 @@ if "fastapi" not in sys.modules:
 
             return decorator
 
+    def Header(default=None, **kwargs):  # type: ignore[no-untyped-def]
+        return default
+
+    status = types.SimpleNamespace(
+        HTTP_503_SERVICE_UNAVAILABLE=503,
+        HTTP_401_UNAUTHORIZED=401,
+    )
+
     fastapi = types.ModuleType("fastapi")
     fastapi.FastAPI = FastAPIStub
     fastapi.HTTPException = Exception
-    sys.modules["fastapi"] = fastapi
+    fastapi.Header = Header
+    fastapi.status = status
 
-if "httpx" not in sys.modules:
+    testclient_module = types.ModuleType("fastapi.testclient")
+
+    class TestClientStub:
+        def __init__(self, app, *_, **__):
+            self.app = app
+
+    testclient_module.TestClient = TestClientStub
+    fastapi.testclient = testclient_module
+    sys.modules["fastapi"] = fastapi
+    sys.modules["fastapi.testclient"] = testclient_module
+
+try:
+    import httpx  # type: ignore[import]
+except ImportError:  # pragma: no cover - availability varies
     class HTTPStatusError(Exception):
         def __init__(self, message, response=None):
             super().__init__(message)

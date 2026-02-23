@@ -21,6 +21,7 @@ def _resolve_migrations_dir(module_path: Path | None = None) -> Path:
     candidates = (
         resolved.parents[1] / "schema" / "migrations",
         resolved.parents[2] / "schema" / "migrations",
+        Path.cwd() / "schema" / "migrations",
     )
     for candidate in candidates:
         if candidate.is_dir():

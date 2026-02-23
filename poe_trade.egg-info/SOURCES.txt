@@ -48,6 +48,8 @@ poe_trade/exilelens/history.py
 poe_trade/exilelens/modes.py
 poe_trade/exilelens/normalizer.py
 poe_trade/exilelens/session.py
+poe_trade/exilelens/system_clipboard.py
+poe_trade/exilelens/system_ocr.py
 poe_trade/ingestion/__init__.py
 poe_trade/ingestion/checkpoints.py
 poe_trade/ingestion/market_harvester.py
