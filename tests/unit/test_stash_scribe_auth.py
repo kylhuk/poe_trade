@@ -30,7 +30,7 @@ class _StubPoeClient:
 
 class _StubAuthClient:
     def refresh(self):
-        return OAuthToken(access_token="access", refresh_token="refresh", expires_in=60)
+        return OAuthToken(access_token="access", expires_in=60)
 
 
 class _StubCheckpointStore:
@@ -62,24 +62,30 @@ class DummyTriggerService:
 
 
 class StashScribeAuthTests(unittest.TestCase):
-    def test_refresh_returns_token(self):
+    def test_refresh_uses_client_credentials_scope(self):
         fake = FakePoeClient([
             {"access_token": "abc", "refresh_token": "ref", "expires_in": 60}
         ])
-        client = OAuthClient(fake, "cid", "secret", "refresh")
+        client = OAuthClient(
+            fake,
+            "cid",
+            "secret",
+            "client_credentials",
+            "service:psapi",
+        )
         token = client.refresh()
         self.assertIsInstance(token, OAuthToken)
         self.assertEqual(token.access_token, "abc")
         self.assertEqual(token.refresh_token, "ref")
-        self.assertEqual(client._refresh_token, "ref")
-
-    def test_missing_refresh_token_raises(self):
-        fake = FakePoeClient([
-            {"access_token": "abc", "refresh_token": "ref", "expires_in": 60}
-        ])
-        client = OAuthClient(fake, "cid", "secret", "")
-        with self.assertRaises(ValueError):
-            client.refresh()
+        self.assertEqual(
+            fake.calls[0][3],
+            {
+                "grant_type": "client_credentials",
+                "client_id": "cid",
+                "client_secret": "secret",
+                "scope": "service:psapi",
+            },
+        )
 
     def test_capture_lock_blocks_concurrent_runs(self):
         service = StashScribe(

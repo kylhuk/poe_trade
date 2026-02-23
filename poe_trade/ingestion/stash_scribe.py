@@ -22,9 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 class OAuthToken:
-    def __init__(self, access_token: str, refresh_token: str, expires_in: int) -> None:
+    def __init__(self, access_token: str, expires_in: int) -> None:
         self.access_token = access_token
-        self.refresh_token = refresh_token
+        self.refresh_token: str | None = None
         safety = max(expires_in - 30, 0)
         self.expires_at = datetime.now(timezone.utc) + timedelta(seconds=safety)
 
@@ -38,40 +38,40 @@ class OAuthClient:
         client: PoeClient,
         client_id: str,
         client_secret: str,
-        refresh_token: str,
+        grant_type: str,
+        scope: str,
     ) -> None:
         self._client = client
         self._client_id = client_id
         self._client_secret = client_secret
-        self._refresh_token = refresh_token
+        self._grant_type = grant_type
+        self._scope = scope
 
     def refresh(self) -> OAuthToken:
-        if not self._refresh_token:
-            raise ValueError("Missing refresh token for OAuth")
+        payload: dict[str, str] = {
+            "grant_type": self._grant_type,
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+        }
+        payload["scope"] = self._scope
         response = self._client.request(
             "POST",
             "token",
-            data={
-                "grant_type": "refresh_token",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "refresh_token": self._refresh_token,
-            },
+            data=payload,
         )
         token = OAuthToken(
             access_token=response["access_token"],
-            refresh_token=response.get("refresh_token", self._refresh_token),
             expires_in=int(response.get("expires_in", 1800)),
         )
-        self._refresh_token = token.refresh_token
+        token.refresh_token = response.get("refresh_token")
         return token
+
 
 
 def oauth_client_factory(settings: Any) -> OAuthClient:
     if not (
         settings.oauth_client_id
         and settings.oauth_client_secret
-        and settings.oauth_refresh_token
     ):
         raise ValueError("OAuth credentials are missing")
     policy = RateLimitPolicy(
@@ -90,7 +90,8 @@ def oauth_client_factory(settings: Any) -> OAuthClient:
         client,
         settings.oauth_client_id,
         settings.oauth_client_secret,
-        settings.oauth_refresh_token,
+        settings.oauth_grant_type,
+        settings.oauth_scope,
     )
 
 

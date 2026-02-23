@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from ..db import ClickHouseClient
 from .checkpoints import CheckpointStore
 from .poe_client import PoeClient
+from .stash_scribe import OAuthClient, OAuthToken
 from .status import StatusReporter
 
 logger = logging.getLogger(__name__)
@@ -24,11 +25,14 @@ class MarketHarvester:
         ck_client: ClickHouseClient,
         checkpoint_store: CheckpointStore,
         status_reporter: StatusReporter,
+        auth_client: OAuthClient | None = None,
     ) -> None:
         self._client = client
+        self._auth_client = auth_client
         self._clickhouse = ck_client
         self._checkpoints = checkpoint_store
         self._status = status_reporter
+        self._token: OAuthToken | None = None
         self._error_counts: dict[str, int] = {}
         self._stalled_since: dict[str, datetime] = {}
         self._lock = threading.Lock()
@@ -70,6 +74,7 @@ class MarketHarvester:
         error_msg: str | None = None
         now = datetime.now(timezone.utc)
         try:
+            self._ensure_token()
             params: dict[str, str] = {"league": league}
             if realm:
                 params["realm"] = realm
@@ -112,6 +117,14 @@ class MarketHarvester:
                 error_count=self._error_counts.get(key, 0),
                 stalled_since=self._stalled_since.get(key),
             )
+
+    def _ensure_token(self) -> None:
+        if not self._auth_client:
+            return
+        if self._token is None or self._token.is_expired():
+            self._token = self._auth_client.refresh()
+            self._client.set_bearer_token(self._token.access_token)
+
 
     def _rows_from_payload(
         self,

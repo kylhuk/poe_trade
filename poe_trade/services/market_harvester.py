@@ -8,7 +8,7 @@ from typing import Sequence
 
 from ..config import settings as config_settings
 from ..db import ClickHouseClient
-from ..ingestion import CheckpointStore, MarketHarvester, PoeClient, RateLimitPolicy, StatusReporter
+from ..ingestion import CheckpointStore, MarketHarvester, PoeClient, RateLimitPolicy, StatusReporter, oauth_client_factory
 
 LOGGER = logging.getLogger(__name__)
 SERVICE_NAME = "market_harvester"
@@ -55,7 +55,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ck_client = ClickHouseClient.from_env(cfg.clickhouse_url)
     status = StatusReporter(ck_client, SERVICE_NAME)
     checkpoints = CheckpointStore(cfg.checkpoint_dir)
-    harvester = MarketHarvester(client, ck_client, checkpoints, status)
+    auth_client = None
+    if cfg.oauth_client_id and cfg.oauth_client_secret:
+        try:
+            auth_client = oauth_client_factory(cfg)
+        except ValueError as exc:
+            LOGGER.warning("OAuth credentials invalid for %s: %s", SERVICE_NAME, exc)
+
+    harvester = MarketHarvester(client, ck_client, checkpoints, status, auth_client=auth_client)
     harvester.run(realms, leagues, poll_interval, dry_run=args.dry_run, once=args.once)
     return 0
 

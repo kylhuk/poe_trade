@@ -98,6 +98,22 @@ def _parse_service_ports() -> dict[str, int]:
     return ports
 
 
+
+def _read_file_trimmed(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError as exc:
+        raise ValueError(f"unable to read OAuth secret file {path!r}: {exc}") from exc
+
+
+def _resolve_oauth_client_secret() -> str:
+    file_path = os.getenv("POE_OAUTH_CLIENT_SECRET_FILE")
+    if file_path:
+        return _read_file_trimmed(file_path)
+    return os.getenv("POE_OAUTH_CLIENT_SECRET", "")
+
+
 @dataclass(frozen=True)
 class Settings:
     realms: tuple[str, ...]
@@ -121,7 +137,8 @@ class Settings:
     stash_trigger_token: str
     oauth_client_id: str
     oauth_client_secret: str
-    oauth_refresh_token: str
+    oauth_grant_type: str
+    oauth_scope: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -173,8 +190,9 @@ class Settings:
                 constants.DEFAULT_STASH_TRIGGER_TOKEN,
             ),
             oauth_client_id=os.getenv("POE_OAUTH_CLIENT_ID", ""),
-            oauth_client_secret=os.getenv("POE_OAUTH_CLIENT_SECRET", ""),
-            oauth_refresh_token=os.getenv("POE_OAUTH_REFRESH_TOKEN", ""),
+            oauth_client_secret=_resolve_oauth_client_secret(),
+            oauth_grant_type=_get_env_str("POE_OAUTH_GRANT_TYPE", "client_credentials"),
+            oauth_scope=_get_env_str("POE_OAUTH_SCOPE", "service:psapi"),
         )
 
 
