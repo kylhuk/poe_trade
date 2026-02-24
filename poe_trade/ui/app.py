@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 from datetime import datetime, timezone
-
 from dataclasses import dataclass
 from typing import Callable
 
@@ -31,6 +30,128 @@ except ImportError:  # pragma: no cover - streamlit script run without package c
 
 DESCRIPTION = "Wraeclast Ledger dashboard".strip()
 
+GLOBAL_CSS = '''
+<style>
+:root {
+  --ledger-bg: #f4f5f9;
+  --ledger-panel: #ffffff;
+  --ledger-border: #d7dee6;
+  --ledger-accent: #1f7a8c;
+  --ledger-shadow: 0 12px 32px rgba(15, 30, 45, 0.08);
+  --ledger-muted: #5e6a7d;
+  --ledger-heading: #0f172a;
+  --ledger-gradient: linear-gradient(180deg, #eef2ff 0%, #f8fafc 100%);
+}
+body {
+  background: var(--ledger-gradient);
+  color: var(--ledger-heading);
+}
+.stApp {
+  background: transparent;
+}
+main .block-container {
+  padding: 0;
+  background: transparent;
+}
+[data-testid='stSidebar'] {
+  background: var(--ledger-panel);
+  border-radius: 0 0 12px 12px;
+  padding: 1rem 1rem 0.5rem;
+  border: 1px solid var(--ledger-border);
+}
+.stSidebar .block-container {
+  padding-top: 0.5rem;
+}
+.ledger-page-header {
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+}
+.ledger-page-title {
+  margin: 0;
+  font-size: 1.9rem;
+  font-weight: 600;
+  color: var(--ledger-heading);
+}
+.ledger-page-context {
+  margin: 0.25rem 0 0;
+  font-size: 0.95rem;
+  color: var(--ledger-muted);
+}
+.ledger-card {
+  background: var(--ledger-panel);
+  border: 1px solid var(--ledger-border);
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  box-shadow: var(--ledger-shadow);
+  margin-bottom: 1rem;
+}
+.ledger-card__message {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ledger-heading);
+}
+.ledger-card__detail {
+  margin: 0.35rem 0;
+  color: var(--ledger-muted);
+  line-height: 1.35;
+}
+.ledger-card__action {
+  margin: 0;
+  color: var(--ledger-accent);
+  font-size: 0.9rem;
+}
+.ledger-card--error {
+  border-color: #e02d3b;
+}
+@media (max-width: 768px) {
+  [data-testid='stSidebar'] {
+    padding: 0.75rem 0.75rem 0.35rem;
+  }
+  .ledger-page-header {
+    margin-bottom: 1rem;
+  }
+  .ledger-card {
+    padding: 0.9rem 1rem;
+  }
+}
+</style>
+'''
+
+def _apply_streamlit_theme() -> None:
+    if st is not None:
+        st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+
+def render_page_header(title: str, context: str) -> None:
+    st.markdown(
+        f'''
+        <div class='ledger-page-header'>
+            <h1 class='ledger-page-title'>{title}</h1>
+            <p class='ledger-page-context'>{context}</p>
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+def _card_html(
+    variant: str,
+    message: str,
+    detail: str | None = None,
+    action: str | None = None,
+) -> str:
+    detail_html = f"<p class='ledger-card__detail'>{detail}</p>" if detail else ''
+    action_html = f"<p class='ledger-card__action'>{action}</p>" if action else ''
+    return (
+        f"<div class='ledger-card ledger-card--{variant}'>"
+        f"<p class='ledger-card__message'>{message}</p>"
+        f"{detail_html}{action_html}</div>"
+    )
+
+def render_empty_state(message: str, detail: str | None = None, action: str | None = None) -> None:
+    st.markdown(_card_html('empty', message, detail, action), unsafe_allow_html=True)
+
+def render_error_state(message: str, detail: str | None = None) -> None:
+    st.markdown(_card_html('error', message, detail), unsafe_allow_html=True)
 
 @dataclass(frozen=True)
 class Page:
@@ -38,6 +159,12 @@ class Page:
     description: str
     render: Callable[[LedgerApiClient], None]
 
+@dataclass(frozen=True)
+class MenuItem:
+    key: str
+    label: str
+    icon: str
+    group: str
 
 def format_stash_export(rows: list[dict[str, float | str]]) -> str:
     return "\n".join(
@@ -70,23 +197,21 @@ def _export_rows(snapshot) -> list[dict[str, float | str]]:
         for estimate in snapshot.estimates
     ]
 
-
 def render_market_overview(client: LedgerApiClient) -> None:
     rows = client.market_overview()
-    st.subheader("Market Overview")
-    st.caption("Curated snapshots for deterministic currency lanes.")
     if rows:
         avg_confidence = sum(row["confidence"] for row in rows) / len(rows)
         st.metric("Confidence average", f"{avg_confidence:.2f}")
         st.table(rows)
     else:
-        st.info("No price observations yet.")
+        render_empty_state(
+            "No price observations yet.",
+            "Awaiting deterministic snapshots; check ingest services if this persists.",
+        )
 
 
 def render_stash_pricer(client: LedgerApiClient) -> None:
     snapshot = client.stash_pricing()
-    st.subheader("Stash Pricer")
-    st.caption("Estimate worth of curated stash contents.")
     rows = _format_estimate_rows(snapshot)
     export_rows = _export_rows(snapshot)
     if rows:
@@ -97,15 +222,19 @@ def render_stash_pricer(client: LedgerApiClient) -> None:
             file_name="stash-pricer.txt",
         )
     else:
-        st.info("There are no stash entries yet.")
+        render_empty_state(
+            "Stash pricer needs captured stashes.",
+            "Capture a stash snapshot with the bridge to seed these estimates.",
+        )
 
 
 def render_flip_scanner(client: LedgerApiClient) -> None:
     data = client.flips()
-    st.subheader("Flip Scanner")
-    st.caption("Highlights deterministic flip opportunities.")
     if not data.flips:
-        st.info("Deterministic engine did not find flips.")
+        render_empty_state(
+            "Deterministic engine did not find flips.",
+            "Wait for new captures or expand your tracked queries before rerunning.",
+        )
         return
     rows = [
         {
@@ -121,10 +250,11 @@ def render_flip_scanner(client: LedgerApiClient) -> None:
 
 def render_craft_advisor(client: LedgerApiClient) -> None:
     data = client.crafts()
-    st.subheader("Craft Advisor")
-    st.caption("Proposed crafts with deterministic EV.")
     if not data.crafts:
-        st.info("No crafts surfaced from the oracle yet.")
+        render_empty_state(
+            "No crafts surfaced from the oracle yet.",
+            "Refresh after new captures to populate craft plans.",
+        )
         return
     rows = [
         {
@@ -140,10 +270,11 @@ def render_craft_advisor(client: LedgerApiClient) -> None:
 
 def render_farming_roi(client: LedgerApiClient) -> None:
     leaderboard = client.leaderboard()
-    st.subheader("Farming ROI")
-    st.caption("Session ROI leaderboard from deterministic data.")
     if not leaderboard.leaderboard:
-        st.info("No farming sessions recorded yet.")
+        render_empty_state(
+            "No farming sessions recorded yet.",
+            "Run deterministic sessions or sync the ingestion pipeline.",
+        )
         return
     rows = [
         {
@@ -158,8 +289,6 @@ def render_farming_roi(client: LedgerApiClient) -> None:
 
 def render_build_atlas(client: LedgerApiClient) -> None:
     builds = client.atlas_builds()
-    st.subheader("BuildAtlas")
-    st.caption("Summary of deterministic atlas builds.")
     if builds:
         st.table(
             [
@@ -177,15 +306,19 @@ def render_build_atlas(client: LedgerApiClient) -> None:
             st.write(f"Nodes: {', '.join(detail.nodes)}")
             st.write(detail.notes)
     else:
-        st.info("No atlas builds available.")
+        render_empty_state(
+            "No atlas builds available.",
+            "Register builds via the deterministic planner to populate this view.",
+        )
 
 
 def render_daily_plan(client: LedgerApiClient) -> None:
     plan = client.advisor_daily_plan()
-    st.subheader("Daily Plan")
-    st.caption("Priority actions generated from flips and crafts.")
     if not plan.plan_items:
-        st.info("No plan items in this deterministic seed.")
+        render_empty_state(
+            "No plan items in this deterministic seed.",
+            "Ensure flips and crafts feed into the advisor before refreshing.",
+        )
         return
     rows = [
         {
@@ -197,12 +330,7 @@ def render_daily_plan(client: LedgerApiClient) -> None:
     ]
     st.table(rows)
 
-
 def render_ops_runtime(client: LedgerApiClient) -> None:
-    st.subheader("Ops & Runtime")
-    st.caption(
-        "Operational telemetry with action queue, severity rollup, and refresh controls."
-    )
     mode_label = "Local (in-process service)" if client.local_mode else "Remote API"
     st.metric("API mode", mode_label)
 
@@ -251,9 +379,9 @@ def render_ops_runtime(client: LedgerApiClient) -> None:
             telemetry = state.get("ops_last_telemetry")
             state["ops_last_error"] = str(exc)
             if telemetry is None:
-                st.error("Unable to load operational telemetry.")
-                st.caption(
-                    "Verify API/service reachability and credentials, then refresh again."
+                render_error_state(
+                    "Unable to load operational telemetry.",
+                    "Verify API/service reachability and credentials, then refresh again.",
                 )
                 st.code(str(exc))
                 return
@@ -325,7 +453,10 @@ def render_ops_runtime(client: LedgerApiClient) -> None:
                 ]
             )
         else:
-            st.info("No checkpoint health data yet.")
+            render_empty_state(
+                "No checkpoint health data yet.",
+                "Checkpoint instrumentation has not reported entries yet.",
+            )
 
         if telemetry.slo_status:
             st.markdown("#### SLO status")
@@ -342,7 +473,10 @@ def render_ops_runtime(client: LedgerApiClient) -> None:
                 ]
             )
         else:
-            st.info("No SLO entries reported yet.")
+            render_empty_state(
+                "No SLO entries reported yet.",
+                "SLO data will appear once policies are published.",
+            )
 
         if telemetry.rate_limit_alerts:
             st.markdown("#### Rate limit alerts")
@@ -394,12 +528,10 @@ def render_ops_runtime(client: LedgerApiClient) -> None:
     else:  # pragma: no cover - fallback for older streamlit
         _render_ops_snapshot()
 
-
 def _display_timestamp(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat(timespec="seconds")
-
 
 PAGE_REGISTRY: dict[str, Page] = {
     "Market Overview": Page(
@@ -449,6 +581,37 @@ PAGE_REGISTRY: dict[str, Page] = {
     ),
 }
 
+MENU_ITEMS: list[MenuItem] = [
+    MenuItem("Market Overview", "Market Overview", "📈", "Markets"),
+    MenuItem("Stash Pricer", "Stash Pricer", "💰", "Markets"),
+    MenuItem("Flip Scanner", "Flip Scanner", "🧭", "Advisors"),
+    MenuItem("Craft Advisor", "Craft Advisor", "🛠️", "Advisors"),
+    MenuItem("Farming ROI", "Farming ROI", "🚜", "Advisors"),
+    MenuItem("BuildAtlas", "BuildAtlas", "🗺️", "Atlas"),
+    MenuItem("Daily Plan", "Daily Plan", "📋", "Advisors"),
+    MenuItem("Ops & Runtime", "Ops & Runtime", "⚙️", "Operations"),
+    MenuItem("Bridge Controls", "Bridge Controls", "🔗", "Controls"),
+]
+
+def _group_menu_items() -> dict[str, list[MenuItem]]:
+    groups: dict[str, list[MenuItem]] = {}
+    for item in MENU_ITEMS:
+        groups.setdefault(item.group, []).append(item)
+    return groups
+
+def _render_sidebar_navigation() -> MenuItem:
+    grouped = _group_menu_items()
+    selected = st.sidebar.selectbox(
+        "Focus area",
+        MENU_ITEMS,
+        format_func=lambda entry: f"{entry.icon} {entry.label}",
+        key="ledger_nav",
+    )
+    st.sidebar.markdown("---")
+    for group, entries in grouped.items():
+        plural = "view" if len(entries) == 1 else "views"
+        st.sidebar.markdown(f"**{group}** · {len(entries)} {plural}")
+    return selected
 
 def run() -> None:
     if st is None:
@@ -456,14 +619,15 @@ def run() -> None:
             "Streamlit is not installed. Install with `pip install streamlit` and retry."
         )
         return
+    st.set_page_config(page_title=DESCRIPTION, layout="wide")
+    _apply_streamlit_theme()
     client = LedgerApiClient()
-    st.set_page_config(page_title=DESCRIPTION)
     st.sidebar.title("Ledger UI")
     st.sidebar.caption("Deterministic render harness")
-    choice = st.sidebar.radio("Navigate", list(PAGE_REGISTRY.keys()))
-    page = PAGE_REGISTRY[choice]
-    st.header(page.label)
-    st.write(page.description)
+    st.sidebar.caption("Groupings highlight workflow focus")
+    selected_menu = _render_sidebar_navigation()
+    page = PAGE_REGISTRY[selected_menu.key]
+    render_page_header(page.label, page.description)
     page.render(client)
 
 

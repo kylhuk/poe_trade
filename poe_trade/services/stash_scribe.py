@@ -84,6 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         status,
         league,
         realm,
+        stash_api_path=cfg.stash_api_path,
         account=args.account,
     )
     trigger_server = None

@@ -138,6 +138,7 @@ class Settings:
     checkpoint_dir: str
     market_poll_interval: float
     stash_poll_interval: float
+    stash_api_path: str
     stash_trigger_token: str
     oauth_client_id: str
     oauth_client_secret: str
@@ -198,6 +199,10 @@ class Settings:
             stash_poll_interval=_parse_env_float(
                 "POE_STASH_POLL_INTERVAL",
                 constants.DEFAULT_STASH_POLL_INTERVAL,
+            ),
+            stash_api_path=_get_env_str(
+                "POE_STASH_API_PATH",
+                constants.DEFAULT_POE_STASH_API_PATH,
             ),
             stash_trigger_token=_get_env_str(
                 "POE_STASH_TRIGGER_TOKEN",

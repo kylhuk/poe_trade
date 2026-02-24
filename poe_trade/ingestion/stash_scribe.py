@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ..config import constants
+
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, status
 
@@ -109,6 +111,7 @@ class StashScribe:
         status_reporter: StatusReporter,
         league: str,
         realm: str,
+        stash_api_path: str = constants.DEFAULT_POE_STASH_API_PATH,
         account: str | None = None,
     ) -> None:
         self._api_client = api_client
@@ -118,6 +121,7 @@ class StashScribe:
         self._status = status_reporter
         self._league = league
         self._realm = realm
+        self._stash_api_path = stash_api_path
         self._account = account or "stash"
         self._token: OAuthToken | None = None
         self._error_count = 0
@@ -162,7 +166,7 @@ class StashScribe:
             if cursor:
                 params["id"] = cursor
             payload = self._api_client.request(
-                "GET", "account-stash-tabs", params=params
+                "GET", self._stash_api_path, params=params
             )
             if isinstance(payload, dict):
                 next_change_id = payload.get("next_change_id")
@@ -210,8 +214,16 @@ class StashScribe:
         rows: list[dict[str, Any]] = []
         captured = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         next_change_id = payload.get("next_change_id")
-        for tab in payload.get("tabs", []):
-            tab_id = str(tab.get("id") or tab.get("tab_id") or "")
+        entries = payload.get("tabs")
+        if not entries:
+            entries = payload.get("stashes") or []
+        for entry in entries:
+            tab_id = str(
+                entry.get("id")
+                or entry.get("tab_id")
+                or entry.get("stash_id")
+                or ""
+            )
             rows.append(
                 {
                     "snapshot_id": f"{self._account}:{tab_id}:{captured}",
@@ -220,7 +232,7 @@ class StashScribe:
                     "league": self._league,
                     "tab_id": tab_id,
                     "next_change_id": next_change_id or "",
-                    "payload_json": json.dumps(tab, ensure_ascii=False),
+                    "payload_json": json.dumps(entry, ensure_ascii=False),
                 }
             )
         return rows

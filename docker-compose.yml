@@ -1,4 +1,4 @@
-version: "3.9"
+name: poe_trade
 
 services:
   clickhouse:
@@ -167,7 +167,7 @@ services:
       - .env
     depends_on:
       atlas_api:
-        condition: service_healthy
+        condition: service_started
     profiles:
       - optional
 
@@ -178,7 +178,7 @@ services:
       - .env
     depends_on:
       atlas_api:
-        condition: service_healthy
+        condition: service_started
     profiles:
       - optional
 
@@ -189,7 +189,7 @@ services:
       - .env
     depends_on:
       atlas_api:
-        condition: service_healthy
+        condition: service_started
     profiles:
       - optional
 

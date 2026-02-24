@@ -1,6 +1,8 @@
+import json
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from poe_trade.ingestion.stash_scribe import (
@@ -21,6 +23,9 @@ class FakePoeClient:
         if not self._responses:
             raise RuntimeError("no response")
         return self._responses.pop(0)
+
+    def set_bearer_token(self, token):
+        self.token = token
 
 
 class _StubPoeClient:
@@ -141,6 +146,104 @@ class StashScribeAuthTests(unittest.TestCase):
         first.join(1)
         second.join(1)
         self.assertEqual(len(entries), 2)
+
+
+class StashScribePayloadTests(unittest.TestCase):
+    def test_api_path_follows_configuration(self):
+        fake = FakePoeClient([
+            {
+                "next_change_id": "next",
+                "tabs": [],
+            }
+        ])
+        service = StashScribe(
+            fake,
+            _StubAuthClient(),
+            _StubClickHouseClient(),
+            _StubCheckpointStore(),
+            _StubStatusReporter(),
+            "Synthesis",
+            "pc",
+            stash_api_path="public-stash-tabs",
+        )
+        service.capture_snapshot(dry_run=True)
+        self.assertEqual(fake.calls[0][1], "public-stash-tabs")
+
+    def test_rows_handle_tabs(self):
+        service = StashScribe(
+            FakePoeClient([]),
+            _StubAuthClient(),
+            _StubClickHouseClient(),
+            _StubCheckpointStore(),
+            _StubStatusReporter(),
+            "Synthesis",
+            "pc",
+        )
+        now = datetime(2025, 3, 9, 12, 0, 0, tzinfo=timezone.utc)
+        tab = {
+            "id": 42,
+            "label": "alpha",
+        }
+        rows = service._rows(
+            {
+                "next_change_id": "next",
+                "tabs": [tab],
+            },
+            now,
+        )
+        captured = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "snapshot_id": f"stash:42:{captured}",
+                    "captured_at": captured,
+                    "realm": "pc",
+                    "league": "Synthesis",
+                    "tab_id": "42",
+                    "next_change_id": "next",
+                    "payload_json": json.dumps(tab, ensure_ascii=False),
+                }
+            ],
+        )
+
+    def test_rows_handle_stashes(self):
+        service = StashScribe(
+            FakePoeClient([]),
+            _StubAuthClient(),
+            _StubClickHouseClient(),
+            _StubCheckpointStore(),
+            _StubStatusReporter(),
+            "Synthesis",
+            "pc",
+        )
+        now = datetime(2025, 3, 9, 12, 0, 0, tzinfo=timezone.utc)
+        stash = {
+            "stash_id": "public-1",
+            "label": "public",
+        }
+        rows = service._rows(
+            {
+                "next_change_id": "next",
+                "stashes": [stash],
+            },
+            now,
+        )
+        captured = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "snapshot_id": f"stash:public-1:{captured}",
+                    "captured_at": captured,
+                    "realm": "pc",
+                    "league": "Synthesis",
+                    "tab_id": "public-1",
+                    "next_change_id": "next",
+                    "payload_json": json.dumps(stash, ensure_ascii=False),
+                }
+            ],
+        )
 
 
 class TriggerEndpointTests(unittest.TestCase):
