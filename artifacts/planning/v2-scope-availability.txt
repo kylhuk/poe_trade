@@ -1,0 +1,15 @@
+Token URL: https://www.pathofexile.com/oauth/token (derived from POE_AUTH_BASE_URL)
+
+Scope availability summary:
+
+Scope              | Status | Notes
+-------------------|--------|----------------------------------------------
+service:psapi      | 200    | Granted for this client (response `scope` match)
+service:leagues    | 400    | `invalid_scope`; PoE rejects it for `poeml`
+service:cxapi      | 400    | `invalid_scope`; client not authorized for CXAPI
+account:stashes    | 400    | `invalid_scope`; account-scoped access unavailable
+account:profile    | 400    | `invalid_scope`; account profile data locked
+
+Version gating recommendation:
+- v2 APIs rely only on `service:psapi`, so the current client/credentials are sufficient to keep v2 behavior live.
+- v3 plans that would need `service:leagues`, `service:cxapi`, or the `account:*` scopes must stay behind a gate until the OAuth client is blessed for those scopes (or until a parallel client with those permissions is provisioned), because every trial request returns `invalid_scope`.

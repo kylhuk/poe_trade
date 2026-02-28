@@ -16,7 +16,6 @@ dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.23",
   "python-dotenv>=1.0",
-  "streamlit>=1.29",
   "httpx>=0.27",
 ]
 
@@ -24,19 +23,6 @@ dependencies = [
 poe-ledger-cli = "poe_trade.cli:main"
 market_harvester = "poe_trade.services.market_harvester:main"
 stash_scribe = "poe_trade.services.stash_scribe:main"
-etl = "poe_trade.services.etl:main"
-chaos_scale = "poe_trade.services.chaos_scale:main"
-flip_finder = "poe_trade.services.flip_finder:main"
-forge_oracle = "poe_trade.services.forge_oracle:main"
-session_ledger = "poe_trade.services.session_ledger:main"
-ledger_api = "poe_trade.services.ledger_api:main"
-ledger_ui = "poe_trade.services.ledger_ui:main"
-atlas_api = "poe_trade.services.atlas_api:main"
-atlas_forge = "poe_trade.services.atlas_forge:main"
-atlas_bench = "poe_trade.services.atlas_bench:main"
-atlas_coach = "poe_trade.services.atlas_coach:main"
-llm_advisor = "poe_trade.services.llm_advisor:main"
-exilelens = "poe_trade.services.exilelens:main"
 poe-migrate = "poe_trade.services.migrator:main"
 
 [tool.setuptools.packages.find]

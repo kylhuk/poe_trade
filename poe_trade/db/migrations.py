@@ -151,7 +151,80 @@ SETTINGS index_granularity = 8192"""
     @staticmethod
     def _split_sql_statements(sql: str) -> list[str]:
         # ClickHouse HTTP endpoint rejects multi-statement payloads.
-        return [statement.strip() for statement in sql.split(";") if statement.strip()]
+        statements: list[str] = []
+        buffer: list[str] = []
+        in_line_comment = False
+        in_block_comment = False
+        in_single_quote = False
+        in_double_quote = False
+        in_backtick = False
+        i = 0
+        length = len(sql)
+        while i < length:
+            ch = sql[i]
+            nxt = sql[i + 1] if i + 1 < length else ""
+            if in_line_comment:
+                buffer.append(ch)
+                if ch in "\n\r":
+                    in_line_comment = False
+            elif in_block_comment:
+                buffer.append(ch)
+                if ch == "*" and nxt == "/":
+                    buffer.append(nxt)
+                    i += 1
+                    in_block_comment = False
+            elif in_single_quote:
+                buffer.append(ch)
+                if ch == "'":
+                    if nxt == "'":
+                        buffer.append(nxt)
+                        i += 1
+                    else:
+                        in_single_quote = False
+            elif in_double_quote:
+                buffer.append(ch)
+                if ch == '"':
+                    if nxt == '"':
+                        buffer.append(nxt)
+                        i += 1
+                    else:
+                        in_double_quote = False
+            elif in_backtick:
+                buffer.append(ch)
+                if ch == "`":
+                    in_backtick = False
+            else:
+                if ch == "-" and nxt == "-":
+                    buffer.append(ch)
+                    buffer.append(nxt)
+                    i += 1
+                    in_line_comment = True
+                elif ch == "/" and nxt == "*":
+                    buffer.append(ch)
+                    buffer.append(nxt)
+                    i += 1
+                    in_block_comment = True
+                elif ch == "'":
+                    buffer.append(ch)
+                    in_single_quote = True
+                elif ch == '"':
+                    buffer.append(ch)
+                    in_double_quote = True
+                elif ch == "`":
+                    buffer.append(ch)
+                    in_backtick = True
+                elif ch == ";":
+                    statement = "".join(buffer).strip()
+                    if statement:
+                        statements.append(statement)
+                    buffer = []
+                else:
+                    buffer.append(ch)
+            i += 1
+        final_statement = "".join(buffer).strip()
+        if final_statement:
+            statements.append(final_statement)
+        return statements
 
     def _fetch_applied(self) -> dict[str, str]:
         table = f"{self.database}.{METADATA_TABLE}"

@@ -3,26 +3,8 @@
 SERVICE_NAMES = [
     "market_harvester",
     "stash_scribe",
-    "etl",
-    "chaos_scale",
-    "flip_finder",
-    "forge_oracle",
-    "session_ledger",
-    "ledger_api",
-    "ledger_ui",
-    "atlas_api",
-    "atlas_forge",
-    "atlas_bench",
-    "atlas_coach",
-    "llm_advisor",
 ]
-OPTIONAL_SERVICES = [
-    "atlas_api",
-    "atlas_forge",
-    "atlas_bench",
-    "atlas_coach",
-    "llm_advisor",
-]
+OPTIONAL_SERVICES = ["stash_scribe"]
 DEFAULT_REALMS = ["pc"]
 DEFAULT_LEAGUES = ["Synthesis"]
 DEFAULT_TIME_BUCKETS = ["1h", "6h", "24h"]
@@ -33,11 +15,8 @@ DEFAULT_THRESHOLDS = {
 }
 DEFAULT_CHAOS_CURRENCY = "chaos"
 DEFAULT_CLICKHOUSE_URL = "http://clickhouse:8123"
-DEFAULT_SERVICE_PORTS = {
-    "ledger_api": 8000,
-    "ledger_ui": 8501,
-    "atlas_api": 8400,
-}
+DEFAULT_SERVICE_PORTS: dict[str, int] = {}
+
 
 DEFAULT_POE_API_BASE_URL = "https://api.pathofexile.com"
 DEFAULT_POE_AUTH_BASE_URL = "https://www.pathofexile.com/oauth"

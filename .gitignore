@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.venv/
+venv/
+ENV/
+
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Optional environment files
+.env
+.env.*
+
+# Generated verification artifacts
+artifacts/verify/

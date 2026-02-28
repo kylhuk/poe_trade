@@ -96,6 +96,40 @@ def test_split_sql_statements_skips_empty_chunks() -> None:
     ]
 
 
+def test_split_sql_statements_handles_line_comment_semicolons() -> None:
+    sql = "SELECT 1; -- ignore ; inside comment\nSELECT 2;"
+
+    statements = MigrationRunner._split_sql_statements(sql)
+
+    assert statements == [
+        "SELECT 1",
+        "-- ignore ; inside comment\nSELECT 2",
+    ]
+
+
+def test_split_sql_statements_handles_block_comment_semicolons() -> None:
+    sql = "SELECT 1 /* block ; comment */;\nSELECT 2;"
+
+    statements = MigrationRunner._split_sql_statements(sql)
+
+    assert statements == [
+        "SELECT 1 /* block ; comment */",
+        "SELECT 2",
+    ]
+
+
+def test_split_sql_statements_handles_quoted_semicolons() -> None:
+    sql = "SELECT ';';\nSELECT \"semi;colon\";\nSELECT `ident;ifier`;"
+
+    statements = MigrationRunner._split_sql_statements(sql)
+
+    assert statements == [
+        "SELECT ';'",
+        "SELECT \"semi;colon\"",
+        "SELECT `ident;ifier`",
+    ]
+
+
 def test_apply_bootstraps_metadata_before_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

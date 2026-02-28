@@ -4,6 +4,15 @@ from poe_trade.ingestion.market_harvester import MarketHarvester
 from poe_trade.ingestion.stash_scribe import OAuthToken
 
 
+class _DummyMetadataResponse:
+    def __init__(self, payload):
+        self.payload = payload
+        self.headers = {}
+        self.status_code = 200
+        self.attempts = 1
+        self.duration_ms = 0.0
+
+
 class _StubPoeClient:
     def __init__(self):
         self.bearer = None
@@ -15,6 +24,12 @@ class _StubPoeClient:
     def request(self, method, path, params=None, data=None, headers=None):
         self.calls.append((method, path, params, data, headers))
         return {"next_change_id": "abc", "stashes": []}
+
+    def request_with_metadata(
+        self, method, path, params=None, data=None, headers=None
+    ):
+        payload = self.request(method, path, params=params, data=data, headers=headers)
+        return _DummyMetadataResponse(payload)
 
 
 class _StubClickHouseClient:

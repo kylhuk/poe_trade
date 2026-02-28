@@ -7,7 +7,12 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from dotenv import load_dotenv
+
 from . import constants
+
+
+load_dotenv(override=False)
 
 
 def _parse_env_list(env_name: str, default: list[str]) -> tuple[str, ...]:

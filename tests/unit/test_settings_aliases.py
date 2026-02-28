@@ -13,6 +13,7 @@ class SettingsAliasesTests(unittest.TestCase):
             "CH_HOST": "clickhouse.internal",
             "CH_PORT": "9001",
             "CH_SCHEME": "http",
+            "POE_CLICKHOUSE_URL": "",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             settings = Settings.from_env()
@@ -33,6 +34,10 @@ class SettingsAliasesTests(unittest.TestCase):
             "CH_PASSWORD": "secret",
             "CH_DATABASE": "ledger",
             "CH_TIMEOUT": "12",
+            "POE_CLICKHOUSE_USER": "",
+            "POE_CLICKHOUSE_PASSWORD": "",
+            "POE_CLICKHOUSE_DATABASE": "",
+            "POE_CLICKHOUSE_TIMEOUT": "",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             client = ClickHouseClient.from_env(endpoint="http://localhost:8123")

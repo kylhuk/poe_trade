@@ -5,8 +5,8 @@ services:
     image: clickhouse/clickhouse-server:latest
     environment:
       CLICKHOUSE_DB: ${CH_DATABASE:-poe_trade}
-      CLICKHOUSE_USER: ${CH_ADMIN_USER:-default}
-      CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD:-poe_admin}
+      CLICKHOUSE_USER: ${CH_USER:-poe_ingest}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-poe_ingest}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
       - "8123:8123"
@@ -28,8 +28,8 @@ services:
     env_file:
       - .env
     environment:
-      POE_CLICKHOUSE_USER: ${CH_ADMIN_USER:-default}
-      POE_CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD:-poe_admin}
+      POE_CLICKHOUSE_USER: ${CH_USER:-poe_ingest}
+      POE_CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-poe_ingest}
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -56,151 +56,6 @@ services:
         condition: service_completed_successfully
     env_file:
       - .env
-    profiles:
-      - optional
-
-  etl:
-    build: .
-    command: ["service", "--name", "etl"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema_migrator:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-
-  chaos_scale:
-    build: .
-    command: ["service", "--name", "chaos_scale"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema_migrator:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-
-  flip_finder:
-    build: .
-    command: ["service", "--name", "flip_finder"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema_migrator:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-
-  forge_oracle:
-    build: .
-    command: ["service", "--name", "forge_oracle"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema_migrator:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-
-  session_ledger:
-    build: .
-    command: ["service", "--name", "session_ledger"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema_migrator:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-
-  ledger_api:
-    build: .
-    command: ["service", "--name", "ledger_api"]
-    ports:
-      - "8000:8000"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema_migrator:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-    healthcheck:
-      test: ["CMD-SHELL", "python -c 'import sys, urllib.request as r; resp = r.urlopen(\"http://localhost:8000/healthz\", timeout=5); sys.exit(0 if 200 <= resp.getcode() < 400 else 1)'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  ledger_ui:
-    build: .
-    entrypoint: ["streamlit"]
-    command: ["run", "poe_trade/ui/app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
-    ports:
-      - "8501:8501"
-    depends_on:
-      ledger_api:
-        condition: service_healthy
-    env_file:
-      - .env
-    healthcheck:
-      test: ["CMD-SHELL", "python -c 'import sys, urllib.request as r; resp = r.urlopen(\"http://localhost:8501/\", timeout=5); sys.exit(0 if 200 <= resp.getcode() < 400 else 1)'"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-
-  atlas_api:
-    build: .
-    command: ["service", "--name", "atlas_api"]
-    env_file:
-      - .env
-    depends_on:
-      ledger_api:
-        condition: service_healthy
-    profiles:
-      - optional
-
-  atlas_forge:
-    build: .
-    command: ["service", "--name", "atlas_forge"]
-    env_file:
-      - .env
-    depends_on:
-      atlas_api:
-        condition: service_started
-    profiles:
-      - optional
-
-  atlas_bench:
-    build: .
-    command: ["service", "--name", "atlas_bench"]
-    env_file:
-      - .env
-    depends_on:
-      atlas_api:
-        condition: service_started
-    profiles:
-      - optional
-
-  atlas_coach:
-    build: .
-    command: ["service", "--name", "atlas_coach"]
-    env_file:
-      - .env
-    depends_on:
-      atlas_api:
-        condition: service_started
-    profiles:
-      - optional
-
-  llm_advisor:
-    build: .
-    command: ["service", "--name", "llm_advisor"]
-    env_file:
-      - .env
-    depends_on:
-      ledger_api:
-        condition: service_healthy
     profiles:
       - optional
 

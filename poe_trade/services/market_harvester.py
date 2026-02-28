@@ -69,7 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     status = StatusReporter(ck_client, SERVICE_NAME)
     checkpoints = CheckpointStore(cfg.checkpoint_dir)
 
-    harvester = MarketHarvester(client, ck_client, checkpoints, status, auth_client=auth_client)
+    harvester = MarketHarvester(client, ck_client, checkpoints, status, auth_client=auth_client, service_name=SERVICE_NAME)
     harvester.run(realms, leagues, poll_interval, dry_run=args.dry_run, once=args.once)
     return 0
 

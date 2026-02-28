@@ -12,7 +12,7 @@
 - ClickHouse migrations runner (idempotent).
 - Separate CH users/roles: writer vs read-only.
 
-DoD: `docker compose up` starts everything; schema bootstraps automatically.
+DoD: `make up` starts everything; schema bootstraps automatically.
 
 ## Epic 2 — ClickHouse schema (bronze/silver/gold)
 - Create bronze/silver/gold tables (see architecture doc).

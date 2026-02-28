@@ -1,3 +1,5 @@
+const SLO_RUNBOOK_LINK = "docs/ops-runbook.md#slo-penalty-tiles";
+
 const fallbackOpsPayload = {
   timestamp: new Date().toISOString(),
   ingest_rate: {
@@ -53,6 +55,24 @@ const fallbackOpsPayload = {
       alert: true,
     },
   ],
+  slo_penalties: [
+    {
+      metric_name: "ingest_latency_seconds",
+      target_seconds: 60,
+      observed_seconds: 45,
+      penalty_seconds: 0,
+      within_target: true,
+      runbook_link: SLO_RUNBOOK_LINK,
+    },
+    {
+      metric_name: "alert_latency_seconds",
+      target_seconds: 30,
+      observed_seconds: 35,
+      penalty_seconds: 5,
+      within_target: false,
+      runbook_link: SLO_RUNBOOK_LINK,
+    },
+  ],
 };
 
 const elements = {
@@ -61,6 +81,8 @@ const elements = {
   checkpoint: document.getElementById("checkpoint-list"),
   slo: document.getElementById("slo-list"),
   alerts: document.getElementById("alerts-list"),
+  penalties: document.getElementById("penalty-list"),
+  penaltyRunbook: document.getElementById("penalty-runbook-link"),
   banner: document.getElementById("status-banner"),
 };
 
@@ -87,6 +109,7 @@ function renderDashboard(data, isFallback) {
   renderRequest(data.request_rate);
   renderCheckpoint(data.checkpoint_health);
   renderSLOs(data.slo_status);
+  renderPenalties(data.slo_penalties);
   renderAlerts(data.rate_limit_alerts);
 }
 
@@ -147,8 +170,7 @@ function renderCheckpoint(items) {
         <p class="text-xs text-slate-500">Last checkpoint ${formatTime(item.last_checkpoint)}</p>
       </article>
     `)
-    .join("
-");
+    .join("\n");
 }
 
 function renderSLOs(slos) {
@@ -170,8 +192,39 @@ function renderSLOs(slos) {
         </span>
       </article>
     `)
-    .join("
-");
+    .join("\n");
+}
+
+function renderPenalties(penalties) {
+  if (!elements.penalties) return;
+  const linkTarget = penalties?.[0]?.runbook_link || SLO_RUNBOOK_LINK;
+  if (elements.penaltyRunbook) {
+    elements.penaltyRunbook.href = linkTarget;
+  }
+  if (!penalties || !penalties.length) {
+    elements.penalties.innerHTML = `<p class="text-sm text-slate-500">No SLO penalty data.</p>`;
+    return;
+  }
+  elements.penalties.innerHTML = penalties
+    .map((penalty) => {
+      const status = penalty.within_target ? "Within target" : "Penalty";
+      const badgeColor = penalty.within_target ? "text-emerald-300" : "text-rose-300";
+      return `
+        <article class="rounded-2xl border border-slate-800/60 bg-slate-950/60 p-4">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-semibold uppercase tracking-[0.3em] text-slate-400">${penalty.metric_name}</p>
+            <span class="text-sm font-semibold ${badgeColor}">${status}</span>
+          </div>
+          <p class="mt-2 text-sm text-slate-400">
+            Observed ${Number(penalty.observed_seconds).toFixed(1)}s / target ${Number(penalty.target_seconds).toFixed(1)}s
+          </p>
+          <p class="text-xs text-slate-500">
+            Penalty ${Number(penalty.penalty_seconds).toFixed(1)}s
+          </p>
+        </article>
+      `;
+    })
+    .join("\n");
 }
 
 function renderAlerts(alerts) {
@@ -192,8 +245,7 @@ function renderAlerts(alerts) {
         </span>
       </article>
     `)
-    .join("
-");
+    .join("\n");
 }
 
 function formatTime(value) {

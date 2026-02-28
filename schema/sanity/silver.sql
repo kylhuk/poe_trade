@@ -1,24 +1,29 @@
--- Silver table sanity checks
+-- Silver layer sanity checks re-targeted to the retained ingestion tables
 SELECT
     league,
-    count() AS items,
-    max(captured_at) AS last_item_at
-FROM poe_trade.item_canonical
+    count() AS total_trades,
+    max(retrieved_at) AS most_recent_ingest
+FROM poe_trade.bronze_trade_metadata
 GROUP BY league
 ORDER BY league;
 
 SELECT
     league,
-    avg(price_chaos) AS avg_listing_price,
-    max(listed_at) AS freshest_listing
-FROM poe_trade.listing_canonical
-WHERE listed_at >= now() - INTERVAL 1 DAY
+    countIf(listing_ts >= now() - INTERVAL 1 HOUR) AS recent_listings,
+    round(countIf(listing_ts >= now() - INTERVAL 1 HOUR) * 100.0 / greatest(count(), 1), 2)
+        AS recent_listing_pct
+FROM poe_trade.bronze_trade_metadata
 GROUP BY league
-ORDER BY league;
+ORDER BY recent_listing_pct DESC;
 
 SELECT
+    service,
     league,
-    max(time_bucket) AS currency_bucket
-FROM poe_trade.currency_rates
-GROUP BY league
-ORDER BY league;
+    count() AS requests_last_hour,
+    quantileExact(0.95)(response_ms) AS response_ms_p95
+FROM poe_trade.bronze_requests
+WHERE requested_at >= now() - INTERVAL 1 HOUR
+GROUP BY
+    service,
+    league
+ORDER BY requests_last_hour DESC;
