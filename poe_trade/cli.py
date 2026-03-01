@@ -58,7 +58,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _configure_logging()
         _ensure_settings()
         service_main = _load_service_main(args.name)
-        service_main(args.service_args)
+        forwarded = args.service_args
+        if forwarded and forwarded[0] == "--":
+            forwarded = forwarded[1:]
+        service_main(forwarded)
         return 0
     parser.print_help()
     return 1

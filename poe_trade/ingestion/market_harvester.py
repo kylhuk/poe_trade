@@ -8,22 +8,102 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
+from ..config import constants
 from ..db import ClickHouseClient
 from .checkpoints import CheckpointStore
 from .poe_client import PoeClient
-from .rate_limit import glean_rate_limit, parse_retry_after
-from .stash_scribe import OAuthClient, OAuthToken
+from .rate_limit import RateLimitPolicy, glean_rate_limit, parse_retry_after
 from .status import StatusReporter
+
 
 logger = logging.getLogger(__name__)
 
-
-_CHECKPOINT_LAG_THRESHOLD_SECONDS = 20.0
-_DIVINES_ESTIMATE_BASE = 0.5
+# Constants for checkpoint lag calculation (divine estimation)
+_CHECKPOINT_LAG_THRESHOLD_SECONDS = 300  # 5 minutes
+_DIVINES_ESTIMATE_BASE = 5.0
 _DIVINES_PENALTY_PER_SECOND = 0.01
+
+
+class OAuthToken:
+    def __init__(self, access_token: str, expires_in: int) -> None:
+        self.access_token = access_token
+        self.refresh_token: str | None = None
+        safety = max(expires_in - 30, 0)
+        self.expires_at = datetime.now(timezone.utc) + timedelta(seconds=safety)
+
+    def is_expired(self) -> bool:
+        return datetime.now(timezone.utc) >= self.expires_at
+
+
+class OAuthClient:
+    def __init__(
+        self,
+        client: PoeClient,
+        client_id: str,
+        client_secret: str,
+        grant_type: str,
+        scope: str,
+    ) -> None:
+        self._client = client
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._grant_type = grant_type
+        self._scope = scope
+
+    def refresh(self) -> OAuthToken:
+        payload: dict[str, str] = {
+            "grant_type": self._grant_type,
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+        }
+        payload["scope"] = self._scope
+        response = self._client.request(
+            "POST",
+            "token",
+            data=payload,
+        )
+        expires_value = response.get("expires_in")
+        expires_seconds = 1800 if expires_value is None else int(expires_value)
+        token = OAuthToken(
+            access_token=response["access_token"],
+            expires_in=expires_seconds,
+        )
+        token.refresh_token = response.get("refresh_token")
+        return token
+
+
+def oauth_client_factory(settings: Any) -> OAuthClient:
+    if not (settings.oauth_client_id and settings.oauth_client_secret):
+        raise ValueError("OAuth credentials are missing")
+    grant_type = (settings.oauth_grant_type or "").strip()
+    if grant_type != "client_credentials":
+        raise ValueError("POE_OAUTH_GRANT_TYPE must be 'client_credentials'")
+    scope = (settings.oauth_scope or "").strip()
+    if "service:psapi" not in scope.split():
+        raise ValueError("POE_OAUTH_SCOPE must include 'service:psapi'")
+    policy = RateLimitPolicy(
+        settings.rate_limit_max_retries,
+        settings.rate_limit_backoff_base,
+        settings.rate_limit_backoff_max,
+        settings.rate_limit_jitter,
+    )
+    client = PoeClient(
+        settings.poe_auth_base_url,
+        policy,
+        settings.poe_user_agent,
+        settings.poe_request_timeout,
+    )
+    return OAuthClient(
+        client,
+        settings.oauth_client_id,
+        settings.oauth_client_secret,
+        grant_type,
+        scope,
+    )
 
 
 class MarketHarvester:
@@ -35,6 +115,8 @@ class MarketHarvester:
         status_reporter: StatusReporter,
         auth_client: OAuthClient | None = None,
         service_name: str = "market_harvester",
+        bootstrap_until_league: str | None = None,
+        bootstrap_from_beginning: bool = False,
     ) -> None:
         self._client = client
         self._auth_client = auth_client
@@ -47,6 +129,110 @@ class MarketHarvester:
         self._paused_until: dict[str, datetime] = {}
         self._lock = threading.Lock()
         self._service_name = service_name
+        self._bootstrap_until_league = bootstrap_until_league
+        self._bootstrap_from_beginning = bootstrap_from_beginning
+
+    def _ensure_token(self) -> None:
+        if self._token is None or self._token.is_expired():
+            if not self._auth_client:
+                raise RuntimeError("OAuth client not configured")
+            self._token = self._auth_client.refresh()
+            self._client.set_bearer_token(self._token.access_token)
+
+    def _effective_league(self, current_league: str) -> str:
+        # If bootstrap is active, it returns bootstrap_until_league. Otherwise, the current league.
+        return self._bootstrap_until_league or current_league
+
+    def _checkpoint_key(self, realm: str, league_for_key: str | None = None) -> str:
+        # league_for_key can be actual league or bootstrap_until_league
+        # Use realm, then either specified league, or bootstrap target, or empty string if all null
+        return f"{realm}:{league_for_key or self._bootstrap_until_league or ''}"
+
+    def _build_request_params(
+        self, league: str | None, realm: str, cursor: str | None
+    ) -> dict[str, str]:
+        params: dict[str, str] = {}
+        if league:
+            params["league"] = league
+        if realm:
+            params["realm"] = realm
+        if cursor:
+            params["id"] = cursor
+        return params
+
+    def _payload_entries(self, payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        entries: Any = payload.get("tabs")
+        if not entries:
+            entries = payload.get("stashes") or []
+        if isinstance(entries, list):
+            return [entry for entry in entries if isinstance(entry, Mapping)]
+        return []
+
+    @staticmethod
+    def _entry_league(entry: Mapping[str, Any]) -> str | None:
+        league = entry.get("league")
+        if isinstance(league, str) and league:
+            return league
+        return None
+
+    def _rows(
+        self,
+        payload: dict[str, Any],
+        now: datetime,
+        *,
+        realm: str,
+        filter_league: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        captured = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        next_change_id = payload.get("next_change_id")
+
+        seen_stash_ids: set[str] = set()  # Add this back for deduplication
+
+        for entry in self._payload_entries(payload):
+            # De-duplication check: if a stash_id is encountered multiple times in the same page, only process it once.
+            stash_id_value = (
+                entry.get("id") or entry.get("stash_id") or entry.get("tab_id")
+            )
+            stash_id = str(stash_id_value) if stash_id_value is not None else ""
+            if stash_id:
+                if stash_id in seen_stash_ids:
+                    logger.debug("Skipping duplicate stash ID %s in page", stash_id)
+                    continue
+                seen_stash_ids.add(stash_id)
+
+            entry_league = self._entry_league(entry)
+
+            # FILTER_LEAGUE filtering: skip entries that don't match the filter
+            if filter_league is not None and entry_league != filter_league:
+                logger.debug(
+                    "Skipping entry from non-matching league %s (expected %s)",
+                    entry_league,
+                    filter_league,
+                )
+                continue
+
+            # Extract realm from entry - never fake data
+            entry_realm = entry.get("realm")
+
+            tab_id = str(
+                entry.get("id") or entry.get("tab_id") or entry.get("stash_id") or ""
+            )
+
+            rows.append(
+                {
+                    "snapshot_id": f"{self._service_name}:{tab_id}:{captured}",  # Use service_name instead of account
+                    "captured_at": captured,
+                    "realm": entry_realm
+                    if entry_realm is not None
+                    else realm,  # API realm first, else current realm
+                    "league": entry_league,
+                    "tab_id": tab_id,
+                    "next_change_id": next_change_id or "",
+                    "payload_json": json.dumps(entry, ensure_ascii=False),
+                }
+            )
+        return rows
 
     def run(
         self,
@@ -55,28 +241,229 @@ class MarketHarvester:
         interval: float,
         dry_run: bool,
         once: bool,
+        max_workers: int | None = None,
     ) -> None:
         realms = tuple(realms)
         leagues = tuple(leagues)
+
+        # Default max_workers to number of leagues (parallelize across leagues)
+        if max_workers is None:
+            max_workers = len(leagues)
+
         logger.info(
-            "MarketHarvester starting realms=%s leagues=%s dry_run=%s",
+            "MarketHarvester starting realms=%s leagues=%s dry_run=%s max_workers=%s",
             realms,
             leagues,
             dry_run,
+            max_workers,
         )
         stop_event = threading.Event()
         try:
             while not stop_event.is_set():
-                for realm in realms:
-                    for league in leagues:
-                        self._harvest(realm, league, dry_run)
+                # Parallel harvest across all league/realm combinations
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = []
+                    for realm in realms:
+                        for league in leagues:
+                            futures.append(
+                                executor.submit(self._harvest, realm, league, dry_run)
+                            )
+                    # Wait for all to complete
+                    for future in as_completed(futures):
+                        # Log any exceptions but continue
+                        try:
+                            future.result()
+                        except Exception as exc:  # pragma: no cover
+                            logger.exception("Harvest failed: %s", exc)
+
                 if once:
                     return
-                stop_event.wait(interval)
+
+                # Dynamically adjust wait based on API rate limits
+                # Use the rate limiter's recommended delay if available, otherwise use minimum interval
+                rate_limit_delay = 0.0
+                if hasattr(self._client, "rate_state"):
+                    rate_limit_delay = self._client.rate_state.next_delay()
+
+                # Wait: use max of (API-recommended delay, configured minimum interval)
+                wait_time = max(rate_limit_delay, interval)
+                if wait_time > 0:
+                    logger.debug(
+                        "Rate limit pacing: waiting %.2fs (rate_limit=%.2f, interval=%.2f)",
+                        wait_time,
+                        rate_limit_delay,
+                        interval,
+                    )
+                    stop_event.wait(wait_time)
+                else:
+                    stop_event.wait(interval)
         except KeyboardInterrupt:
             logger.info("MarketHarvester interrupted")
 
+    def _perform_bootstrap_harvest(
+        self, realm: str, league: str, dry_run: bool
+    ) -> None:
+        target_league = self._bootstrap_until_league
+        if not target_league:
+            # Fallback to normal harvest if bootstrap league is not set
+            self._harvest(realm, league, dry_run)
+            return
+
+        start = time.monotonic()
+        # Use target_league for checkpointing in bootstrap mode
+        checkpoint_key = self._checkpoint_key(realm, target_league)
+
+        cursor = None
+        target_reached = False
+
+        if self._bootstrap_from_beginning:
+            cursor = "0"  # Start from Day 0 for full historical scan
+            logger.info(
+                "bootstrap starting from beginning (id=0) for league=%s, realm=%s",
+                target_league,
+                realm,
+            )
+        else:
+            checkpoint_cursor = self._checkpoints.read(checkpoint_key)
+            if checkpoint_cursor:
+                cursor = checkpoint_cursor
+                target_reached = True
+                logger.info(
+                    "bootstrap resuming for league=%s, realm=%s from checkpoint next_change_id=%s",
+                    target_league,
+                    realm,
+                    checkpoint_cursor,
+                )
+            else:
+                # No checkpoint found, start from recent data (default API behavior for cursor=None)
+                logger.info(
+                    "bootstrap starting from recent data for league=%s, realm=%s (no checkpoint found)",
+                    target_league,
+                    realm,
+                )
+
+        next_change_id: str | None = None
+        status_text = "running"
+        error_msg: str | None = None
+        now = datetime.now(timezone.utc)
+        rows_written = False
+        try:
+            self._ensure_token()  # Ensure token is fresh for authorized API calls
+
+            while True:
+                # Always request without explicit league filter in params to scan all entries
+                # API will return entries from various leagues
+                params = self._build_request_params(None, realm, cursor)
+                response = self._client.request_with_metadata(
+                    "GET", constants.DEFAULT_POE_STASH_API_PATH, params=params
+                )
+
+                # Handle rate limiting or errors from response
+                response_status = response.status_code
+                if response_status == 429:
+                    retry_after = self._pause_after_rate_limit(
+                        checkpoint_key, response.headers, now
+                    )
+                    status_text = "rate_limited"
+                    error_msg = f"rate_limited: retry_after_seconds={retry_after:.1f}"
+                    # Log the request attempt
+                    self._write_request_entry(
+                        realm=realm,
+                        league=target_league,
+                        endpoint=constants.DEFAULT_POE_STASH_API_PATH,
+                        http_method="GET",
+                        requested_at=now,
+                        status=429,
+                        attempts=response.attempts,
+                        response_ms=response.duration_ms,
+                        headers=response.headers,
+                        error=error_msg,
+                    )
+                    # Pause current worker to respect rate limit
+                    time.sleep(retry_after)
+                    continue  # Re-attempt current cursor after delay
+
+                payload = response.payload
+                if not isinstance(payload, dict):
+                    status_text = "unexpected payload"
+                    error_msg = f"Unexpected stash payload: {payload}"
+                    logger.warning("Unexpected stash payload: %s", payload)
+                    break
+
+                next_change_id = payload.get("next_change_id")
+
+                # Check if we've found the target league yet
+                if not target_reached:
+                    entries = self._payload_entries(payload)
+                    if any(
+                        self._entry_league(entry) == target_league for entry in entries
+                    ):
+                        target_reached = True
+                        logger.info(
+                            "bootstrap target league=%s found at next_change_id=%s, realm=%s",
+                            target_league,
+                            next_change_id,
+                            realm,
+                        )
+
+                # Once target is reached, write only filtered rows for the target league
+                if target_reached:
+                    rows = self._rows(
+                        payload,
+                        now,
+                        realm=realm,
+                        filter_league=target_league,  # Strictly filter for target_league
+                    )
+                    if rows and not dry_run:
+                        self._write(rows, checkpoint=cursor or "")  # Write to raw_public_stash_pages
+                        rows_written = True
+                    status_text = "target-league-found"
+                    if not dry_run and next_change_id:
+                        # Update checkpoint for the target league in bootstrap mode
+                        self._checkpoints.write(checkpoint_key, next_change_id)
+
+                # If we exhausted data or no next_change_id, break loop
+                if not isinstance(next_change_id, str) or not next_change_id:
+                    if not target_reached:
+                        status_text = "target-league-not-found"
+                        error_msg = f"Target league {target_league} not found after scanning all available history."
+                        logger.warning(error_msg)
+                    break  # End of history or API stream
+
+                # Move forward to next page
+                cursor = next_change_id
+
+        except Exception as exc:  # pragma: no cover - best effort
+            error_msg = str(exc)
+            status_text = "error"
+            logger.exception(
+                "MarketHarvester failed to bootstrap harvest for %s/%s",
+                realm,
+                target_league,
+            )
+            # No specific error counting for bootstrap for now, as it's a one-shot process
+        finally:
+            duration = time.monotonic() - start
+            rate = 1.0 / max(duration, 1e-3)
+            self._status.report(
+                league=target_league,  # Report status for the target league
+                realm=realm,
+                cursor=cursor,
+                next_change_id=next_change_id,
+                last_ingest_at=now,
+                request_rate=rate,
+                error=error_msg,
+                status=status_text,
+                error_count=0,  # Reset error count for bootstrap, or handle differently
+                stalled_since=None,
+            )
+
     def _harvest(self, realm: str, league: str, dry_run: bool) -> None:
+        # Check if bootstrap mode is active for this league
+        if self._bootstrap_until_league:
+            self._perform_bootstrap_harvest(realm, league, dry_run)
+            return
+
         key = f"{realm}:{league}"
         start = time.monotonic()
         cursor = self._checkpoints.read(key)
@@ -88,7 +475,7 @@ class MarketHarvester:
         response_ms = 0.0
         public_attempts: int | None = None
         metadata_rows: list[dict[str, Any]] = []
-        checkpoint_lag_seconds: float | None = None
+        checkpoint_lag_seconds: float | None = self._checkpoint_lag_seconds(key)
 
         paused_until = self._active_pause_until(key, now)
         if paused_until is not None:
@@ -126,12 +513,10 @@ class MarketHarvester:
             return
 
         try:
-            self._ensure_token()
-            params: dict[str, str] = {"league": league}
-            if realm:
-                params["realm"] = realm
-            if cursor:
-                params["id"] = cursor
+            self._ensure_token()  # Ensure token is fresh for authorized API calls
+            params = self._build_request_params(
+                league, realm, cursor
+            )  # Use new build_request_params
             response = self._client.request_with_metadata(
                 "GET", "public-stash-tabs", params=params
             )
@@ -167,15 +552,14 @@ class MarketHarvester:
                     )
                     status_text = "stale cursor"
                 else:
-                    rows = self._rows_from_payload(
-                        stashes=stashes,
+                    rows = self._rows(  # Use new unified _rows method
+                        payload=payload,
+                        now=now,
                         realm=realm,
-                        league=league,
-                        cursor=cursor,
-                        next_change_id=next_change_id,
+                        filter_league=None,  # No league filtering in normal mode
                     )
                     if rows and not dry_run:
-                        self._write(rows)
+                        self._write(rows, checkpoint=cursor or "")
                     if next_change_id and not dry_run:
                         self._checkpoints.write(key, next_change_id)
                     metadata_identifier = self._trade_metadata_identifier_from_payload(
@@ -243,13 +627,12 @@ class MarketHarvester:
                 next_change_id=next_change_id,
                 last_ingest_at=now,
                 request_rate=rate,
-                status=status_text,
                 error=error_msg,
+                status=status_text,
                 error_count=self._error_counts.get(key, 0),
                 stalled_since=self._stalled_since.get(key),
             )
             if not dry_run:
-                checkpoint_lag_seconds = self._checkpoint_lag_seconds(key)
                 self._write_checkpoint_entry(
                     realm=realm,
                     league=league,
@@ -267,13 +650,6 @@ class MarketHarvester:
                     self._write_trade_metadata(metadata_rows)
                 self._maybe_log_checkpoint_lag(key, checkpoint_lag_seconds)
 
-    def _ensure_token(self) -> None:
-        if not self._auth_client:
-            return
-        if self._token is None or self._token.is_expired():
-            self._token = self._auth_client.refresh()
-            self._client.set_bearer_token(self._token.access_token)
-
     def _validate_payload(
         self, payload: dict[str, Any], key: str
     ) -> tuple[str, list[dict[str, Any]]]:
@@ -288,7 +664,9 @@ class MarketHarvester:
     def _trade_metadata_identifier_from_payload(
         self, payload: Mapping[str, Any]
     ) -> str | None:
-        identifier = payload.get("trade_data_id") or payload.get("trade_data_identifier")
+        identifier = payload.get("trade_data_id") or payload.get(
+            "trade_data_identifier"
+        )
         if isinstance(identifier, str) and identifier:
             return identifier
         return None
@@ -431,41 +809,27 @@ class MarketHarvester:
             rows.append(row)
         return rows
 
-    def _rows_from_payload(
-        self,
-        stashes: list[dict[str, Any]],
-        realm: str,
-        league: str,
-        cursor: str | None,
-        next_change_id: str,
-    ) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        seen_stash_ids: set[str] = set()
-        for stash in stashes:
-            stash_id_value = stash.get("id") or stash.get("stash_id")
-            stash_id = str(stash_id_value) if stash_id_value is not None else ""
-            if stash_id:
-                if stash_id in seen_stash_ids:
-                    continue
-                seen_stash_ids.add(stash_id)
-            rows.append(
-                {
-                    "ingested_at": now,
-                    "realm": realm,
-                    "league": league,
-                    "stash_id": stash_id,
-                    "checkpoint": cursor or "",
-                    "next_change_id": next_change_id,
-                    "payload_json": json.dumps(stash, ensure_ascii=False),
-                }
-            )
-        return rows
-
-    def _write(self, rows: list[dict[str, Any]]) -> None:
+    def _write(self, rows: list[dict[str, Any]], checkpoint: str | None = None) -> None:
         if not rows:
             return
-        payload = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
+        checkpoint_value = checkpoint or ""
+        normalized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            normalized_rows.append(
+                {
+                    "ingested_at": row.get("ingested_at") or row.get("captured_at") or "",
+                    "realm": row.get("realm") or "",
+                    "league": row.get("league"),
+                    "stash_id": row.get("stash_id") or row.get("tab_id") or "",
+                    "checkpoint": checkpoint_value,
+                    "next_change_id": row.get("next_change_id") or "",
+                    "payload_json": row.get("payload_json") or "",
+                }
+            )
+        payload = "\n".join(
+            json.dumps(normalized_row, ensure_ascii=False)
+            for normalized_row in normalized_rows
+        )
         query = (
             "INSERT INTO poe_trade.raw_public_stash_pages "
             "(ingested_at, realm, league, stash_id, checkpoint, next_change_id, payload_json)\n"

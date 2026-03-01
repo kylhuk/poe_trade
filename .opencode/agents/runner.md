@@ -3,7 +3,7 @@ description: Run commands and capture outputs (no file edits).
 mode: subagent
 model: openai/gpt-5.1-codex-mini
 options:
-  reasoningEffort: medium
+  reasoningEffort: low
 permission:
   task: deny
   edit: deny

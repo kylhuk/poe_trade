@@ -1,0 +1,85 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python
+cachedir: .pytest_cache
+rootdir: /home/wenga/src/poe_trade
+configfile: pyproject.toml
+plugins: asyncio-1.3.0, anyio-4.12.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 54 items
+
+tests/unit/test_checkpoint_store.py::CheckpointStoreTests::test_write_and_read PASSED [  1%]
+tests/unit/test_market_harvester.py::test_success_flow_writes_rows_and_advances_checkpoint PASSED [  3%]
+tests/unit/test_market_harvester.py::test_metadata_fetch_skipped_without_identifier PASSED [  5%]
+tests/unit/test_market_harvester.py::test_malformed_payload_sets_error_without_writes[payload0-expected_checkpoint_writes0-error] PASSED [  7%]
+tests/unit/test_market_harvester.py::test_malformed_payload_sets_error_without_writes[payload1-expected_checkpoint_writes1-error] PASSED [  9%]
+tests/unit/test_market_harvester.py::test_malformed_payload_sets_error_without_writes[payload2-expected_checkpoint_writes2-error] PASSED [ 11%]
+tests/unit/test_market_harvester.py::test_malformed_payload_sets_error_without_writes[payload3-expected_checkpoint_writes3-success] PASSED [ 12%]
+tests/unit/test_market_harvester.py::test_stale_cursor_does_not_advance_checkpoint PASSED [ 14%]
+tests/unit/test_market_harvester.py::test_duplicate_stash_ids_emit_only_unique_rows PASSED [ 16%]
+tests/unit/test_market_harvester.py::test_harvest_records_error_state_on_client_exceptions[exc0] PASSED [ 18%]
+tests/unit/test_market_harvester.py::test_harvest_records_error_state_on_client_exceptions[exc1] PASSED [ 20%]
+tests/unit/test_market_harvester.py::test_harvest_records_error_state_on_client_exceptions[exc2] PASSED [ 22%]
+tests/unit/test_market_harvester.py::test_checkpoint_lag_logs_risk_when_stale_file PASSED [ 24%]
+tests/unit/test_market_harvester.py::test_checkpoint_lag_risk_skips_when_checkpoint_missing PASSED [ 25%]
+tests/unit/test_market_harvester.py::test_checkpoint_lag_risk_skips_when_within_threshold PASSED [ 27%]
+tests/unit/test_market_harvester.py::test_rate_limited_status_pauses_polling_and_logs_bronze_requests PASSED [ 29%]
+tests/unit/test_market_harvester_auth.py::MarketHarvesterAuthTests::test_refreshes_token_before_harvest PASSED [ 31%]
+tests/unit/test_market_harvester_auth.py::MarketHarvesterAuthTests::test_token_cached_while_valid PASSED [ 33%]
+tests/unit/test_market_harvester_service.py::test_main_returns_error_when_oauth_precheck_fails FAILED [ 35%]
+tests/unit/test_market_harvester_service.py::test_main_runs_harvester_when_oauth_precheck_succeeds FAILED [ 37%]
+tests/unit/test_migrations.py::test_source_checkout_resolves_repo_schema PASSED [ 38%]
+tests/unit/test_migrations.py::test_installed_package_uses_package_schema PASSED [ 40%]
+tests/unit/test_migrations.py::test_installed_package_falls_back_to_cwd_schema PASSED [ 42%]
+tests/unit/test_migrations.py::test_installed_package_prefers_package_schema_when_both_exist PASSED [ 44%]
+tests/unit/test_migrations.py::test_missing_paths_reports_attempted_candidates PASSED [ 46%]
+tests/unit/test_migrations.py::test_split_sql_statements_skips_empty_chunks PASSED [ 48%]
+tests/unit/test_migrations.py::test_split_sql_statements_handles_line_comment_semicolons PASSED [ 50%]
+tests/unit/test_migrations.py::test_split_sql_statements_handles_block_comment_semicolons PASSED [ 51%]
+tests/unit/test_migrations.py::test_split_sql_statements_handles_quoted_semicolons PASSED [ 53%]
+tests/unit/test_migrations.py::test_apply_bootstraps_metadata_before_status PASSED [ 55%]
+tests/unit/test_migrations.py::test_apply_executes_each_statement_and_records_once PASSED [ 57%]
+tests/unit/test_migrations.py::test_ensure_metadata_table_executes_create_database_and_table PASSED [ 59%]
+tests/unit/test_poe_client.py::test_request_retries_on_429 PASSED        [ 61%]
+tests/unit/test_poe_client.py::test_request_retries_on_url_error PASSED  [ 62%]
+tests/unit/test_poe_client.py::test_request_applies_dynamic_rate_limit_pacing PASSED [ 64%]
+tests/unit/test_poe_client.py::test_request_with_metadata_exposes_headers PASSED [ 66%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_adaptive_limiter_honors_restricted_state PASSED [ 68%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_adaptive_limiter_waits_for_interval PASSED [ 70%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_next_backoff_prefers_retry_after PASSED [ 72%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_next_backoff_with_jitter PASSED [ 74%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_parse_rate_limit_windows PASSED [ 75%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_parse_retry_after_date PASSED [ 77%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_parse_retry_after_seconds PASSED [ 79%]
+tests/unit/test_rate_limit.py::RateLimitTests::test_retry_after_not_capped_or_jittered PASSED [ 81%]
+tests/unit/test_service_registry.py::test_ingestion_service_registry_names PASSED [ 83%]
+tests/unit/test_service_registry.py::test_optional_service_registry_names PASSED [ 85%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_clickhouse_client_aliases PASSED [ 87%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_clickhouse_url_alias_from_ch_host PASSED [ 88%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_cursor_dir_alias PASSED [ 90%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_invalid_stash_bootstrap_boolean_falls_back_to_default PASSED [ 92%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_oauth_secret_file_missing_falls_back_to_env PASSED [ 94%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_oauth_secret_file_missing_without_env_is_empty PASSED [ 96%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_oauth_secret_file_overrides_env_secret PASSED [ 98%]
+tests/unit/test_settings_aliases.py::SettingsAliasesTests::test_stash_bootstrap_env_defaults PASSED [100%]
+
+=================================== FAILURES ===================================
+______________ test_main_returns_error_when_oauth_precheck_fails _______________
+tests/unit/test_market_harvester_service.py:81: in test_main_returns_error_when_oauth_precheck_fails
+    result = market_harvester.main([])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+poe_trade/services/market_harvester.py:68: in main
+    bootstrap_until_league = cfg.stash_bootstrap_until_league or None
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'types.SimpleNamespace' object has no attribute 'stash_bootstrap_until_league'
+____________ test_main_runs_harvester_when_oauth_precheck_succeeds _____________
+tests/unit/test_market_harvester_service.py:142: in test_main_runs_harvester_when_oauth_precheck_succeeds
+    result = market_harvester.main([])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+poe_trade/services/market_harvester.py:68: in main
+    bootstrap_until_league = cfg.stash_bootstrap_until_league or None
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'types.SimpleNamespace' object has no attribute 'stash_bootstrap_until_league'
+=========================== short test summary info ============================
+FAILED tests/unit/test_market_harvester_service.py::test_main_returns_error_when_oauth_precheck_fails
+FAILED tests/unit/test_market_harvester_service.py::test_main_runs_harvester_when_oauth_precheck_succeeds
+========================= 2 failed, 52 passed in 0.30s =========================

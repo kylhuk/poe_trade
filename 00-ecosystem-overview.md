@@ -9,7 +9,6 @@ This repository is now ingestion-only. It keeps the minimum stack needed to coll
 - `clickhouse`
 - `schema_migrator`
 - `market_harvester`
-- `stash_scribe` (optional)
 
 ## Data Contracts
 The active ClickHouse contract is limited to:

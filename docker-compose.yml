@@ -46,18 +46,5 @@ services:
     env_file:
       - .env
 
-  stash_scribe:
-    build: .
-    command: ["service", "--name", "stash_scribe"]
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-      schema_migrator:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-    profiles:
-      - optional
-
 volumes:
   clickhouse_data:

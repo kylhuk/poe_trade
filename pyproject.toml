@@ -22,7 +22,6 @@ dependencies = [
 [project.scripts]
 poe-ledger-cli = "poe_trade.cli:main"
 market_harvester = "poe_trade.services.market_harvester:main"
-stash_scribe = "poe_trade.services.stash_scribe:main"
 poe-migrate = "poe_trade.services.migrator:main"
 
 [tool.setuptools.packages.find]

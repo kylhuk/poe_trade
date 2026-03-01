@@ -3,7 +3,7 @@ Title: Ingestion recovery state
 Purpose: record the final ingestion-only scope after the runtime simplification.
 
 Current state:
-- Kept: `market_harvester`, optional `stash_scribe`, ClickHouse, schema migrator, and CLI wrappers.
+- Kept: `market_harvester`, ClickHouse, schema migrator, and CLI wrappers.
 - Removed from runtime: non-ingestion surfaces and generated legacy artifacts.
 
 Operational baseline:

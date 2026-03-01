@@ -4,7 +4,7 @@
 Keep the repository focused on ingestion and ClickHouse reliability.
 
 ## Current Scope
-- Runtime: `clickhouse`, `schema_migrator`, `market_harvester`, optional `stash_scribe`
+- Runtime: `clickhouse`, `schema_migrator`, `market_harvester`
 - Lifecycle commands: `make up`, `make down`
 - Active schema: ingestion/status/migration tables only
 

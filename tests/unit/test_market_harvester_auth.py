@@ -1,7 +1,7 @@
 import unittest
+from pathlib import Path
 
-from poe_trade.ingestion.market_harvester import MarketHarvester
-from poe_trade.ingestion.stash_scribe import OAuthToken
+from poe_trade.ingestion.market_harvester import MarketHarvester, OAuthToken
 
 
 class _DummyMetadataResponse:
@@ -16,7 +16,9 @@ class _DummyMetadataResponse:
 class _StubPoeClient:
     def __init__(self):
         self.bearer = None
-        self.calls: list[tuple[str, str, dict[str, str] | None, object | None, object | None]] = []
+        self.calls: list[
+            tuple[str, str, dict[str, str] | None, object | None, object | None]
+        ] = []
 
     def set_bearer_token(self, token: str | None) -> None:
         self.bearer = token
@@ -25,9 +27,7 @@ class _StubPoeClient:
         self.calls.append((method, path, params, data, headers))
         return {"next_change_id": "abc", "stashes": []}
 
-    def request_with_metadata(
-        self, method, path, params=None, data=None, headers=None
-    ):
+    def request_with_metadata(self, method, path, params=None, data=None, headers=None):
         payload = self.request(method, path, params=params, data=data, headers=headers)
         return _DummyMetadataResponse(payload)
 
@@ -43,6 +43,9 @@ class _StubCheckpointStore:
 
     def write(self, key, value):
         pass
+
+    def path(self, key: str) -> Path:
+        return Path(f"/tmp/checkpoints/{key}.txt")
 
 
 class _StubStatusReporter:

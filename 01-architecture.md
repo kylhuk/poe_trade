@@ -4,10 +4,9 @@
 - `clickhouse`
 - `schema_migrator`
 - `market_harvester`
-- `stash_scribe` (optional)
 
 ## Data Flow
-1. `market_harvester` and optional `stash_scribe` fetch PoE data.
+1. `market_harvester` fetches PoE public stash data.
 2. Ingestion workers write append-only rows to ClickHouse bronze/status tables.
 3. Checkpoint/status data tracks freshness and failure recovery.
 

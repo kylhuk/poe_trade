@@ -70,6 +70,18 @@ def _parse_env_float(env_name: str, default: float) -> float:
         return default
 
 
+def _parse_env_bool(env_name: str, default: bool) -> bool:
+    raw = os.getenv(env_name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "t", "yes", "y", "on", "enabled", "enable"):
+        return True
+    if value in ("0", "false", "f", "no", "n", "off", "disabled", "disable"):
+        return False
+    return default
+
+
 def _parse_thresholds() -> dict[str, Any]:
     raw = os.getenv("POE_THRESHOLDS")
     if not raw:
@@ -144,6 +156,8 @@ class Settings:
     market_poll_interval: float
     stash_poll_interval: float
     stash_api_path: str
+    stash_bootstrap_until_league: str
+    stash_bootstrap_from_beginning: bool
     stash_trigger_token: str
     oauth_client_id: str
     oauth_client_secret: str
@@ -208,6 +222,14 @@ class Settings:
             stash_api_path=_get_env_str(
                 "POE_STASH_API_PATH",
                 constants.DEFAULT_POE_STASH_API_PATH,
+            ),
+            stash_bootstrap_until_league=_get_env_str(
+                "POE_STASH_BOOTSTRAP_UNTIL_LEAGUE",
+                constants.DEFAULT_STASH_BOOTSTRAP_UNTIL_LEAGUE,
+            ).strip(),
+            stash_bootstrap_from_beginning=_parse_env_bool(
+                "POE_STASH_BOOTSTRAP_FROM_BEGINNING",
+                constants.DEFAULT_STASH_BOOTSTRAP_FROM_BEGINNING,
             ),
             stash_trigger_token=_get_env_str(
                 "POE_STASH_TRIGGER_TOKEN",

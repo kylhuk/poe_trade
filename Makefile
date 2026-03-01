@@ -1,7 +1,7 @@
 .PHONY: up down
 
-COMPOSE := docker compose --profile optional
-SERVICES := clickhouse schema_migrator market_harvester stash_scribe
+COMPOSE := docker compose
+SERVICES := clickhouse schema_migrator market_harvester
 
 up:
 	$(COMPOSE) up --build --detach $(SERVICES)

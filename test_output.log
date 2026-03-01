@@ -1,0 +1,158 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python
+cachedir: .pytest_cache
+rootdir: /home/wenga/src/poe_trade
+configfile: pyproject.toml
+plugins: asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 0 items / 9 errors
+
+==================================== ERRORS ====================================
+_____________ ERROR collecting tests/unit/test_checkpoint_store.py _____________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_checkpoint_store.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_checkpoint_store.py:4: in <module>
+    from poe_trade.ingestion.checkpoints import CheckpointStore
+poe_trade/ingestion/__init__.py:4: in <module>
+    from .market_harvester import MarketHarvester, oauth_client_factory
+poe_trade/ingestion/market_harvester.py:15: in <module>
+    import uvicorn
+E   ModuleNotFoundError: No module named 'uvicorn'
+_____________ ERROR collecting tests/unit/test_market_harvester.py _____________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_market_harvester.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_market_harvester.py:15: in <module>
+    from poe_trade.db import ClickHouseClient
+poe_trade/db/__init__.py:4: in <module>
+    from .migrations import MigrationRunner, main
+poe_trade/db/migrations.py:15: in <module>
+    from ..config import settings as config_settings
+poe_trade/config/__init__.py:4: in <module>
+    from .settings import Settings, get_settings
+poe_trade/config/settings.py:10: in <module>
+    from dotenv import load_dotenv
+E   ModuleNotFoundError: No module named 'dotenv'
+__________ ERROR collecting tests/unit/test_market_harvester_auth.py ___________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_market_harvester_auth.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_market_harvester_auth.py:4: in <module>
+    from poe_trade.ingestion.market_harvester import MarketHarvester, OAuthToken
+poe_trade/ingestion/__init__.py:4: in <module>
+    from .market_harvester import MarketHarvester, oauth_client_factory
+poe_trade/ingestion/market_harvester.py:15: in <module>
+    import uvicorn
+E   ModuleNotFoundError: No module named 'uvicorn'
+_________ ERROR collecting tests/unit/test_market_harvester_service.py _________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_market_harvester_service.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_market_harvester_service.py:4: in <module>
+    from poe_trade.services import market_harvester
+poe_trade/services/__init__.py:3: in <module>
+    from ..config import constants
+poe_trade/config/__init__.py:4: in <module>
+    from .settings import Settings, get_settings
+poe_trade/config/settings.py:10: in <module>
+    from dotenv import load_dotenv
+E   ModuleNotFoundError: No module named 'dotenv'
+________________ ERROR collecting tests/unit/test_migrations.py ________________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_migrations.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_migrations.py:8: in <module>
+    from poe_trade.db.migrations import (
+poe_trade/db/__init__.py:4: in <module>
+    from .migrations import MigrationRunner, main
+poe_trade/db/migrations.py:15: in <module>
+    from ..config import settings as config_settings
+poe_trade/config/__init__.py:4: in <module>
+    from .settings import Settings, get_settings
+poe_trade/config/settings.py:10: in <module>
+    from dotenv import load_dotenv
+E   ModuleNotFoundError: No module named 'dotenv'
+________________ ERROR collecting tests/unit/test_poe_client.py ________________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_poe_client.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_poe_client.py:6: in <module>
+    from poe_trade.ingestion.poe_client import PoeClient
+poe_trade/ingestion/__init__.py:4: in <module>
+    from .market_harvester import MarketHarvester, oauth_client_factory
+poe_trade/ingestion/market_harvester.py:15: in <module>
+    import uvicorn
+E   ModuleNotFoundError: No module named 'uvicorn'
+________________ ERROR collecting tests/unit/test_rate_limit.py ________________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_rate_limit.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_rate_limit.py:4: in <module>
+    from poe_trade.ingestion.rate_limit import (
+poe_trade/ingestion/__init__.py:4: in <module>
+    from .market_harvester import MarketHarvester, oauth_client_factory
+poe_trade/ingestion/market_harvester.py:15: in <module>
+    import uvicorn
+E   ModuleNotFoundError: No module named 'uvicorn'
+_____________ ERROR collecting tests/unit/test_service_registry.py _____________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_service_registry.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_service_registry.py:1: in <module>
+    from poe_trade.config import constants
+poe_trade/config/__init__.py:4: in <module>
+    from .settings import Settings, get_settings
+poe_trade/config/settings.py:10: in <module>
+    from dotenv import load_dotenv
+E   ModuleNotFoundError: No module named 'dotenv'
+_____________ ERROR collecting tests/unit/test_settings_aliases.py _____________
+ImportError while importing test module '/home/wenga/src/poe_trade/tests/unit/test_settings_aliases.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_settings_aliases.py:6: in <module>
+    from poe_trade.config.settings import Settings
+poe_trade/config/__init__.py:4: in <module>
+    from .settings import Settings, get_settings
+poe_trade/config/settings.py:10: in <module>
+    from dotenv import load_dotenv
+E   ModuleNotFoundError: No module named 'dotenv'
+=========================== short test summary info ============================
+ERROR tests/unit/test_checkpoint_store.py
+ERROR tests/unit/test_market_harvester.py
+ERROR tests/unit/test_market_harvester_auth.py
+ERROR tests/unit/test_market_harvester_service.py
+ERROR tests/unit/test_migrations.py
+ERROR tests/unit/test_poe_client.py
+ERROR tests/unit/test_rate_limit.py
+ERROR tests/unit/test_service_registry.py
+ERROR tests/unit/test_settings_aliases.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 9 errors during collection !!!!!!!!!!!!!!!!!!!!
+============================== 9 errors in 0.16s ===============================

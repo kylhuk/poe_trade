@@ -79,6 +79,24 @@ class SettingsAliasesTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertEqual(settings.oauth_client_secret, "")
 
+    def test_stash_bootstrap_env_defaults(self):
+        env = {
+            "POE_STASH_BOOTSTRAP_UNTIL_LEAGUE": " Keepers ",
+            "POE_STASH_BOOTSTRAP_FROM_BEGINNING": "true",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.stash_bootstrap_until_league, "Keepers")
+        self.assertTrue(settings.stash_bootstrap_from_beginning)
+
+    def test_invalid_stash_bootstrap_boolean_falls_back_to_default(self):
+        env = {
+            "POE_STASH_BOOTSTRAP_FROM_BEGINNING": "kinda",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings.from_env()
+        self.assertFalse(settings.stash_bootstrap_from_beginning)
+
 
 if __name__ == "__main__":
     unittest.main()
