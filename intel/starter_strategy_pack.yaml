@@ -1,0 +1,86 @@
+strategies:
+
+  - id: essence_bulk_flip
+    enabled: true
+    category: arbitrage
+
+    input:
+      item_type: essence
+      min_stack: 1
+
+    action:
+      buy_individual
+      sell_bulk
+
+    parameters:
+      bulk_size: 20
+
+    evaluation:
+      min_profit: 20
+      min_roi: 0.25
+
+    alert:
+      type: delayed
+
+  - id: cluster_jewel_craft
+    enabled: true
+    category: crafting
+
+    input:
+      base_type: Large Cluster Jewel
+      item_level: 84
+
+    action:
+      alt_spam
+      augment
+      sell
+
+    evaluation:
+      min_profit: 50
+      min_roi: 0.5
+
+    alert:
+      type: delayed
+
+  - id: fragment_set_assembly
+    enabled: true
+    category: arbitrage
+
+    input:
+      item_type: fragment
+
+    action:
+      buy_single
+      assemble_set
+      sell
+
+    evaluation:
+      min_profit: 40
+
+  - id: fossil_flip
+    enabled: true
+    category: arbitrage
+
+    input:
+      item_type: fossil
+
+    action:
+      buy
+      sell_bulk
+
+    evaluation:
+      min_profit: 20
+
+  - id: rogue_crafting
+    enabled: true
+    category: crafting
+
+    input:
+      source: rog
+
+    action:
+      craft
+      sell
+
+    evaluation:
+      min_profit: 100
