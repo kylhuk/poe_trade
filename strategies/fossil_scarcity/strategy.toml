@@ -1,0 +1,17 @@
+id = "fossil_scarcity"
+name = "Fossil Scarcity Tracking"
+enabled = false
+priority = 7
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "growth"
+
+[minima]
+expected_profit_chaos = 25
+roi = 0.15
+confidence = 0.57
+
+[params]
+category = "fossil"
+min_sample_count = 20
+cooldown_minutes = 120

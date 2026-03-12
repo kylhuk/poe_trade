@@ -1,29 +1,47 @@
--- Silver layer sanity checks re-targeted to the retained ingestion tables
 SELECT
-    league,
-    count() AS total_trades,
-    max(retrieved_at) AS most_recent_ingest
-FROM poe_trade.bronze_trade_metadata
-GROUP BY league
-ORDER BY league;
-
-SELECT
-    league,
-    countIf(listing_ts >= now() - INTERVAL 1 HOUR) AS recent_listings,
-    round(countIf(listing_ts >= now() - INTERVAL 1 HOUR) * 100.0 / greatest(count(), 1), 2)
-        AS recent_listing_pct
-FROM poe_trade.bronze_trade_metadata
-GROUP BY league
-ORDER BY recent_listing_pct DESC;
-
-SELECT
-    service,
-    league,
-    count() AS requests_last_hour,
-    quantileExact(0.95)(response_ms) AS response_ms_p95
-FROM poe_trade.bronze_requests
-WHERE requested_at >= now() - INTERVAL 1 HOUR
+    realm,
+    ifNull(league, 'unknown') AS league,
+    count() AS stash_change_rows,
+    max(observed_at) AS latest_observed_at
+FROM poe_trade.silver_ps_stash_changes
 GROUP BY
-    service,
+    realm,
     league
-ORDER BY requests_last_hour DESC;
+ORDER BY realm, league;
+
+SELECT
+    realm,
+    ifNull(league, 'unknown') AS league,
+    category,
+    count() AS item_rows,
+    max(observed_at) AS latest_observed_at
+FROM poe_trade.v_ps_items_enriched
+GROUP BY
+    realm,
+    league,
+    category
+ORDER BY item_rows DESC
+LIMIT 20;
+
+SELECT
+    stash_id,
+    realm,
+    ifNull(league, 'unknown') AS league,
+    observed_at
+FROM poe_trade.v_ps_current_stashes
+ORDER BY observed_at DESC
+LIMIT 10;
+
+SELECT
+    realm,
+    league,
+    market_pair,
+    count() AS market_rows,
+    max(hour_ts) AS latest_hour
+FROM poe_trade.v_cx_markets_enriched
+GROUP BY
+    realm,
+    league,
+    market_pair
+ORDER BY latest_hour DESC
+LIMIT 20;

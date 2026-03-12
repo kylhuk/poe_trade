@@ -13,16 +13,14 @@ authors = [
   {name = "Wraeclast Operators", email = "ops@example.com"}
 ]
 dependencies = [
-  "fastapi>=0.110",
-  "uvicorn[standard]>=0.23",
   "python-dotenv>=1.0",
-  "httpx>=0.27",
 ]
 
 [project.scripts]
 poe-ledger-cli = "poe_trade.cli:main"
 market_harvester = "poe_trade.services.market_harvester:main"
 poe-migrate = "poe_trade.services.migrator:main"
+poe-ml = "poe_trade.ml.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["poe_trade*"]

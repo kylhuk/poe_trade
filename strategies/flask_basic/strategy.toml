@@ -1,0 +1,17 @@
+id = "flask_basic"
+name = "Basic Flask Crafting"
+enabled = true
+priority = 8
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "bootstrap"
+
+[minima]
+expected_profit_chaos = 10
+roi = 0.12
+confidence = 0.55
+
+[params]
+category = "flask"
+min_sample_count = 20
+cooldown_minutes = 90

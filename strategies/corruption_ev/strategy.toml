@@ -1,0 +1,18 @@
+id = "corruption_ev"
+name = "Corruption EV Ladder"
+enabled = false
+priority = 5
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "advanced"
+
+[minima]
+expected_profit_chaos = 100
+roi = 0.25
+confidence = 0.35
+
+[params]
+category = "other"
+min_sample_count = 10
+cooldown_minutes = 240
+requires_journal = true

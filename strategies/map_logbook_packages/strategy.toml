@@ -1,0 +1,17 @@
+id = "map_logbook_packages"
+name = "Map and Logbook Package Premium"
+enabled = true
+priority = 8
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "bootstrap"
+
+[minima]
+expected_profit_chaos = 15
+roi = 0.15
+confidence = 0.60
+
+[params]
+categories = "map,logbook"
+min_sample_count = 20
+cooldown_minutes = 120

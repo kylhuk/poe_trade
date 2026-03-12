@@ -26,7 +26,10 @@ class StatusReporter:
 
     def report(
         self,
-        league: str,
+        queue_key: str,
+        feed_kind: str,
+        contract_version: int,
+        league: str | None,
         realm: str,
         cursor: str | None,
         next_change_id: str | None,
@@ -38,6 +41,9 @@ class StatusReporter:
         stalled_since: datetime | None = None,
     ) -> None:
         row: dict[str, Any] = {
+            "queue_key": queue_key,
+            "feed_kind": feed_kind,
+            "contract_version": contract_version,
             "league": league,
             "realm": realm,
             "source": self._source,
@@ -52,7 +58,7 @@ class StatusReporter:
         }
         query = (
             "INSERT INTO poe_trade.poe_ingest_status "
-            "(league, realm, source, last_cursor, next_change_id, last_ingest_at, request_rate, error_count, stalled_since, last_error, status)\n"
+            "(queue_key, feed_kind, contract_version, league, realm, source, last_cursor, next_change_id, last_ingest_at, request_rate, error_count, stalled_since, last_error, status)\n"
             "FORMAT JSONEachRow\n"
             f"{json.dumps(row)}"
         )

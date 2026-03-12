@@ -1,0 +1,39 @@
+poe_trade/strategy/scanner.py:    completed_runs = 0
+poe_trade/strategy/scanner.py:    while max_runs is None or completed_runs < max_runs:
+poe_trade/strategy/scanner.py:        completed_runs += 1
+poe_trade/strategy/scanner.py:        if max_runs is not None and completed_runs >= max_runs:
+poe_trade/strategy/backtest.py:BACKTEST_OUTCOMES = ("completed", "no_data", "no_opportunities", "failed")
+poe_trade/strategy/backtest.py:    "completed": "opportunities found",
+poe_trade/strategy/backtest.py:    "no_data": "no source data in league/lookback window",
+poe_trade/strategy/backtest.py:    "no_opportunities": "source data exists but no strategy opportunities",
+poe_trade/strategy/backtest.py:    "failed": "backtest execution failed",
+poe_trade/strategy/backtest.py:    status = "completed"
+poe_trade/strategy/backtest.py:    summary_text = _DEFAULT_SUMMARY_TEXT["completed"]
+poe_trade/strategy/backtest.py:            "'completed' AS status, "
+poe_trade/strategy/backtest.py:                status = "no_data"
+poe_trade/strategy/backtest.py:                summary_text = _DEFAULT_SUMMARY_TEXT["no_data"]
+poe_trade/strategy/backtest.py:                status = "no_opportunities"
+poe_trade/strategy/backtest.py:                summary_text = _DEFAULT_SUMMARY_TEXT["no_opportunities"]
+poe_trade/strategy/backtest.py:        status = "failed"
+poe_trade/strategy/backtest.py:        summary_text = f"{_DEFAULT_SUMMARY_TEXT['failed']}: {exc}"
+poe_trade/strategy/backtest.py:                status="failed",
+poe_trade/strategy/backtest.py:        "completed": 0,
+poe_trade/strategy/backtest.py:        "no_opportunities": 1,
+poe_trade/strategy/backtest.py:        "no_data": 2,
+poe_trade/strategy/backtest.py:        "failed": 3,
+poe_trade/strategy/backtest.py:        "completed_at": _format_ts(datetime.now(timezone.utc))
+poe_trade/strategy/backtest.py:        "(run_id, strategy_id, league, lookback_days, started_at, completed_at, status, notes)\n"
+tests/unit/test_cli_research.py:                    "status": "completed",
+tests/unit/test_cli_research.py:                    "status": "completed",
+tests/unit/test_cli_research.py:            return 0 if status == "completed" else 9
+tests/unit/test_cli_research.py:        "run-bulk_essence\tbulk_essence\tMirage\t14\tcompleted\t3\t9.5\t0.2\t0.75\topportunities found",
+tests/unit/test_strategy_backtest.py:    assert '"completed_at":null' not in client.queries[0]
+tests/unit/test_strategy_backtest.py:    assert '"completed_at":"1970-01-01 00:00:00.000"' in client.queries[0]
+tests/unit/test_strategy_backtest.py:def test_run_backtest_marks_no_data_when_source_window_empty() -> None:
+tests/unit/test_strategy_backtest.py:    assert any('"status":"no_data"' in query for query in client.queries)
+tests/unit/test_strategy_backtest.py:def test_run_backtest_records_failed_status_on_insert_error() -> None:
+tests/unit/test_strategy_backtest.py:    assert any('"status":"failed"' in query for query in client.queries)
+tests/unit/test_cxapi_sync.py:    last_completed_hour,
+tests/unit/test_cxapi_sync.py:def test_last_completed_hour_respects_safety_offset() -> None:
+tests/unit/test_cxapi_sync.py:    assert last_completed_hour(value, offset_seconds=15) == datetime(
+tests/unit/test_cxapi_sync.py:def test_initial_backfill_window_uses_last_completed_hour() -> None:

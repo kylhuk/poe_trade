@@ -5,19 +5,21 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from ..config import constants
-from ..db import ClickHouseClient
-from .checkpoints import CheckpointStore
+from ..db import ClickHouseClient, ClickHouseClientError
 from .poe_client import PoeClient
 from .rate_limit import RateLimitPolicy, glean_rate_limit, parse_retry_after
 from .status import StatusReporter
+from .sync_contract import queue_key
+from .sync_state import SyncStateStore
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 _CHECKPOINT_LAG_THRESHOLD_SECONDS = 300  # 5 minutes
 _DIVINES_ESTIMATE_BASE = 5.0
 _DIVINES_PENALTY_PER_SECOND = 0.01
+_PSAPI_CURSOR_PATTERN = re.compile(r"^\d+(?:-\d+)*$")
 
 
 class OAuthToken:
@@ -83,8 +86,18 @@ def oauth_client_factory(settings: Any) -> OAuthClient:
     if grant_type != "client_credentials":
         raise ValueError("POE_OAUTH_GRANT_TYPE must be 'client_credentials'")
     scope = (settings.oauth_scope or "").strip()
-    if "service:psapi" not in scope.split():
-        raise ValueError("POE_OAUTH_SCOPE must include 'service:psapi'")
+    scope_parts = set(scope.split())
+    required_scopes: list[str] = []
+    if getattr(settings, "enable_psapi", True):
+        required_scopes.append("service:psapi")
+    if getattr(settings, "enable_cxapi", False):
+        required_scopes.append("service:cxapi")
+    missing_scopes = [
+        required for required in required_scopes if required not in scope_parts
+    ]
+    if missing_scopes:
+        missing = ", ".join(missing_scopes)
+        raise ValueError(f"POE_OAUTH_SCOPE must include {missing}")
     policy = RateLimitPolicy(
         settings.rate_limit_max_retries,
         settings.rate_limit_backoff_base,
@@ -111,17 +124,18 @@ class MarketHarvester:
         self,
         client: PoeClient,
         ck_client: ClickHouseClient,
-        checkpoint_store: CheckpointStore,
+        sync_state: SyncStateStore,
         status_reporter: StatusReporter,
         auth_client: OAuthClient | None = None,
         service_name: str = "market_harvester",
         bootstrap_until_league: str | None = None,
         bootstrap_from_beginning: bool = False,
+        cursor_file_path: str | None = None,
     ) -> None:
         self._client = client
         self._auth_client = auth_client
         self._clickhouse = ck_client
-        self._checkpoints = checkpoint_store
+        self._sync_state = sync_state
         self._status = status_reporter
         self._token: OAuthToken | None = None
         self._error_counts: dict[str, int] = {}
@@ -131,6 +145,15 @@ class MarketHarvester:
         self._service_name = service_name
         self._bootstrap_until_league = bootstrap_until_league
         self._bootstrap_from_beginning = bootstrap_from_beginning
+        configured_cursor_file = (
+            cursor_file_path
+            if cursor_file_path is not None
+            else os.getenv("POE_CURSOR_FILE", "")
+        )
+        resolved_cursor_file = configured_cursor_file.strip()
+        self._cursor_file: Path | None = (
+            Path(resolved_cursor_file).expanduser() if resolved_cursor_file else None
+        )
 
     def _ensure_token(self) -> None:
         if self._token is None or self._token.is_expired():
@@ -139,26 +162,80 @@ class MarketHarvester:
             self._token = self._auth_client.refresh()
             self._client.set_bearer_token(self._token.access_token)
 
-    def _effective_league(self, current_league: str) -> str:
-        # If bootstrap is active, it returns bootstrap_until_league. Otherwise, the current league.
-        return self._bootstrap_until_league or current_league
+    def _queue_key(self, realm: str) -> str:
+        return queue_key(constants.FEED_KIND_PSAPI, realm)
 
-    def _checkpoint_key(self, realm: str, league_for_key: str | None = None) -> str:
-        # league_for_key can be actual league or bootstrap_until_league
-        # Use realm, then either specified league, or bootstrap target, or empty string if all null
-        return f"{realm}:{league_for_key or self._bootstrap_until_league or ''}"
+    @staticmethod
+    def _contract_version() -> int:
+        return constants.INGEST_CONTRACT_VERSION
 
-    def _build_request_params(
-        self, league: str | None, realm: str, cursor: str | None
-    ) -> dict[str, str]:
+    def _build_request_params(self, cursor: str | None) -> dict[str, str]:
         params: dict[str, str] = {}
-        if league:
-            params["league"] = league
-        if realm:
-            params["realm"] = realm
         if cursor:
             params["id"] = cursor
         return params
+
+    def _cursor_from_file(self) -> str | None:
+        if self._cursor_file is None:
+            return None
+        try:
+            cursor = self._cursor_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not cursor:
+            return None
+        if not self._is_valid_cursor(cursor):
+            logger.warning(
+                "ignoring invalid cursor in %s: %s",
+                self._cursor_file,
+                cursor,
+            )
+            return None
+        return cursor
+
+    def _persist_cursor_file(self, cursor: str | None) -> None:
+        if self._cursor_file is None:
+            return
+        value = (cursor or "").strip()
+        if not value:
+            return
+        if not self._is_valid_cursor(value):
+            logger.warning(
+                "skipping invalid cursor write to %s: %s",
+                self._cursor_file,
+                value,
+            )
+            return
+        try:
+            self._cursor_file.parent.mkdir(parents=True, exist_ok=True)
+            self._cursor_file.write_text(f"{value}\n", encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Unable to write cursor file %s: %s", self._cursor_file, exc)
+
+    @staticmethod
+    def _is_valid_cursor(cursor: str) -> bool:
+        if cursor == "0":
+            return True
+        return _PSAPI_CURSOR_PATTERN.fullmatch(cursor) is not None
+
+    def _resolve_start_cursor(self, key: str) -> str | None:
+        checkpoint_cursor = self._sync_state.latest_cursor(key)
+        file_cursor = self._cursor_from_file()
+        if file_cursor and file_cursor != checkpoint_cursor:
+            logger.info(
+                "using cursor override from %s for %s",
+                self._cursor_file,
+                key,
+            )
+            return file_cursor
+        return checkpoint_cursor
+
+    @staticmethod
+    def _public_stash_endpoint(realm: str) -> str:
+        normalized = realm.strip().lower()
+        if not normalized or normalized == "pc":
+            return constants.DEFAULT_POE_STASH_API_PATH
+        return f"{constants.DEFAULT_POE_STASH_API_PATH}/{normalized}"
 
     def _payload_entries(self, payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         entries: Any = payload.get("tabs")
@@ -245,36 +322,22 @@ class MarketHarvester:
     ) -> None:
         realms = tuple(realms)
         leagues = tuple(leagues)
-
-        # Default max_workers to number of leagues (parallelize across leagues)
-        if max_workers is None:
-            max_workers = len(leagues)
+        active_league = self._bootstrap_until_league or (leagues[0] if leagues else "")
 
         logger.info(
-            "MarketHarvester starting realms=%s leagues=%s dry_run=%s max_workers=%s",
+            "MarketHarvester starting realms=%s active_league=%s dry_run=%s",
             realms,
-            leagues,
+            active_league,
             dry_run,
-            max_workers,
         )
         stop_event = threading.Event()
         try:
             while not stop_event.is_set():
-                # Parallel harvest across all league/realm combinations
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = []
-                    for realm in realms:
-                        for league in leagues:
-                            futures.append(
-                                executor.submit(self._harvest, realm, league, dry_run)
-                            )
-                    # Wait for all to complete
-                    for future in as_completed(futures):
-                        # Log any exceptions but continue
-                        try:
-                            future.result()
-                        except Exception as exc:  # pragma: no cover
-                            logger.exception("Harvest failed: %s", exc)
+                for realm in realms:
+                    try:
+                        self._harvest(realm, active_league, dry_run)
+                    except Exception as exc:  # pragma: no cover
+                        logger.exception("Harvest failed: %s", exc)
 
                 if once:
                     return
@@ -311,51 +374,49 @@ class MarketHarvester:
 
         start = time.monotonic()
         # Use target_league for checkpointing in bootstrap mode
-        checkpoint_key = self._checkpoint_key(realm, target_league)
+        checkpoint_key = self._queue_key(realm)
 
-        cursor = None
+        cursor: str | None = None
         target_reached = False
-
-        if self._bootstrap_from_beginning:
-            cursor = "0"  # Start from Day 0 for full historical scan
-            logger.info(
-                "bootstrap starting from beginning (id=0) for league=%s, realm=%s",
-                target_league,
-                realm,
-            )
-        else:
-            checkpoint_cursor = self._checkpoints.read(checkpoint_key)
-            if checkpoint_cursor:
-                cursor = checkpoint_cursor
-                target_reached = True
-                logger.info(
-                    "bootstrap resuming for league=%s, realm=%s from checkpoint next_change_id=%s",
-                    target_league,
-                    realm,
-                    checkpoint_cursor,
-                )
-            else:
-                # No checkpoint found, start from recent data (default API behavior for cursor=None)
-                logger.info(
-                    "bootstrap starting from recent data for league=%s, realm=%s (no checkpoint found)",
-                    target_league,
-                    realm,
-                )
 
         next_change_id: str | None = None
         status_text = "running"
         error_msg: str | None = None
         now = datetime.now(timezone.utc)
         rows_written = False
+        endpoint = self._public_stash_endpoint(realm)
         try:
+            if self._bootstrap_from_beginning:
+                cursor = "0"
+                logger.info(
+                    "bootstrap starting from beginning (id=0) for league=%s, realm=%s",
+                    target_league,
+                    realm,
+                )
+            else:
+                cursor = self._resolve_start_cursor(checkpoint_key)
+                if cursor:
+                    target_reached = True
+                    logger.info(
+                        "bootstrap resuming for league=%s, realm=%s from checkpoint next_change_id=%s",
+                        target_league,
+                        realm,
+                        cursor,
+                    )
+                else:
+                    logger.info(
+                        "bootstrap starting from recent data for league=%s, realm=%s (no checkpoint found)",
+                        target_league,
+                        realm,
+                    )
             self._ensure_token()  # Ensure token is fresh for authorized API calls
 
             while True:
                 # Always request without explicit league filter in params to scan all entries
                 # API will return entries from various leagues
-                params = self._build_request_params(None, realm, cursor)
+                params = self._build_request_params(cursor)
                 response = self._client.request_with_metadata(
-                    "GET", constants.DEFAULT_POE_STASH_API_PATH, params=params
+                    "GET", endpoint, params=params
                 )
 
                 # Handle rate limiting or errors from response
@@ -368,9 +429,11 @@ class MarketHarvester:
                     error_msg = f"rate_limited: retry_after_seconds={retry_after:.1f}"
                     # Log the request attempt
                     self._write_request_entry(
+                        queue_key_value=checkpoint_key,
+                        feed_kind=constants.FEED_KIND_PSAPI,
                         realm=realm,
                         league=target_league,
-                        endpoint=constants.DEFAULT_POE_STASH_API_PATH,
+                        endpoint=endpoint,
                         http_method="GET",
                         requested_at=now,
                         status=429,
@@ -415,12 +478,14 @@ class MarketHarvester:
                         filter_league=target_league,  # Strictly filter for target_league
                     )
                     if rows and not dry_run:
-                        self._write(rows, checkpoint=cursor or "")  # Write to raw_public_stash_pages
+                        self._write(
+                            rows, checkpoint=cursor or ""
+                        )  # Write to raw_public_stash_pages
                         rows_written = True
                     status_text = "target-league-found"
                     if not dry_run and next_change_id:
                         # Update checkpoint for the target league in bootstrap mode
-                        self._checkpoints.write(checkpoint_key, next_change_id)
+                        pass
 
                 # If we exhausted data or no next_change_id, break loop
                 if not isinstance(next_change_id, str) or not next_change_id:
@@ -446,6 +511,9 @@ class MarketHarvester:
             duration = time.monotonic() - start
             rate = 1.0 / max(duration, 1e-3)
             self._status.report(
+                queue_key=checkpoint_key,
+                feed_kind=constants.FEED_KIND_PSAPI,
+                contract_version=self._contract_version(),
                 league=target_league,  # Report status for the target league
                 realm=realm,
                 cursor=cursor,
@@ -457,6 +525,8 @@ class MarketHarvester:
                 error_count=0,  # Reset error count for bootstrap, or handle differently
                 stalled_since=None,
             )
+            if not dry_run:
+                self._persist_cursor_file(next_change_id or cursor)
 
     def _harvest(self, realm: str, league: str, dry_run: bool) -> None:
         # Check if bootstrap mode is active for this league
@@ -464,9 +534,9 @@ class MarketHarvester:
             self._perform_bootstrap_harvest(realm, league, dry_run)
             return
 
-        key = f"{realm}:{league}"
+        key = self._queue_key(realm)
         start = time.monotonic()
-        cursor = self._checkpoints.read(key)
+        cursor: str | None = None
         next_change_id: str | None = None
         status_text = "success"
         error_msg: str | None = None
@@ -474,8 +544,8 @@ class MarketHarvester:
         response_status = 0
         response_ms = 0.0
         public_attempts: int | None = None
-        metadata_rows: list[dict[str, Any]] = []
-        checkpoint_lag_seconds: float | None = self._checkpoint_lag_seconds(key)
+        checkpoint_lag_seconds: float | None = None
+        endpoint = self._public_stash_endpoint(realm)
 
         paused_until = self._active_pause_until(key, now)
         if paused_until is not None:
@@ -485,7 +555,10 @@ class MarketHarvester:
                 f"{paused_until.astimezone(timezone.utc).isoformat()}"
             )
             self._status.report(
-                league=league,
+                queue_key=key,
+                feed_kind=constants.FEED_KIND_PSAPI,
+                contract_version=self._contract_version(),
+                league=None,
                 realm=realm,
                 cursor=cursor,
                 next_change_id=next_change_id,
@@ -498,9 +571,11 @@ class MarketHarvester:
             )
             if not dry_run:
                 self._write_checkpoint_entry(
+                    queue_key_value=key,
+                    feed_kind=constants.FEED_KIND_PSAPI,
                     realm=realm,
-                    league=league,
-                    endpoint="public-stash-tabs",
+                    league=None,
+                    endpoint=endpoint,
                     last_cursor=cursor,
                     next_cursor=next_change_id,
                     retrieved_at=now,
@@ -513,12 +588,12 @@ class MarketHarvester:
             return
 
         try:
+            cursor = self._resolve_start_cursor(key)
+            checkpoint_lag_seconds = self._checkpoint_lag_seconds(key)
             self._ensure_token()  # Ensure token is fresh for authorized API calls
-            params = self._build_request_params(
-                league, realm, cursor
-            )  # Use new build_request_params
+            params = self._build_request_params(cursor)
             response = self._client.request_with_metadata(
-                "GET", "public-stash-tabs", params=params
+                "GET", endpoint, params=params
             )
             response_status = response.status_code
             response_ms = response.duration_ms
@@ -529,9 +604,11 @@ class MarketHarvester:
                 error_msg = f"rate_limited: retry_after_seconds={retry_after:.1f}"
                 if not dry_run:
                     self._write_request_entry(
+                        queue_key_value=key,
+                        feed_kind=constants.FEED_KIND_PSAPI,
                         realm=realm,
-                        league=league,
-                        endpoint="public-stash-tabs",
+                        league=None,
+                        endpoint=endpoint,
                         http_method="GET",
                         requested_at=now,
                         status=429,
@@ -544,7 +621,9 @@ class MarketHarvester:
             payload = response.payload
             if isinstance(payload, dict):
                 next_change_id, stashes = self._validate_payload(payload, key)
-                if cursor and next_change_id == cursor:
+                if not stashes and cursor and next_change_id == cursor:
+                    status_text = "idle"
+                elif cursor and next_change_id == cursor:
                     logger.warning(
                         "Stale cursor for %s: %s matches checkpoint, skipping emit",
                         key,
@@ -560,27 +639,6 @@ class MarketHarvester:
                     )
                     if rows and not dry_run:
                         self._write(rows, checkpoint=cursor or "")
-                    if next_change_id and not dry_run:
-                        self._checkpoints.write(key, next_change_id)
-                    metadata_identifier = self._trade_metadata_identifier_from_payload(
-                        payload
-                    )
-                    if metadata_identifier and not dry_run:
-                        metadata_rows = self._fetch_trade_metadata(
-                            cursor=metadata_identifier,
-                            realm=realm,
-                            league=league,
-                            retrieved_at=now,
-                        )
-                    elif not metadata_identifier and not dry_run:
-                        # TODO: re-enable deterministic metadata fetch once the
-                        # public-stash payload exposes a concrete trade-data
-                        # identifier in `payload` instead of reusing stash cursors.
-                        logger.info(
-                            "Skipping trade metadata fetch for %s/%s: no trade-data identifier available",
-                            realm,
-                            league,
-                        )
             else:
                 logger.warning("Unexpected payload from PoE: %s", payload)
                 status_text = "unexpected payload"
@@ -595,9 +653,11 @@ class MarketHarvester:
                 )
                 if not dry_run:
                     self._write_request_entry(
+                        queue_key_value=key,
+                        feed_kind=constants.FEED_KIND_PSAPI,
                         realm=realm,
-                        league=league,
-                        endpoint="public-stash-tabs",
+                        league=None,
+                        endpoint=endpoint,
                         http_method="GET",
                         requested_at=now,
                         status=429,
@@ -621,7 +681,10 @@ class MarketHarvester:
             duration = time.monotonic() - start
             rate = 1.0 / max(duration, 1e-3)
             self._status.report(
-                league=league,
+                queue_key=key,
+                feed_kind=constants.FEED_KIND_PSAPI,
+                contract_version=self._contract_version(),
+                league=None,
                 realm=realm,
                 cursor=cursor,
                 next_change_id=next_change_id,
@@ -634,9 +697,11 @@ class MarketHarvester:
             )
             if not dry_run:
                 self._write_checkpoint_entry(
+                    queue_key_value=key,
+                    feed_kind=constants.FEED_KIND_PSAPI,
                     realm=realm,
-                    league=league,
-                    endpoint="public-stash-tabs",
+                    league=None,
+                    endpoint=endpoint,
                     last_cursor=cursor,
                     next_cursor=next_change_id,
                     retrieved_at=now,
@@ -646,8 +711,7 @@ class MarketHarvester:
                     response_ms=response_ms,
                     attempts=public_attempts,
                 )
-                if metadata_rows:
-                    self._write_trade_metadata(metadata_rows)
+                self._persist_cursor_file(next_change_id or cursor)
                 self._maybe_log_checkpoint_lag(key, checkpoint_lag_seconds)
 
     def _validate_payload(
@@ -661,154 +725,6 @@ class MarketHarvester:
             raise ValueError(f"stashes list missing for {key}")
         return next_change_id, stashes
 
-    def _trade_metadata_identifier_from_payload(
-        self, payload: Mapping[str, Any]
-    ) -> str | None:
-        identifier = payload.get("trade_data_id") or payload.get(
-            "trade_data_identifier"
-        )
-        if isinstance(identifier, str) and identifier:
-            return identifier
-        return None
-
-    def _fetch_trade_metadata(
-        self,
-        cursor: str,
-        realm: str,
-        league: str,
-        retrieved_at: datetime,
-    ) -> list[dict[str, Any]]:
-        try:
-            response = self._client.request_with_metadata(
-                "GET", f"api/trade/data/{cursor}"
-            )
-        except Exception as exc:  # pragma: no cover - best effort
-            status_code = self._extract_http_status(exc)
-            if status_code == 429:
-                retry_after = self._pause_after_rate_limit(
-                    f"{realm}:{league}", {}, retrieved_at
-                )
-                self._write_request_entry(
-                    realm=realm,
-                    league=league,
-                    endpoint=f"api/trade/data/{cursor}",
-                    http_method="GET",
-                    requested_at=retrieved_at,
-                    status=429,
-                    attempts=self._client.last_attempts,
-                    response_ms=0.0,
-                    headers={},
-                    error=(
-                        "rate_limited: retry_after_seconds="
-                        f"{retry_after:.1f} while fetching trade metadata"
-                    ),
-                )
-            logger.warning("Failed to fetch trade metadata for %s/%s", realm, cursor)
-            return []
-        if response.status_code == 429:
-            retry_after = self._pause_after_rate_limit(
-                f"{realm}:{league}", response.headers, retrieved_at
-            )
-            self._write_request_entry(
-                realm=realm,
-                league=league,
-                endpoint=f"api/trade/data/{cursor}",
-                http_method="GET",
-                requested_at=retrieved_at,
-                status=429,
-                attempts=response.attempts,
-                response_ms=response.duration_ms,
-                headers=response.headers,
-                error=f"rate_limited: retry_after_seconds={retry_after:.1f}",
-            )
-            logger.warning(
-                "Trade metadata request rate-limited for %s/%s", realm, cursor
-            )
-            return []
-        payload = response.payload
-        if not isinstance(payload, dict):
-            logger.warning(
-                "Trade metadata payload missing result for %s/%s: %s",
-                realm,
-                cursor,
-                payload,
-            )
-            return []
-        return self._rows_from_trade_metadata_payload(
-            payload,
-            realm,
-            league,
-            cursor,
-            retrieved_at,
-            response.headers,
-            response.status_code,
-        )
-
-    def _rows_from_trade_metadata_payload(
-        self,
-        payload: dict[str, Any],
-        realm: str,
-        league: str,
-        cursor: str,
-        retrieved_at: datetime,
-        headers: Mapping[str, str],
-        http_status: int,
-    ) -> list[dict[str, Any]]:
-        results = payload.get("result") or payload.get("entries") or []
-        rows: list[dict[str, Any]] = []
-        rate_limit_raw = json.dumps(headers, ensure_ascii=False, sort_keys=True)
-        rate_limit_parsed = json.dumps(
-            glean_rate_limit(headers), ensure_ascii=False, sort_keys=True
-        )
-        for entry in results:
-            trade = entry.get("trade") or {}
-            listing = entry.get("listing") or {}
-            item = entry.get("item") or {}
-            trade_id = str(
-                entry.get("trade_id")
-                or trade.get("id")
-                or listing.get("id")
-                or entry.get("id")
-                or ""
-            )
-            item_id = str(
-                entry.get("item_id") or item.get("id") or listing.get("item_id") or ""
-            )
-            listing_ts = self._parse_timestamp(
-                entry.get("listing_ts")
-                or listing.get("indexed")
-                or listing.get("listed_at")
-                or trade.get("indexed")
-                or trade.get("listed_at")
-            )
-            delist_ts = self._parse_timestamp(
-                entry.get("delist_ts")
-                or listing.get("delisted_at")
-                or listing.get("delist_at")
-                or entry.get("delist_at")
-            )
-            trade_data_hash = hashlib.sha256(
-                json.dumps(entry, sort_keys=True).encode("utf-8")
-            ).hexdigest()
-            row: dict[str, Any] = {
-                "retrieved_at": self._format_ts(retrieved_at),
-                "service": self._service_name,
-                "realm": realm,
-                "league": league,
-                "cursor": cursor,
-                "trade_id": trade_id,
-                "item_id": item_id,
-                "listing_ts": self._format_ts(listing_ts) if listing_ts else None,
-                "delist_ts": self._format_ts(delist_ts) if delist_ts else None,
-                "trade_data_hash": trade_data_hash,
-                "rate_limit_raw": rate_limit_raw,
-                "rate_limit_parsed": rate_limit_parsed,
-                "http_status": http_status,
-                "payload_json": json.dumps(entry, ensure_ascii=False),
-            }
-            rows.append(row)
-        return rows
-
     def _write(self, rows: list[dict[str, Any]], checkpoint: str | None = None) -> None:
         if not rows:
             return
@@ -817,7 +733,9 @@ class MarketHarvester:
         for row in rows:
             normalized_rows.append(
                 {
-                    "ingested_at": row.get("ingested_at") or row.get("captured_at") or "",
+                    "ingested_at": row.get("ingested_at")
+                    or row.get("captured_at")
+                    or "",
                     "realm": row.get("realm") or "",
                     "league": row.get("league"),
                     "stash_id": row.get("stash_id") or row.get("tab_id") or "",
@@ -840,8 +758,10 @@ class MarketHarvester:
 
     def _write_checkpoint_entry(
         self,
+        queue_key_value: str,
+        feed_kind: str,
         realm: str,
-        league: str,
+        league: str | None,
         endpoint: str,
         last_cursor: str | None,
         next_cursor: str | None,
@@ -858,6 +778,9 @@ class MarketHarvester:
         cursor_hash = hashlib.sha256(cursor_source.encode("utf-8")).hexdigest()
         row = {
             "service": self._service_name,
+            "queue_key": queue_key_value,
+            "feed_kind": feed_kind,
+            "contract_version": self._contract_version(),
             "realm": realm,
             "league": league,
             "endpoint": endpoint,
@@ -874,19 +797,7 @@ class MarketHarvester:
         payload = json.dumps(row, ensure_ascii=False)
         query = (
             "INSERT INTO poe_trade.bronze_ingest_checkpoints "
-            "(service, realm, league, endpoint, last_cursor_id, next_cursor_id, cursor_hash, retrieved_at, retry_count, status, error, http_status, response_ms)\n"
-            "FORMAT JSONEachRow\n"
-            f"{payload}"
-        )
-        self._clickhouse.execute(query)
-
-    def _write_trade_metadata(self, rows: list[dict[str, Any]]) -> None:
-        if not rows:
-            return
-        payload = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
-        query = (
-            "INSERT INTO poe_trade.bronze_trade_metadata "
-            "(retrieved_at, service, realm, league, cursor, trade_id, item_id, listing_ts, delist_ts, trade_data_hash, rate_limit_raw, rate_limit_parsed, http_status, payload_json)\n"
+            "(service, queue_key, feed_kind, contract_version, realm, league, endpoint, last_cursor_id, next_cursor_id, cursor_hash, retrieved_at, retry_count, status, error, http_status, response_ms)\n"
             "FORMAT JSONEachRow\n"
             f"{payload}"
         )
@@ -894,8 +805,10 @@ class MarketHarvester:
 
     def _write_request_entry(
         self,
+        queue_key_value: str,
+        feed_kind: str,
         realm: str,
-        league: str,
+        league: str | None,
         endpoint: str,
         http_method: str,
         requested_at: datetime,
@@ -909,6 +822,9 @@ class MarketHarvester:
         row = {
             "requested_at": self._format_ts(requested_at),
             "service": self._service_name,
+            "queue_key": queue_key_value,
+            "feed_kind": feed_kind,
+            "contract_version": self._contract_version(),
             "realm": realm,
             "league": league,
             "endpoint": endpoint,
@@ -928,7 +844,7 @@ class MarketHarvester:
         payload = json.dumps(row, ensure_ascii=False)
         query = (
             "INSERT INTO poe_trade.bronze_requests "
-            "(requested_at, service, realm, league, endpoint, http_method, status, attempts, response_ms, rate_limit_raw, rate_limit_parsed, retry_after_seconds, error)\n"
+            "(requested_at, service, queue_key, feed_kind, contract_version, realm, league, endpoint, http_method, status, attempts, response_ms, rate_limit_raw, rate_limit_parsed, retry_after_seconds, error)\n"
             "FORMAT JSONEachRow\n"
             f"{payload}"
         )
@@ -982,16 +898,15 @@ class MarketHarvester:
         )
 
     def _checkpoint_lag_seconds(self, key: str) -> float | None:
-        checkpoint_path = self._checkpoints.path(key)
-        if not checkpoint_path.exists():
-            return None
-        try:
-            modified = checkpoint_path.stat().st_mtime
-        except OSError:
+        state = self._sync_state.latest_state(
+            key, statuses=("success", "idle", "stale cursor")
+        )
+        if state is None or state.retrieved_at is None:
             return None
         now = datetime.now(timezone.utc)
-        last_modified = datetime.fromtimestamp(modified, timezone.utc)
-        return max(0.0, (now - last_modified).total_seconds())
+        return max(
+            0.0, (now - state.retrieved_at.astimezone(timezone.utc)).total_seconds()
+        )
 
     def _divines_per_attention_minute_estimate(self, lag_seconds: float) -> float:
         # Derived from docs/v2-implementation-plan Confidence scoring heuristics until a trained model ships.
@@ -1001,31 +916,3 @@ class MarketHarvester:
     @staticmethod
     def _format_ts(value: datetime) -> str:
         return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-    def _parse_timestamp(self, value: Any | None) -> datetime | None:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            try:
-                return datetime.fromtimestamp(value, timezone.utc)
-            except (OSError, ValueError):
-                return None
-        if isinstance(value, str):
-            candidate = value.strip()
-            if (
-                candidate.endswith("Z")
-                and "+" not in candidate
-                and "-" not in candidate[-6:]
-            ):
-                candidate = candidate[:-1] + "+00:00"
-            try:
-                parsed = datetime.fromisoformat(candidate)
-            except ValueError:
-                try:
-                    parsed = datetime.strptime(candidate, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    return None
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc)
-        return None

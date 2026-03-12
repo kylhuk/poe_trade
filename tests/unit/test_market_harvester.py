@@ -1,19 +1,14 @@
 import hashlib
 import json
 import logging
-import os
 import re
-import tempfile
-import time
-from pathlib import Path
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 import pytest
 
-from poe_trade.db import ClickHouseClient
-from poe_trade.ingestion.checkpoints import CheckpointStore
+from poe_trade.db import ClickHouseClient, ClickHouseClientError
 from poe_trade.ingestion.market_harvester import (
     MarketHarvester,
     OAuthClient,
@@ -22,6 +17,7 @@ from poe_trade.ingestion.market_harvester import (
 from poe_trade.ingestion.poe_client import PoeClient, PoeResponse
 from poe_trade.ingestion.rate_limit import RateLimitPolicy
 from poe_trade.ingestion.status import StatusReporter
+from poe_trade.ingestion.sync_state import QueueState, SyncStateStore
 
 
 logger = logging.getLogger(__name__)
@@ -175,45 +171,40 @@ class _DummyClickHouseClient(ClickHouseClient):
         )
         self.queries = []
 
-    def execute(self, query: str) -> str:
+    def execute(self, query: str, settings: Mapping[str, str] | None = None) -> str:
         self.queries.append(query)
         return ""
 
 
-class _DummyCheckpointStore(CheckpointStore):
-    def __init__(
-        self, directory: str = ".tmp", initial: Mapping[str, str] | None = None
-    ):
-        # We need to ensure that the directory argument is passed to the super constructor.
-        # But we also want to use a temporary directory for testing.
-        # So we create the temporary directory first, then pass its path to super.
-        self._temp_dir = Path(tempfile.mkdtemp(prefix="test-checkpoints-"))
-        super().__init__(str(self._temp_dir))
-
+class _DummySyncStateStore(SyncStateStore):
+    def __init__(self, initial: Mapping[str, str] | None = None):
+        super().__init__(_DummyClickHouseClient())
         self.storage = {key: str(value) for key, value in (initial or {}).items()}
-        self.read_calls = []
-        self.writes = []
+        self.latest_cursor_calls = []
+        self.latest_state_calls = []
+        self.state_ts = datetime.now(timezone.utc) - timedelta(seconds=60)
 
-        # Populate initial checkpoints by writing through the parent method
-        for key, value in self.storage.items():
-            super().write(key, value)  # Use parent's write to create files
+    def latest_cursor(
+        self, queue_key: str, *, statuses=("success", "idle")
+    ) -> str | None:
+        self.latest_cursor_calls.append((queue_key, tuple(statuses)))
+        return self.storage.get(queue_key)
 
-    def __del__(self):
-        # Clean up the temporary directory when the object is deleted
-        if self._temp_dir.exists():
-            for item in self._temp_dir.iterdir():
-                if item.is_file():
-                    item.unlink()
-            self._temp_dir.rmdir()
-
-    def read(self, key: str) -> str | None:
-        self.read_calls.append(key)
-        return super().read(key)
-
-    def write(self, key: str, value: str):
-        self.writes.append((key, value))
-        self.storage[key] = str(value)  # Update internal storage
-        super().write(key, value)  # Use parent's write to persist to disk
+    def latest_state(
+        self, queue_key: str, *, statuses=("success", "idle")
+    ) -> QueueState | None:
+        self.latest_state_calls.append((queue_key, tuple(statuses)))
+        cursor = self.storage.get(queue_key)
+        if cursor is None:
+            return None
+        return QueueState(
+            queue_key=queue_key,
+            feed_kind="psapi",
+            realm=queue_key.split(":", 1)[1],
+            next_cursor_id=cursor,
+            status="success",
+            retrieved_at=self.state_ts,
+        )
 
 
 class _DummyStatusReporter(StatusReporter):
@@ -227,7 +218,10 @@ class _DummyStatusReporter(StatusReporter):
 
     def report(
         self,
-        league: str,
+        queue_key: str,
+        feed_kind: str,
+        contract_version: int,
+        league: str | None,
         realm: str,
         cursor: str | None,
         next_change_id: str | None,
@@ -240,6 +234,9 @@ class _DummyStatusReporter(StatusReporter):
     ) -> None:
         self.reports.append(
             {
+                "queue_key": queue_key,
+                "feed_kind": feed_kind,
+                "contract_version": contract_version,
                 "league": league,
                 "realm": realm,
                 "cursor": cursor,
@@ -259,11 +256,12 @@ def _build_harvester(
     checkpoint=None,
     client=None,
     metadata=None,
-    checkpoint_store=None,
+    sync_state=None,
     auth_client=None,
     status_reporter=None,
     bootstrap_until_league: str | None = None,
     bootstrap_from_beginning: bool = False,
+    cursor_file_path: str | None = None,
 ):
     # Ensure a PoeClient instance is passed to _DummyAuthClient for its super() call
     dummy_poe_for_auth = _DummyPoeClient(
@@ -282,22 +280,21 @@ def _build_harvester(
 
     client = client or _DummyPoeClient(payload=payload, metadata=metadata)
     clickhouse = _DummyClickHouseClient()
-    # Ensure checkpoint_store uses a temporary directory for each test run
-    # This logic has been moved to _DummyCheckpointStore.__init__
-    checkpoint_store = checkpoint_store or _DummyCheckpointStore(initial=checkpoint)
+    sync_state = sync_state or _DummySyncStateStore(initial=checkpoint)
     status_reporter = status_reporter or _DummyStatusReporter(
         client=clickhouse
     )  # Corrected parameter name
     harvester = MarketHarvester(
         client,
         clickhouse,
-        checkpoint_store,
+        sync_state,
         status_reporter,
         auth_client=auth_client,
         bootstrap_until_league=bootstrap_until_league,
         bootstrap_from_beginning=bootstrap_from_beginning,
+        cursor_file_path=cursor_file_path,
     )
-    return harvester, clickhouse, checkpoint_store, status_reporter
+    return harvester, clickhouse, sync_state, status_reporter
 
 
 def test_success_flow_writes_rows_and_advances_checkpoint():
@@ -309,35 +306,19 @@ def test_success_flow_writes_rows_and_advances_checkpoint():
             {"stash_id": "stash-b", "league": "Synthesis", "realm": "pc"},
         ],
     }
-    metadata = {"result": [{"trade_id": "trade-1", "item_id": "item-1"}]}
-    client = _DummyPoeClient(payload=payload, metadata=metadata)
-    harvester, clickhouse, checkpoint, status = _build_harvester(
+    client = _DummyPoeClient(payload=payload)
+    harvester, clickhouse, sync_state, status = _build_harvester(
         payload=payload,
-        checkpoint={"pc:Synthesis": "cursor-1"},
+        checkpoint={"psapi:pc": "cursor-1"},
         client=client,
     )
 
     harvester._harvest("pc", "Synthesis", dry_run=False)
-    assert client.metadata_calls == [("api/trade/data/items", None)]
+    assert client.metadata_calls == []
+    assert client.calls[0] == ("GET", "public-stash-tabs", {"id": "cursor-1"})
 
-    assert len(clickhouse.queries) == 3
+    assert len(clickhouse.queries) == 2
     assert "next-1" in clickhouse.queries[0]
-    metadata_query = clickhouse.queries[2]
-    metadata_rows = [
-        line for line in metadata_query.splitlines() if line.strip().startswith("{")
-    ]
-    assert len(metadata_rows) == 1
-    metadata_row = json.loads(metadata_rows[0])
-    assert metadata_row["cursor"] == "items"
-    assert metadata_row["trade_id"] == "trade-1"
-    assert json.loads(metadata_row["rate_limit_raw"]) == {
-        "X-Rate-Limit-Client": "1:5:1"
-    }
-    assert json.loads(metadata_row["rate_limit_parsed"]) == {
-        "x-rate-limit-limit": 1,
-        "x-rate-limit-remaining": 1,
-        "x-rate-limit-reset": 5,
-    }
     raw_rows = [
         json.loads(row)
         for row in clickhouse.queries[0].splitlines()
@@ -349,7 +330,7 @@ def test_success_flow_writes_rows_and_advances_checkpoint():
         assert "tab_id" not in row
         assert "captured_at" not in row
         assert "snapshot_id" not in row
-    assert checkpoint.writes == [("pc:Synthesis", "next-1")]
+    assert sync_state.latest_cursor_calls[0][0] == "psapi:pc"
     assert status.reports[-1]["status"] == "success"
 
 
@@ -359,9 +340,9 @@ def test_metadata_fetch_skipped_without_identifier(caplog):
         "stashes": [{"id": "stash-skip", "league": "Synthesis", "realm": "pc"}],
     }
     client = _DummyPoeClient(payload=payload)
-    harvester, clickhouse, checkpoint, status = _build_harvester(
+    harvester, clickhouse, sync_state, status = _build_harvester(
         payload=payload,
-        checkpoint={"pc:Synthesis": "cursor-skip"},
+        checkpoint={"psapi:pc": "cursor-skip"},
         client=client,
     )
     caplog.set_level(logging.INFO, logger="poe_trade.ingestion.market_harvester")
@@ -370,20 +351,45 @@ def test_metadata_fetch_skipped_without_identifier(caplog):
     assert client.metadata_calls == []
     assert len(clickhouse.queries) == 2
     assert status.reports[-1]["status"] == "success"
-    assert any(
+    assert not any(
         "Skipping trade metadata fetch" in record.getMessage()
         for record in caplog.records
     )
 
 
+def test_console_realm_uses_documented_realm_path_without_league_param():
+    payload = {
+        "next_change_id": "next-console",
+        "stashes": [{"id": "stash-console", "league": "Synthesis", "realm": "xbox"}],
+    }
+    client = _DummyPoeClient(payload=payload)
+    harvester, *_ = _build_harvester(
+        payload=payload,
+        checkpoint={"psapi:xbox": "cursor-console"},
+        client=client,
+    )
+
+    harvester._harvest("xbox", "Synthesis", dry_run=True)
+
+    assert client.calls[0] == (
+        "GET",
+        "public-stash-tabs/xbox",
+        {"id": "cursor-console"},
+    )
+
+
 @pytest.mark.parametrize(
-    "payload, expected_checkpoint_writes, expected_status, expected_query_count, expect_raw_insert",  # Track raw inserts and query counts
+    "payload, expected_status, expected_query_count, expect_raw_insert",
     [
-        ({}, [], "error", 1, False),  # No next_change_id
-        ({"next_change_id": "", "stashes": []}, [], "error", 1, False),  # Empty next_change_id
+        ({}, "error", 1, False),
+        (
+            {"next_change_id": "", "stashes": []},
+            "error",
+            1,
+            False,
+        ),  # Empty next_change_id
         (
             {"next_change_id": "abc", "stashes": "oops"},
-            [],
             "error",
             1,
             False,
@@ -394,7 +400,6 @@ def test_metadata_fetch_skipped_without_identifier(caplog):
                 "next_change_id": "abc",
                 "stashes": [{"id": "bad-stash", "league": None, "realm": "pc"}],
             },
-            [("pc:Synthesis", "abc")],
             "success",
             2,
             True,
@@ -403,13 +408,12 @@ def test_metadata_fetch_skipped_without_identifier(caplog):
 )
 def test_malformed_payload_sets_error_without_writes(
     payload,
-    expected_checkpoint_writes,
     expected_status,
     expected_query_count,
     expect_raw_insert,
 ):
-    harvester, clickhouse, checkpoint, status = _build_harvester(
-        payload=payload, checkpoint={"pc:Synthesis": "cursor-2"}
+    harvester, clickhouse, sync_state, status = _build_harvester(
+        payload=payload, checkpoint={"psapi:pc": "cursor-2"}
     )
 
     harvester._harvest("pc", "Synthesis", dry_run=False)
@@ -419,10 +423,10 @@ def test_malformed_payload_sets_error_without_writes(
     if expect_raw_insert:
         assert any("raw_public_stash_pages" in query for query in clickhouse.queries)
     else:
-        assert all("raw_public_stash_pages" not in query for query in clickhouse.queries)
-    assert (
-        checkpoint.writes == expected_checkpoint_writes
-    )  # Use expected_checkpoint_writes
+        assert all(
+            "raw_public_stash_pages" not in query for query in clickhouse.queries
+        )
+    assert sync_state.latest_cursor_calls[0][0] == "psapi:pc"
     assert status.reports[-1]["status"] == expected_status  # Use expected_status
     if expected_status == "success":
         assert status.reports[-1]["error"] is None
@@ -435,15 +439,15 @@ def test_stale_cursor_does_not_advance_checkpoint():
         "next_change_id": "cursor-3",
         "stashes": [{"id": "stash-stale", "league": "Synthesis", "realm": "pc"}],
     }
-    harvester, clickhouse, checkpoint, status = _build_harvester(
-        payload=payload, checkpoint={"pc:Synthesis": "cursor-3"}
+    harvester, clickhouse, sync_state, status = _build_harvester(
+        payload=payload, checkpoint={"psapi:pc": "cursor-3"}
     )
 
     harvester._harvest("pc", "Synthesis", dry_run=False)
 
     assert len(clickhouse.queries) == 1
     assert "bronze_ingest_checkpoints" in clickhouse.queries[0]
-    assert checkpoint.writes == []
+    assert sync_state.storage["psapi:pc"] == "cursor-3"
     assert status.reports[-1]["status"] == "stale cursor"
 
 
@@ -456,8 +460,8 @@ def test_duplicate_stash_ids_emit_only_unique_rows():
             {"id": "stash-unique", "league": "Synthesis", "realm": "pc"},
         ],
     }
-    harvester, clickhouse, checkpoint, status = _build_harvester(
-        payload=payload, checkpoint={"pc:Synthesis": "cursor-dup"}
+    harvester, clickhouse, sync_state, status = _build_harvester(
+        payload=payload, checkpoint={"psapi:pc": "cursor-dup"}
     )
 
     harvester._harvest("pc", "Synthesis", dry_run=False)
@@ -476,18 +480,18 @@ def test_duplicate_stash_ids_emit_only_unique_rows():
         assert "captured_at" not in row
         assert "snapshot_id" not in row
     assert "bronze_ingest_checkpoints" in clickhouse.queries[1]
-    assert checkpoint.writes == [("pc:Synthesis", "next-dup")]
+    assert sync_state.latest_cursor_calls[0][0] == "psapi:pc"
     assert status.reports[-1]["status"] == "success"
 
 
 def test_write_normalizes_legacy_row_to_new_insert_shape():
     clickhouse = _DummyClickHouseClient()
-    checkpoint_store = _DummyCheckpointStore()
+    sync_state = _DummySyncStateStore()
     status_reporter = _DummyStatusReporter(client=clickhouse)
     harvester = MarketHarvester(
         _DummyPoeClient(),
         clickhouse,
-        checkpoint_store,
+        sync_state,
         status_reporter,
     )
 
@@ -523,7 +527,7 @@ def test_null_entry_league_is_preserved_as_null_row():
         "next_change_id": "null-league",
         "stashes": [{"id": "stash-null", "league": None, "realm": "pc"}],
     }
-    harvester, clickhouse, checkpoint, status = _build_harvester(payload=payload)
+    harvester, clickhouse, sync_state, status = _build_harvester(payload=payload)
 
     harvester._harvest("pc", "Synthesis", dry_run=False)
 
@@ -534,7 +538,7 @@ def test_null_entry_league_is_preserved_as_null_row():
     ]
     assert len(raw_rows) == 1
     assert raw_rows[0]["league"] is None
-    assert checkpoint.writes[-1] == ("pc:Synthesis", "null-league")
+    assert sync_state.latest_cursor_calls[0][0] == "psapi:pc"
     assert status.reports[-1]["status"] == "success"
 
 
@@ -543,7 +547,7 @@ def test_row_league_comes_from_api_entry_league():
         "next_change_id": "entry-league",
         "stashes": [{"id": "stash-league", "league": "Delirium", "realm": "pc"}],
     }
-    harvester, clickhouse, checkpoint, status = _build_harvester(payload=payload)
+    harvester, clickhouse, sync_state, status = _build_harvester(payload=payload)
 
     harvester._harvest("pc", "Synthesis", dry_run=False)
 
@@ -555,9 +559,8 @@ def test_row_league_comes_from_api_entry_league():
     assert len(raw_rows) == 1
     assert raw_rows[0]["league"] == "Delirium"
     assert raw_rows[0]["league"] != "Synthesis"
-    assert checkpoint.writes[-1] == ("pc:Synthesis", "entry-league")
+    assert sync_state.latest_cursor_calls[0][0] == "psapi:pc"
     assert status.reports[-1]["status"] == "success"
-
 
 
 @pytest.mark.parametrize(
@@ -569,9 +572,9 @@ def test_row_league_comes_from_api_entry_league():
     ],
 )
 def test_harvest_records_error_state_on_client_exceptions(exc):
-    key = "pc:Synthesis"
+    key = "psapi:pc"
     checkpoint_data = {key: "cursor-before"}
-    harvester, clickhouse, checkpoint, status = _build_harvester(
+    harvester, clickhouse, sync_state, status = _build_harvester(
         checkpoint=checkpoint_data, client=_FailingPoeClient(exc)
     )
 
@@ -584,8 +587,7 @@ def test_harvest_records_error_state_on_client_exceptions(exc):
     assert any("bronze_ingest_checkpoints" in query for query in clickhouse.queries)
     if is_rate_limited:
         assert any("bronze_requests" in query for query in clickhouse.queries)
-    assert checkpoint.writes == []
-    assert checkpoint.storage[key] == "cursor-before"
+    assert sync_state.storage[key] == "cursor-before"
     report = status.reports[-1]
     if is_rate_limited:
         assert report["status"] == "rate_limited"
@@ -597,22 +599,34 @@ def test_harvest_records_error_state_on_client_exceptions(exc):
     assert report["stalled_since"] is not None
 
 
-def test_checkpoint_lag_logs_risk_when_stale_file(tmp_path, caplog):
+def test_sync_state_read_failure_sets_error_without_fresh_start():
+    class _FailingSyncStateStore(_DummySyncStateStore):
+        def latest_cursor(self, queue_key: str, *, statuses=("success", "idle")):
+            raise ClickHouseClientError("state unavailable")
+
+    harvester, clickhouse, *_ = _build_harvester(
+        payload={"next_change_id": "fresh-id", "stashes": []},
+        sync_state=_FailingSyncStateStore(),
+    )
+
+    harvester._harvest("pc", "Synthesis", dry_run=False)
+
+    assert all("raw_public_stash_pages" not in query for query in clickhouse.queries)
+    assert any("bronze_ingest_checkpoints" in query for query in clickhouse.queries)
+
+
+def test_checkpoint_lag_logs_risk_when_stale_state(caplog):
     caplog.set_level(logging.WARNING, logger="poe_trade.ingestion.market_harvester")
     caplog.clear()
-    key = "pc:Synthesis"
-    store = _DummyCheckpointStore(directory=str(tmp_path), initial={key: "cursor-old"})
-    stale_ts = (
-        time.time() - 301
-    )  # FIX: more than _CHECKPOINT_LAG_THRESHOLD_SECONDS (300s)
-    os.utime(store.path(key), (stale_ts, stale_ts))
-    # FIX: provide a minimal valid payload for _build_harvester
+    key = "psapi:pc"
+    store = _DummySyncStateStore(initial={key: "cursor-old"})
+    store.state_ts = datetime.now(timezone.utc) - timedelta(seconds=301)
     harvester, *_ = _build_harvester(
         payload={
             "next_change_id": "fresh-id",
             "stashes": [{"id": "stash-a", "league": "Synthesis", "realm": "pc"}],
         },
-        checkpoint_store=store,
+        sync_state=store,
     )
     harvester._harvest("pc", "Synthesis", dry_run=False)
     pattern = (
@@ -623,7 +637,7 @@ def test_checkpoint_lag_logs_risk_when_stale_file(tmp_path, caplog):
     assert any(re.search(pattern, record.getMessage()) for record in caplog.records)
 
 
-def test_checkpoint_lag_risk_skips_when_checkpoint_missing(caplog):
+def test_checkpoint_lag_risk_skips_when_state_missing(caplog):
     caplog.set_level(logging.WARNING, logger="poe_trade.ingestion.market_harvester")
     caplog.clear()
     # FIX: provide a minimal valid payload for _build_harvester
@@ -640,22 +654,18 @@ def test_checkpoint_lag_risk_skips_when_checkpoint_missing(caplog):
     )
 
 
-def test_checkpoint_lag_risk_skips_when_within_threshold(tmp_path, caplog):
+def test_checkpoint_lag_risk_skips_when_within_threshold(caplog):
     caplog.set_level(logging.WARNING, logger="poe_trade.ingestion.market_harvester")
     caplog.clear()
-    key = "pc:Synthesis"
-    store = _DummyCheckpointStore(
-        directory=str(tmp_path), initial={key: "cursor-fresh"}
-    )
-    fresh_ts = time.time()
-    os.utime(store.path(key), (fresh_ts, fresh_ts))
-    # FIX: provide a minimal valid payload for _build_harvester
+    key = "psapi:pc"
+    store = _DummySyncStateStore(initial={key: "cursor-fresh"})
+    store.state_ts = datetime.now(timezone.utc) - timedelta(seconds=60)
     harvester, *_ = _build_harvester(
         payload={
             "next_change_id": "fresh-id",
             "stashes": [{"id": "stash-a", "league": "Synthesis", "realm": "pc"}],
         },
-        checkpoint_store=store,
+        sync_state=store,
     )
     harvester._harvest("pc", "Synthesis", dry_run=False)
     assert not any(
@@ -670,8 +680,8 @@ def test_rate_limited_status_pauses_polling_and_logs_bronze_requests():
         primary_status_code=429,
         primary_headers={"Retry-After": "30", "X-Rate-Limit-Client": "1:5:1"},
     )
-    harvester, clickhouse, checkpoint, status = _build_harvester(
-        checkpoint={"pc:Synthesis": "cursor-rate"},
+    harvester, clickhouse, sync_state, status = _build_harvester(
+        checkpoint={"psapi:pc": "cursor-rate"},
         client=client,
     )
 
@@ -694,3 +704,99 @@ def test_rate_limited_status_pauses_polling_and_logs_bronze_requests():
     second_report = status.reports[-1]
     assert second_report["status"] == "rate_limited"
     assert len(client.calls) == calls_before_second
+
+
+def test_run_harvests_each_realm_once_even_with_multiple_leagues(monkeypatch):
+    harvester, *_ = _build_harvester(payload={"next_change_id": "next", "stashes": []})
+    calls = []
+
+    def _record(realm: str, league: str, dry_run: bool) -> None:
+        calls.append((realm, league, dry_run))
+
+    monkeypatch.setattr(harvester, "_harvest", _record)
+
+    harvester.run(
+        ("pc", "xbox"), ("Synthesis", "Affliction"), 0.0, dry_run=True, once=True
+    )
+
+    assert calls == [("pc", "Synthesis", True), ("xbox", "Synthesis", True)]
+
+
+def test_harvest_prefers_cursor_file_override(tmp_path):
+    payload = {
+        "next_change_id": "3047361752-2988787889-2913372319-3248177543-3139899952",
+        "stashes": [{"id": "stash-file", "league": "Synthesis", "realm": "pc"}],
+    }
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text(
+        "3047361752-2988787889-2913372319-3248177543-3139899950\n",
+        encoding="utf-8",
+    )
+    client = _DummyPoeClient(payload=payload)
+    harvester, *_ = _build_harvester(
+        payload=payload,
+        checkpoint={
+            "psapi:pc": "3047361752-2988787889-2913372319-3248177543-3139899951"
+        },
+        client=client,
+        cursor_file_path=str(cursor_file),
+    )
+
+    harvester._harvest("pc", "Synthesis", dry_run=False)
+
+    assert client.calls[0] == (
+        "GET",
+        "public-stash-tabs",
+        {"id": "3047361752-2988787889-2913372319-3248177543-3139899950"},
+    )
+
+
+def test_harvest_writes_latest_cursor_to_file(tmp_path):
+    payload = {
+        "next_change_id": "3047361752-2988787889-2913372319-3248177543-3139899952",
+        "stashes": [{"id": "stash-save", "league": "Synthesis", "realm": "pc"}],
+    }
+    cursor_file = tmp_path / "cursor"
+    client = _DummyPoeClient(payload=payload)
+    harvester, *_ = _build_harvester(
+        payload=payload,
+        checkpoint={
+            "psapi:pc": "3047361752-2988787889-2913372319-3248177543-3139899951"
+        },
+        client=client,
+        cursor_file_path=str(cursor_file),
+    )
+
+    harvester._harvest("pc", "Synthesis", dry_run=False)
+
+    assert (
+        cursor_file.read_text(encoding="utf-8").strip()
+        == "3047361752-2988787889-2913372319-3248177543-3139899952"
+    )
+
+
+def test_harvest_ignores_invalid_cursor_file_value(tmp_path):
+    payload = {
+        "next_change_id": "3047361752-2988787889-2913372319-3248177543-3139899952",
+        "stashes": [{"id": "stash-invalid", "league": "Synthesis", "realm": "pc"}],
+    }
+    cursor_file = tmp_path / "cursor"
+    cursor_file.write_text("fresh-id\n", encoding="utf-8")
+    client = _DummyPoeClient(payload=payload)
+    harvester, *_ = _build_harvester(
+        payload=payload,
+        checkpoint={
+            "psapi:pc": "3047361752-2988787889-2913372319-3248177543-3139899951"
+        },
+        client=client,
+        cursor_file_path=str(cursor_file),
+    )
+
+    harvester._harvest("pc", "Synthesis", dry_run=False)
+
+    assert client.calls[0] == (
+        "GET",
+        "public-stash-tabs",
+        {"id": "3047361752-2988787889-2913372319-3248177543-3139899951"},
+    )
+    assert cursor_file.read_text(encoding="utf-8").strip() == payload["next_change_id"]

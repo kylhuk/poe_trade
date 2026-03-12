@@ -1,0 +1,8 @@
+poe_trade/strategy/backtest.py:        "run_id, strategy_id, league, lookback_days, status, opportunity_count, expected_profit_chaos, expected_roi, confidence, summary "
+poe_trade/strategy/backtest.py:        "(run_id, strategy_id, league, lookback_days, status, opportunity_count, expected_profit_chaos, expected_roi, confidence, summary, recorded_at)\n"
+tests/unit/test_cli_research.py:        BACKTEST_SUMMARY_HEADER = "run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary"
+tests/unit/test_cli_research.py:        BACKTEST_SUMMARY_HEADER = "run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary"
+tests/unit/test_cli_research.py:        "run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary",
+tests/unit/test_cli_research.py:        BACKTEST_SUMMARY_HEADER = "run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary"
+tests/unit/test_cli_research.py:        "run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary",
+tests/unit/test_strategy_backtest.py:        "run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary"

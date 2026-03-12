@@ -1,0 +1,17 @@
+id = "dump_tab_reprice"
+name = "Dump Tab Repricing"
+enabled = false
+priority = 6
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "growth"
+
+[minima]
+expected_profit_chaos = 25
+roi = 0.15
+confidence = 0.50
+
+[params]
+category = "other"
+min_sample_count = 15
+cooldown_minutes = 60

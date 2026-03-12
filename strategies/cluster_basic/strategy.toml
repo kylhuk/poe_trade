@@ -1,0 +1,17 @@
+id = "cluster_basic"
+name = "Basic Cluster Jewel Repricing"
+enabled = true
+priority = 8
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "growth"
+
+[minima]
+expected_profit_chaos = 20
+roi = 0.15
+confidence = 0.58
+
+[params]
+category = "cluster_jewel"
+min_sample_count = 20
+cooldown_minutes = 120

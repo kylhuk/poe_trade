@@ -1,0 +1,90 @@
+{
+  "as_of_ts": "2026-03-12T20:18:16+00:00",
+  "base_type_count": 3279,
+  "category_breakdown": [
+    {
+      "key": "other",
+      "value": 6405935
+    },
+    {
+      "key": "cluster_jewel",
+      "value": 177497
+    },
+    {
+      "key": "flask",
+      "value": 172487
+    },
+    {
+      "key": "map",
+      "value": 53661
+    },
+    {
+      "key": "scarab",
+      "value": 14970
+    },
+    {
+      "key": "essence",
+      "value": 12895
+    },
+    {
+      "key": "fossil",
+      "value": 9154
+    },
+    {
+      "key": "logbook",
+      "value": 3845
+    }
+  ],
+  "chosen_backend": "cpu",
+  "clean_currency_rows": 6728467,
+  "default_workers": 6,
+  "hardware_profile": {
+    "available_ram_gb": 5.54,
+    "backend_availability": {
+      "nvidia_smi": false,
+      "rocm": false
+    },
+    "cpu_cores": 12,
+    "gpu_backend_available": false,
+    "machine": "Linux-x86_64",
+    "total_ram_gb": 31.35
+  },
+  "league": "Mirage",
+  "market_context_coverage": {
+    "gold_currency_ref_hour_rows": 1418,
+    "gold_liquidity_ref_hour_rows": 33,
+    "gold_listing_ref_hour_rows": 7385
+  },
+  "memory_budget_gb": 2.77,
+  "mod_storage_breakdown": {
+    "crafted_mod_rows": 197751,
+    "enchant_mod_rows": 232922,
+    "explicit_mod_rows": 6344849,
+    "fractured_mod_rows": 186970,
+    "implicit_mod_rows": 3039692
+  },
+  "outlier_summary": {
+    "parse_failure": 24233,
+    "q01_price_amount": 1.0,
+    "q99_price_amount": 100.0,
+    "quarantined_high_anchor": 43281,
+    "quarantined_low_anchor": 8234,
+    "trainable": 6798929
+  },
+  "poeninja_snapshot_rows": 0,
+  "priced_rows": 6850444,
+  "sale_proxy_rows": 0,
+  "target_contract": {
+    "description": "v1 target for additive offline pricing in the isolated poe-ml tool surface",
+    "name": "execution-aware league price in chaos",
+    "recommendation_semantics": "recommended executable ask price expected to clear within 24h when sale_probability >= 0.5",
+    "required_label_fields": [
+      "label_source",
+      "label_quality",
+      "as_of_ts",
+      "league",
+      "outlier_status"
+    ]
+  },
+  "total_rows": 8976060
+}

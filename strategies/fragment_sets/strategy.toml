@@ -1,0 +1,17 @@
+id = "fragment_sets"
+name = "Fragment Set Assembly"
+enabled = true
+priority = 9
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "bootstrap"
+
+[minima]
+expected_profit_chaos = 15
+roi = 0.15
+confidence = 0.60
+
+[params]
+category = "other"
+min_sample_count = 20
+cooldown_minutes = 120

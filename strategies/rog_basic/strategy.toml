@@ -1,0 +1,17 @@
+id = "rog_basic"
+name = "Rog Valuation"
+enabled = false
+priority = 7
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "growth"
+
+[minima]
+expected_profit_chaos = 40
+roi = 0.20
+confidence = 0.55
+
+[params]
+category = "other"
+min_sample_count = 20
+cooldown_minutes = 120

@@ -2,6 +2,9 @@
      <!-- Listen wildcard address to allow accepting connections from other containers and host network. -->
     <listen_host>0.0.0.0</listen_host>
     <listen_try>1</listen_try>
+    <merge_tree>
+        <allow_nullable_key>1</allow_nullable_key>
+    </merge_tree>
 
     <!--
     <logger>

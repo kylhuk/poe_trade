@@ -1,0 +1,11 @@
+{
+  "dataset_table": "poe_trade.ml_price_dataset_v1",
+  "league": "Mirage",
+  "sale_label_quality_mix": [
+    {
+      "label_quality": "high",
+      "rows": 704613
+    }
+  ],
+  "trained_at": "2026-03-12 20:44:13"
+}

@@ -1,23 +1,32 @@
 import unittest
-from pathlib import Path
+from types import SimpleNamespace
 
-from poe_trade.ingestion.market_harvester import MarketHarvester, OAuthToken
+from poe_trade.db import ClickHouseClient
+from poe_trade.ingestion.market_harvester import (
+    MarketHarvester,
+    OAuthClient,
+    OAuthToken,
+    oauth_client_factory,
+)
+from poe_trade.ingestion.poe_client import PoeClient, PoeResponse
+from poe_trade.ingestion.rate_limit import RateLimitPolicy
+from poe_trade.ingestion.status import StatusReporter
+from poe_trade.ingestion.sync_state import QueueState, SyncStateStore
 
 
-class _DummyMetadataResponse:
+class _DummyMetadataResponse(PoeResponse):
     def __init__(self, payload):
-        self.payload = payload
-        self.headers = {}
-        self.status_code = 200
-        self.attempts = 1
-        self.duration_ms = 0.0
+        super().__init__(payload, {}, 200, 1, 0.0)
 
 
-class _StubPoeClient:
+class _StubPoeClient(PoeClient):
     def __init__(self):
+        super().__init__(
+            "http://poe.example", RateLimitPolicy(1, 0.1, 0.2, 0.0), "test-agent", 1.0
+        )
         self.bearer = None
         self.calls: list[
-            tuple[str, str, dict[str, str] | None, object | None, object | None]
+            tuple[str, str, object | None, object | None, object | None]
         ] = []
 
     def set_bearer_token(self, token: str | None) -> None:
@@ -32,29 +41,40 @@ class _StubPoeClient:
         return _DummyMetadataResponse(payload)
 
 
-class _StubClickHouseClient:
+class _StubClickHouseClient(ClickHouseClient):
+    def __init__(self):
+        super().__init__(endpoint="http://clickhouse")
+
     def execute(self, query):
-        pass
+        return ""
 
 
-class _StubCheckpointStore:
-    def read(self, key):
+class _StubSyncStateStore(SyncStateStore):
+    def __init__(self):
+        super().__init__(_StubClickHouseClient())
+        self.calls = []
+
+    def latest_cursor(self, queue_key, *, statuses=("success", "idle")):
+        self.calls.append((queue_key, tuple(statuses)))
         return None
 
-    def write(self, key, value):
-        pass
-
-    def path(self, key: str) -> Path:
-        return Path(f"/tmp/checkpoints/{key}.txt")
+    def latest_state(self, queue_key, *, statuses=("success", "idle")):
+        return None
 
 
-class _StubStatusReporter:
+class _StubStatusReporter(StatusReporter):
+    def __init__(self):
+        super().__init__(_StubClickHouseClient(), "test")
+
     def report(self, *args, **kwargs):
-        pass
+        return None
 
 
-class _StubAuthClient:
+class _StubAuthClient(OAuthClient):
     def __init__(self) -> None:
+        super().__init__(
+            _StubPoeClient(), "client", "secret", "client_credentials", "service:psapi"
+        )
         self.calls = 0
 
     def refresh(self) -> OAuthToken:
@@ -63,13 +83,33 @@ class _StubAuthClient:
 
 
 class MarketHarvesterAuthTests(unittest.TestCase):
+    def test_oauth_factory_requires_enabled_feed_scopes(self):
+        settings = SimpleNamespace(
+            oauth_client_id="client",
+            oauth_client_secret="secret",
+            oauth_grant_type="client_credentials",
+            oauth_scope="service:psapi",
+            enable_psapi=True,
+            enable_cxapi=True,
+            rate_limit_max_retries=1,
+            rate_limit_backoff_base=0.1,
+            rate_limit_backoff_max=0.2,
+            rate_limit_jitter=0.0,
+            poe_auth_base_url="https://auth.example",
+            poe_user_agent="test-agent",
+            poe_request_timeout=1.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "service:cxapi"):
+            oauth_client_factory(settings)
+
     def test_refreshes_token_before_harvest(self):
         client = _StubPoeClient()
         auth_client = _StubAuthClient()
         harvester = MarketHarvester(
             client,
             _StubClickHouseClient(),
-            _StubCheckpointStore(),
+            _StubSyncStateStore(),
             _StubStatusReporter(),
             auth_client=auth_client,
         )
@@ -83,7 +123,7 @@ class MarketHarvesterAuthTests(unittest.TestCase):
         harvester = MarketHarvester(
             client,
             _StubClickHouseClient(),
-            _StubCheckpointStore(),
+            _StubSyncStateStore(),
             _StubStatusReporter(),
             auth_client=auth_client,
         )

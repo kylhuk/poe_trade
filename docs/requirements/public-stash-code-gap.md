@@ -2,7 +2,7 @@
 
 ## Current state
 
-- `poe_trade/ingestion/market_harvester.py` runs the harvest loop (realms × leagues), reads/writes the `CheckpointStore`, forwards `next_change_id` as the `id` query param, and streams every stash payload into `poe_trade.raw_public_stash_pages` while reporting status.
+- `poe_trade/ingestion/market_harvester.py` runs one PSAPI queue per realm, reads the latest cursor from ClickHouse checkpoint history, forwards `next_change_id` as the `id` query param, and streams stash payloads into `poe_trade.raw_public_stash_pages` while reporting queue-based status.
 - `poe_trade/ingestion/poe_client.py` forms HTTP calls, honors `RateLimitPolicy`, retries with exponential backoff/jitter, and treats a 429 as a trigger to sleep before the next attempt.
 - `poe_trade/services/market_harvester.py` wires the hunter with configuration, rate-limit policy, ClickHouse client, checkpoints, OAuth, and exposes `--league/--realm/--interval/--dry-run/--once` CLI switches.
 - `poe_trade/config/constants.py` currently defaults `poe_api_base_url` to `https://api.pathofexile.com`, matching the official host that `settings.get_settings()` surfaces for every harvester caller.
@@ -13,7 +13,7 @@
 | Requirement | Current coverage | Status |
 |-------------|------------------|--------|
 | Official base URL (`https://api.pathofexile.com`) | `DEFAULT_POE_API_BASE_URL` is set to `https://api.pathofexile.com`, and `settings.get_settings()` plus every harvester client source that constant before building requests, so the official host is the default. | Implemented (default official host). |
-| next_change_id loop & checkpointing | `MarketHarvester._harvest` reads `CheckpointStore`, passes the last cursor as `id`, validates payload shape (`next_change_id` + `stashes`), and refuses checkpoint advancement on stale cursor (`next_change_id == cursor`) while reporting `stale cursor`. | Implemented (validated cursor loop with stale no-op guard). |
+| next_change_id loop & checkpointing | `MarketHarvester._harvest` reads the latest queue cursor from ClickHouse, passes the last cursor as `id`, validates payload shape (`next_change_id` + `stashes`), reports `idle` when the stream has caught up, and refuses stale advancement when `next_change_id == cursor` with non-empty payloads. | Implemented (queue-based cursor loop with idle/stale guard). |
 | Rate-limit/backoff + 429 behavior | `PoeClient`/`RateLimitPolicy` compute Retry-After, exponential backoff with jitter, honor `Retry-After` headers, and limit retries to `cfg.rate_limit_max_retries`. | Implemented (per file reference). |
 | Deterministic emission/idempotency expectations | Ingested rows include `checkpoint`, `next_change_id`, and `stash_id`; stale cursor requests now skip emission entirely, and `_rows_from_payload` deduplicates repeated non-empty stash IDs inside a single payload before insert. | Implemented (no stale re-emits + payload-level stash dedup). |
 | CLI entrypoint/operator usability | `poe_trade/services/market_harvester.py` creates the CLI service, enforces OAuth precheck with explicit env guidance, and `poe_trade/cli.py` exposes it via the `service` subcommand with flag forwarding. | Implemented (service now fails fast with actionable credential guidance). |
@@ -40,4 +40,4 @@
 
 - `poe_trade.raw_public_stash_pages` is append-only; adding deterministic emission metadata must avoid rewriting existing rows and should only append new columns or audit tables so ClickHouse readers retain backwards compatibility.
 - Base URL default is now aligned to `https://api.pathofexile.com`; operators can still override `POE_API_BASE_URL` for controlled migrations or backfill experiments.
-- Any checkpoint-change logic must not delete stored cursors: keep the file-backed checkpoints append-only, and ensure new validation merely raises/logs errors without removing existing checkpoint files.
+- Any checkpoint-change logic must not delete stored cursors: keep the ClickHouse checkpoint history append-only, and ensure new validation merely raises/logs errors without silently rewinding queue state.

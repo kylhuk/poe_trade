@@ -1,0 +1,38 @@
+name: Python CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit
+
+      - name: Smoke test CLI surfaces
+        run: |
+          python -m poe_trade.cli --help
+          python -m poe_trade.cli service --name market_harvester -- --help
+          python -m poe_trade.cli refresh gold --group refs --dry-run
+          python -m poe_trade.cli strategy list
+          python -m poe_trade.cli research backtest --strategy bulk_essence --league Mirage --days 14 --dry-run
+          python -m poe_trade.cli scan once --league Mirage --dry-run
+          python -m poe_trade.cli journal buy --strategy bulk_essence --league Mirage --item-or-market-key sample --price-chaos 100 --quantity 20 --dry-run
+          python -m poe_trade.cli report daily --help
+          python -m poe_trade.cli alerts list --help
+          python -m poe_trade.cli sync psapi-once --help

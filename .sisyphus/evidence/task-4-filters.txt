@@ -1,0 +1,8 @@
+poe_trade/sql/strategy/advanced_rare_finish/backtest.sql:    time_bucket,
+poe_trade/sql/strategy/advanced_rare_finish/backtest.sql:    coalesce(league, '') AS league,
+poe_trade/sql/strategy/corruption_ev/backtest.sql:    time_bucket,
+poe_trade/sql/strategy/corruption_ev/backtest.sql:    coalesce(league, '') AS league,
+poe_trade/sql/strategy/flask_basic/backtest.sql:    time_bucket,
+poe_trade/sql/strategy/flask_basic/backtest.sql:    coalesce(league, '') AS league,
+poe_trade/sql/strategy/high_dim_jewels/backtest.sql:    time_bucket,
+poe_trade/sql/strategy/high_dim_jewels/backtest.sql:    coalesce(league, '') AS league,

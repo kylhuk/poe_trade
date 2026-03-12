@@ -28,6 +28,56 @@ class SettingsAliasesTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertEqual(settings.checkpoint_dir, "/tmp/poe-cursors")
 
+    def test_neoplanus_runtime_defaults(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.ingest_contract_version, 2)
+        self.assertTrue(settings.enable_psapi)
+        self.assertFalse(settings.enable_cxapi)
+        self.assertEqual(settings.psapi_poll_seconds, 30.0)
+        self.assertEqual(settings.cxapi_backfill_hours, 168)
+        self.assertEqual(settings.cxapi_hour_offset_seconds, 15)
+        self.assertEqual(settings.refresh_refs_minutes, 5)
+        self.assertEqual(settings.scan_minutes, 5)
+        self.assertEqual(settings.raw_psapi_ttl_days, 21)
+        self.assertEqual(settings.raw_cx_ttl_days, 365)
+        self.assertEqual(settings.silver_ttl_days, 90)
+
+    def test_psapi_poll_seconds_falls_back_to_market_poll_interval(self):
+        env = {
+            "POE_MARKET_POLL_INTERVAL": "12",
+            "POE_PSAPI_POLL_SECONDS": "",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.psapi_poll_seconds, 12.0)
+
+    def test_neoplanus_runtime_overrides(self):
+        env = {
+            "POE_ENABLE_PSAPI": "false",
+            "POE_ENABLE_CXAPI": "true",
+            "POE_PSAPI_POLL_SECONDS": "45",
+            "POE_CXAPI_BACKFILL_HOURS": "24",
+            "POE_CXAPI_HOUR_OFFSET_SECONDS": "30",
+            "POE_REFRESH_REFS_MINUTES": "10",
+            "POE_SCAN_MINUTES": "15",
+            "POE_RAW_PSAPI_TTL_DAYS": "14",
+            "POE_RAW_CX_TTL_DAYS": "180",
+            "POE_SILVER_TTL_DAYS": "60",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings.from_env()
+        self.assertFalse(settings.enable_psapi)
+        self.assertTrue(settings.enable_cxapi)
+        self.assertEqual(settings.psapi_poll_seconds, 45.0)
+        self.assertEqual(settings.cxapi_backfill_hours, 24)
+        self.assertEqual(settings.cxapi_hour_offset_seconds, 30)
+        self.assertEqual(settings.refresh_refs_minutes, 10)
+        self.assertEqual(settings.scan_minutes, 15)
+        self.assertEqual(settings.raw_psapi_ttl_days, 14)
+        self.assertEqual(settings.raw_cx_ttl_days, 180)
+        self.assertEqual(settings.silver_ttl_days, 60)
+
     def test_clickhouse_client_aliases(self):
         env = {
             "CH_USER": "writer",

@@ -139,6 +139,9 @@ def _resolve_oauth_client_secret() -> str:
 class Settings:
     realms: tuple[str, ...]
     leagues: tuple[str, ...]
+    ingest_contract_version: int
+    enable_psapi: bool
+    enable_cxapi: bool
     chaos_currency: str
     time_buckets: tuple[str, ...]
     thresholds: dict[str, float]
@@ -155,6 +158,14 @@ class Settings:
     checkpoint_dir: str
     market_poll_interval: float
     stash_poll_interval: float
+    psapi_poll_seconds: float
+    cxapi_backfill_hours: int
+    cxapi_hour_offset_seconds: int
+    refresh_refs_minutes: int
+    scan_minutes: int
+    raw_psapi_ttl_days: int
+    raw_cx_ttl_days: int
+    silver_ttl_days: int
     stash_api_path: str
     stash_bootstrap_until_league: str
     stash_bootstrap_from_beginning: bool
@@ -169,6 +180,13 @@ class Settings:
         return cls(
             realms=_parse_env_list("POE_REALMS", constants.DEFAULT_REALMS),
             leagues=_parse_env_list("POE_LEAGUES", constants.DEFAULT_LEAGUES),
+            ingest_contract_version=constants.INGEST_CONTRACT_VERSION,
+            enable_psapi=_parse_env_bool(
+                "POE_ENABLE_PSAPI", constants.DEFAULT_ENABLE_PSAPI
+            ),
+            enable_cxapi=_parse_env_bool(
+                "POE_ENABLE_CXAPI", constants.DEFAULT_ENABLE_CXAPI
+            ),
             chaos_currency=os.getenv(
                 "POE_CHAOS_CURRENCY", constants.DEFAULT_CHAOS_CURRENCY
             ),
@@ -218,6 +236,36 @@ class Settings:
             stash_poll_interval=_parse_env_float(
                 "POE_STASH_POLL_INTERVAL",
                 constants.DEFAULT_STASH_POLL_INTERVAL,
+            ),
+            psapi_poll_seconds=_parse_env_float(
+                "POE_PSAPI_POLL_SECONDS",
+                _parse_env_float(
+                    "POE_MARKET_POLL_INTERVAL", constants.DEFAULT_PSAPI_POLL_SECONDS
+                ),
+            ),
+            cxapi_backfill_hours=_parse_env_int(
+                "POE_CXAPI_BACKFILL_HOURS",
+                constants.DEFAULT_CXAPI_BACKFILL_HOURS,
+            ),
+            cxapi_hour_offset_seconds=_parse_env_int(
+                "POE_CXAPI_HOUR_OFFSET_SECONDS",
+                constants.DEFAULT_CXAPI_HOUR_OFFSET_SECONDS,
+            ),
+            refresh_refs_minutes=_parse_env_int(
+                "POE_REFRESH_REFS_MINUTES",
+                constants.DEFAULT_REFRESH_REFS_MINUTES,
+            ),
+            scan_minutes=_parse_env_int(
+                "POE_SCAN_MINUTES", constants.DEFAULT_SCAN_MINUTES
+            ),
+            raw_psapi_ttl_days=_parse_env_int(
+                "POE_RAW_PSAPI_TTL_DAYS", constants.DEFAULT_RAW_PSAPI_TTL_DAYS
+            ),
+            raw_cx_ttl_days=_parse_env_int(
+                "POE_RAW_CX_TTL_DAYS", constants.DEFAULT_RAW_CX_TTL_DAYS
+            ),
+            silver_ttl_days=_parse_env_int(
+                "POE_SILVER_TTL_DAYS", constants.DEFAULT_SILVER_TTL_DAYS
             ),
             stash_api_path=_get_env_str(
                 "POE_STASH_API_PATH",

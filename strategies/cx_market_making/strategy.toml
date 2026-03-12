@@ -1,0 +1,17 @@
+id = "cx_market_making"
+name = "Currency Exchange Market Making"
+enabled = false
+priority = 7
+latency_class = "hourly"
+execution_venue = "currency_exchange"
+capital_tier = "growth"
+
+[minima]
+expected_profit_chaos = 15
+roi = 0.05
+confidence = 0.52
+
+[params]
+category = "currency"
+min_sample_count = 10
+cooldown_minutes = 60

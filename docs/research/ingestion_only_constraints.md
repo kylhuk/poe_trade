@@ -20,7 +20,7 @@ Focus on ingesting Path of Exile market snapshots via `market_harvester` and lan
 
 ### Public stash API semantics
 - `/public-stash-tabs` accepts optional `realm` (pc/xbox/sony) and `id` (cursor from `next_change_id`) and always returns `next_change_id` plus `stashes`. Empty `stashes` means “up-to-date”, and a 5-minute delay is noted before new data surfaces, so the harvester should expect burstless polling and avoid tight loops that ignore the documented lag [Doc: API Reference].
-  - `market_harvester` already records `cursor`/`next_change_id` and skips writing if the cursor is unchanged; continue using `CheckpointStore` to persist these cursors so polling resumes exactly where PoE expects it.
+- `market_harvester` records `cursor`/`next_change_id`, reads the latest queue cursor from ClickHouse checkpoint history, reports `idle` when the realm stream is caught up, and treats unchanged non-empty payloads as stale-cursor risk rather than silently advancing.
   - `market_harvester` hits the public stash path (`constants.DEFAULT_POE_STASH_API_PATH`) and flushes snapshots into `poe_trade.raw_account_stash_snapshot` keyed by `next_change_id`; keep cursor logic strict so duplicate captures are avoided.
   - Because public results lag ~5 minutes, schedule polling intervals (the CLI `interval` argument) conservatively (e.g., 30-60s) and treat duplicate `next_change_id` responses as benign (already handled in the code). Private stash snapshots rely on the same cursor semantics, so the same timing constraints apply.
 
@@ -32,7 +32,7 @@ Focus on ingesting Path of Exile market snapshots via `market_harvester` and lan
 
 ### Terms, compliance, and operational notices
 - Terms of Use clause 7 explicitly forbids scraping/mirroring data outside the documented APIs, clause 6/7/9 guard automation/macros, and third-party policy requires a visible “not affiliated” notice plus unique user agents [Doc: Terms + Developer Docs]. Cache data responsibly and, if a CLI is shipped publicly, include `This product isn't affiliated with or endorsed by Grinding Gear Games in any way.` somewhere obvious.
-  - `market_harvester` should never switch to untracked endpoints; keep it limited to `public-stash-tabs` plus `api/trade/data/<cursor>` metadata calls, all of which are documented. The `StatusReporter` already marks `status`/`error` codes, so add user-facing guidance on rate limit messages if the CLI exposes logs.
+- `market_harvester` should never switch to untracked endpoints; keep the core PSAPI path limited to documented `public-stash-tabs[/<realm>]` requests. The `StatusReporter` already marks `status`/`error` codes, so add user-facing guidance on rate limit messages if the CLI exposes logs.
   - Keep the current OAuth configuration scoped to the public endpoint path; any CLI extension should still preserve documented OAuth registration and rate-limit behavior.
   - ClickHouse retains every snapshot, so retain only data allowed by the user’s granted scopes and avoid mixing snapshots from accounts that later revoke consent; respect the documented `invalid requests threshold` by validating required query parameters before sending them upstream.
 

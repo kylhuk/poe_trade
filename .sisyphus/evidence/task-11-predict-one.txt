@@ -1,0 +1,28 @@
+route: fungible_reference
+price_p10: 0.8
+price_p50: 1.0
+price_p90: 1.2
+sale_probability_percent: 60.0
+confidence_percent: 70.0
+fallback_reason: 
+{
+  "confidence": 0.7,
+  "confidence_percent": 70.0,
+  "fallback_reason": "",
+  "league": "Mirage",
+  "parsed_item": {
+    "base_type": "Grim Veil",
+    "category": "map",
+    "item_class": "Maps",
+    "mod_count": 5,
+    "rarity": "Rare"
+  },
+  "price_p10": 0.8,
+  "price_p50": 1.0,
+  "price_p90": 1.2,
+  "route": "fungible_reference",
+  "route_reason": "stackable_or_liquid_family",
+  "sale_probability": 0.6,
+  "sale_probability_percent": 60.0,
+  "support_count_recent": 250
+}

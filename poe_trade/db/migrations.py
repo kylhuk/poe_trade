@@ -32,6 +32,9 @@ def _resolve_migrations_dir(module_path: Path | None = None) -> Path:
 MIGRATIONS_DIR = _resolve_migrations_dir()
 METADATA_TABLE = "poe_schema_migrations"
 LOGGER = logging.getLogger(__name__)
+MIGRATION_QUERY_SETTINGS = {
+    "prefer_column_name_to_alias": "1",
+}
 
 
 @dataclass(frozen=True)
@@ -130,7 +133,7 @@ class MigrationRunner:
                 )
                 continue
             for statement in self._split_sql_statements(migration.sql):
-                self.client.execute(statement)
+                self.client.execute(statement, settings=MIGRATION_QUERY_SETTINGS)
             self._record_applied(migration)
         LOGGER.info("migration run complete")
 

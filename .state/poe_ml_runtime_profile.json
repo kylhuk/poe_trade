@@ -1,0 +1,15 @@
+{
+  "available_ram_gb": 5.37,
+  "backend_availability": {
+    "nvidia_smi": false,
+    "rocm": false
+  },
+  "chosen_backend": "cpu",
+  "cpu_cores": 12,
+  "default_workers": 6,
+  "detected_at": "2026-03-12T20:12:09+00:00",
+  "gpu_backend_available": false,
+  "machine": "Linux-x86_64",
+  "memory_budget_gb": 2.69,
+  "total_ram_gb": 31.35
+}

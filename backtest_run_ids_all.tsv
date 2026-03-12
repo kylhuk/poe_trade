@@ -1,0 +1,13 @@
+strategy_id	status	run_id	error
+advanced_rare_finish	ok	dd35042262104d5994b591f1535fdda4	
+bulk_essence	ok	b00816a0fb2e45ce9573939d991d6a94	
+cluster_basic	ok	13d2a52e8ce648ea918084cfc1299a4d	
+corruption_ev	ok	2b057db28b394618bd97a3709df9440a	
+cx_market_making	ok	eef6ad2ab2aa49e8bb77e928c0fef627	
+dump_tab_reprice	ok	9797f184ac4a4e32ac943aac4bf3f121	
+flask_basic	ok	e06f82a5812747eaa767f3dcee0ca00b	
+fossil_scarcity	ok	6417d997fbea4c01b47b31c26117c6e6	
+fragment_sets	ok	33c836517ee440a19d6ac4ad8234178c	
+high_dim_jewels	ok	34e3bfc85d20423eae4cc2d0c8dfcf43	
+rog_basic	ok	6ed4cd80782c49e1b9f56c7ab1da2b5f	
+scarab_reroll	ok	910789445c5c407dbab6e3000100690d	

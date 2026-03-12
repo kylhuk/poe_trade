@@ -1,0 +1,18 @@
+id = "bulk_essence"
+name = "Bulk Essence Premium"
+enabled = true
+priority = 10
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "bootstrap"
+
+[minima]
+expected_profit_chaos = 20
+roi = 0.20
+confidence = 0.65
+
+[params]
+category = "essence"
+min_sample_count = 30
+target_bulk_size = 20
+cooldown_minutes = 180

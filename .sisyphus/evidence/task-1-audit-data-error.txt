@@ -1,0 +1,1 @@
+league 'Standard' is not yet validated for poe-ml v1; supported: Mirage

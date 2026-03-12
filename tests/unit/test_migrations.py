@@ -17,9 +17,11 @@ class RecordingClient:
     def __init__(self, payload: str = "") -> None:
         self.payload = payload
         self.queries: list[str] = []
+        self.settings: list[dict[str, str] | None] = []
 
-    def execute(self, query: str) -> str:
+    def execute(self, query: str, settings: dict[str, str] | None = None) -> str:
         self.queries.append(query)
+        self.settings.append(settings)
         return self.payload
 
 
@@ -125,7 +127,7 @@ def test_split_sql_statements_handles_quoted_semicolons() -> None:
 
     assert statements == [
         "SELECT ';'",
-        "SELECT \"semi;colon\"",
+        'SELECT "semi;colon"',
         "SELECT `ident;ifier`",
     ]
 
@@ -189,6 +191,10 @@ def test_apply_executes_each_statement_and_records_once(
     assert client.queries == [
         "CREATE DATABASE IF NOT EXISTS poe_trade",
         "CREATE TABLE IF NOT EXISTS poe_trade.demo (id UInt8)",
+    ]
+    assert client.settings == [
+        {"prefer_column_name_to_alias": "1"},
+        {"prefer_column_name_to_alias": "1"},
     ]
     assert recorded == ["0001"]
 

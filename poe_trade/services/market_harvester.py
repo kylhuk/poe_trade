@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
+import os
 from typing import Sequence
 
 from ..config import settings as config_settings
 from ..db import ClickHouseClient
 from ..ingestion import (
-    CheckpointStore,
+    CxapiSync,
     MarketHarvester,
     PoeClient,
-    RateLimitPolicy,
     StatusReporter,
     oauth_client_factory,
 )
+from ..ingestion.rate_limit import RateLimitPolicy
+from ..ingestion.sync_state import SyncStateStore
 
 LOGGER = logging.getLogger(__name__)
 SERVICE_NAME = "market_harvester"
@@ -31,16 +34,19 @@ def _configure_logging() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog=SERVICE_NAME, description="Harvest PoE public stash data"
+        prog=SERVICE_NAME, description="Run the PoE market sync daemon"
     )
     parser.add_argument(
-        "--league", action="append", dest="leagues", help="League to harvest"
+        "--league",
+        action="append",
+        dest="leagues",
+        help="Primary league label for reports/bootstrap",
     )
     parser.add_argument(
-        "--realm", action="append", dest="realms", help="Realm to target"
+        "--realm", action="append", dest="realms", help="Realm queue to target"
     )
     parser.add_argument(
-        "--once", action="store_true", help="Run a single fetch and exit"
+        "--once", action="store_true", help="Run one daemon cycle and exit"
     )
     parser.add_argument("--dry-run", action="store_true", help="Skip ClickHouse writes")
     parser.add_argument(
@@ -59,9 +65,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     _configure_logging()
     cfg = config_settings.get_settings()
-    poll_interval = args.poll_interval or cfg.market_poll_interval
-    leagues = args.leagues or list(cfg.leagues)
+    poll_interval = args.poll_interval or cfg.psapi_poll_seconds
+    leagues = args.leagues or list(cfg.leagues) or [""]
     realms = args.realms or list(cfg.realms)
+
+    if not cfg.enable_psapi and not cfg.enable_cxapi:
+        LOGGER.info(
+            "%s disabled via POE_ENABLE_PSAPI=false and POE_ENABLE_CXAPI=false",
+            SERVICE_NAME,
+        )
+        return 0
 
     bootstrap_until_league = args.bootstrap_until_league
     if bootstrap_until_league is None or not bootstrap_until_league.strip():
@@ -106,19 +119,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     ck_client = ClickHouseClient.from_env(cfg.clickhouse_url)
     status = StatusReporter(ck_client, SERVICE_NAME)
-    checkpoints = CheckpointStore(cfg.checkpoint_dir)
+    sync_state = SyncStateStore(ck_client)
 
-    harvester = MarketHarvester(
-        client,
-        ck_client,
-        checkpoints,
-        status,
-        auth_client=auth_client,
-        service_name=SERVICE_NAME,
-        bootstrap_until_league=bootstrap_until_league,
-        bootstrap_from_beginning=bootstrap_from_beginning,
+    harvester = None
+    if cfg.enable_psapi:
+        harvester = MarketHarvester(
+            client,
+            ck_client,
+            sync_state,
+            status,
+            auth_client=auth_client,
+            service_name=SERVICE_NAME,
+            bootstrap_until_league=bootstrap_until_league,
+            bootstrap_from_beginning=bootstrap_from_beginning,
+            cursor_file_path=os.getenv("POE_CURSOR_FILE", ".state/cursor"),
+        )
+
+    cx_sync = None
+    if cfg.enable_cxapi:
+        cx_sync = CxapiSync(
+            client,
+            ck_client,
+            sync_state,
+            status,
+            auth_client=auth_client,
+            service_name=SERVICE_NAME,
+        )
+
+    scheduler = importlib.import_module("poe_trade.ingestion.scheduler")
+    scheduler.run_market_sync(
+        harvester=harvester,
+        cx_sync=cx_sync,
+        realms=tuple(realms),
+        leagues=tuple(leagues),
+        poll_interval=poll_interval,
+        dry_run=args.dry_run,
+        once=args.once,
+        cxapi_hour_offset_seconds=cfg.cxapi_hour_offset_seconds,
+        refresh_client=ck_client,
+        refresh_refs_minutes=cfg.refresh_refs_minutes,
     )
-    harvester.run(realms, leagues, poll_interval, dry_run=args.dry_run, once=args.once)
     return 0
 
 

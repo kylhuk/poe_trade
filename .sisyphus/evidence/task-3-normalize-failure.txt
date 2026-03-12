@@ -1,0 +1,5 @@
+{"outlier_status":"parse_failure","price_parse_status":"parse_failure","rows":25067}
+{"outlier_status":"quarantined_high_anchor","price_parse_status":"success","rows":41483}
+{"outlier_status":"quarantined_low_anchor","price_parse_status":"success","rows":6654}
+{"outlier_status":"stale_fx","price_parse_status":"success","rows":907556}
+{"outlier_status":"trainable","price_parse_status":"success","rows":6015685}

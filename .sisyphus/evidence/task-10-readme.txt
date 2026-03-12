@@ -1,0 +1,2 @@
+29:- `.venv/bin/python -m poe_trade.cli research backtest --strategy bulk_essence --league Mirage --days 14` prints `run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary` with explicit `completed`, `no_data`, `no_opportunities`, or `failed` status.
+30:- `.venv/bin/python -m poe_trade.cli research backtest-all --league Mirage --days 14 --enabled-only` prints one summary row per enabled strategy using the same canonical header.

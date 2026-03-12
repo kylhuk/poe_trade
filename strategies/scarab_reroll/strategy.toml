@@ -1,0 +1,17 @@
+id = "scarab_reroll"
+name = "Scarab Reroll Arbitrage"
+enabled = false
+priority = 7
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "growth"
+
+[minima]
+expected_profit_chaos = 30
+roi = 0.18
+confidence = 0.58
+
+[params]
+category = "scarab"
+min_sample_count = 20
+cooldown_minutes = 90

@@ -28,9 +28,7 @@ class ClickHouseClient:
     @classmethod
     def from_env(cls, endpoint: str, database: str | None = None) -> "ClickHouseClient":
         resolved_database = (
-            database
-            or os.getenv("POE_CLICKHOUSE_DATABASE")
-            or os.getenv("CH_DATABASE")
+            database or os.getenv("POE_CLICKHOUSE_DATABASE") or os.getenv("CH_DATABASE")
         )
         return cls(
             endpoint=endpoint,
@@ -38,13 +36,11 @@ class ClickHouseClient:
             user=os.getenv("POE_CLICKHOUSE_USER") or os.getenv("CH_USER"),
             password=os.getenv("POE_CLICKHOUSE_PASSWORD") or os.getenv("CH_PASSWORD"),
             timeout=float(
-                os.getenv("POE_CLICKHOUSE_TIMEOUT")
-                or os.getenv("CH_TIMEOUT")
-                or "30"
+                os.getenv("POE_CLICKHOUSE_TIMEOUT") or os.getenv("CH_TIMEOUT") or "30"
             ),
         )
 
-    def execute(self, query: str) -> str:
+    def execute(self, query: str, settings: Mapping[str, str] | None = None) -> str:
         payload = query.encode("utf-8")
         params: Mapping[str, str] = {}
         if self.user:
@@ -53,6 +49,8 @@ class ClickHouseClient:
             params = {**params, "password": self.password}
         if self.database:
             params = {**params, "database": self.database}
+        if settings:
+            params = {**params, **settings}
         url = self._build_url(params)
         request = urllib.request.Request(
             url,
@@ -66,7 +64,9 @@ class ClickHouseClient:
                 text = response.read().decode("utf-8")
                 logger.debug("ClickHouse response length=%d", len(text))
                 return text
-        except urllib.error.HTTPError as exc:  # pragma: no cover - depends on ClickHouse
+        except (
+            urllib.error.HTTPError
+        ) as exc:  # pragma: no cover - depends on ClickHouse
             msg = exc.read().decode("utf-8", errors="ignore")
             logger.error("ClickHouse HTTPError %s: %s", exc.code, msg)
             raise ClickHouseClientError(msg) from exc

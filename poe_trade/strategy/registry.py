@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+import re
+import tomllib
+
+
+STRATEGY_ROOT = Path(__file__).resolve().parents[2] / "strategies"
+SQL_STRATEGY_ROOT = Path(__file__).resolve().parents[1] / "sql" / "strategy"
+
+
+@dataclass(frozen=True)
+class StrategyPack:
+    strategy_id: str
+    name: str
+    enabled: bool
+    priority: int
+    latency_class: str
+    execution_venue: str
+    capital_tier: str
+    metadata_path: Path
+    notes_path: Path
+    discover_sql_path: Path
+    backtest_sql_path: Path
+
+
+def list_strategy_packs() -> list[StrategyPack]:
+    if not STRATEGY_ROOT.exists():
+        return []
+    packs: list[StrategyPack] = []
+    for strategy_dir in sorted(
+        path for path in STRATEGY_ROOT.iterdir() if path.is_dir()
+    ):
+        metadata_path = strategy_dir / "strategy.toml"
+        notes_path = strategy_dir / "notes.md"
+        sql_dir = SQL_STRATEGY_ROOT / strategy_dir.name
+        discover_sql_path = sql_dir / "discover.sql"
+        backtest_sql_path = sql_dir / "backtest.sql"
+        if not metadata_path.exists() or not notes_path.exists():
+            continue
+        if not discover_sql_path.exists() or not backtest_sql_path.exists():
+            continue
+        metadata = tomllib.loads(metadata_path.read_text(encoding="utf-8"))
+        packs.append(
+            StrategyPack(
+                strategy_id=str(metadata["id"]),
+                name=str(metadata["name"]),
+                enabled=bool(metadata.get("enabled", False)),
+                priority=int(metadata.get("priority", 0)),
+                latency_class=str(metadata.get("latency_class", "delayed")),
+                execution_venue=str(metadata.get("execution_venue", "manual_trade")),
+                capital_tier=str(metadata.get("capital_tier", "bootstrap")),
+                metadata_path=metadata_path,
+                notes_path=notes_path,
+                discover_sql_path=discover_sql_path,
+                backtest_sql_path=backtest_sql_path,
+            )
+        )
+    return packs
+
+
+def set_strategy_enabled(strategy_id: str, enabled: bool) -> Path:
+    pack = next(
+        (pack for pack in list_strategy_packs() if pack.strategy_id == strategy_id),
+        None,
+    )
+    if pack is None:
+        raise ValueError(f"Unknown strategy pack: {strategy_id}")
+    original = pack.metadata_path.read_text(encoding="utf-8")
+    metadata = tomllib.loads(original)
+    current_enabled = bool(metadata.get("enabled", False))
+    if current_enabled == enabled:
+        return pack.metadata_path
+    updated = re.sub(
+        r"^enabled\s*=\s*(true|false)\s*$",
+        f"enabled = {'true' if enabled else 'false'}",
+        original,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if updated == original:
+        raise ValueError(f"Strategy pack missing enabled flag: {strategy_id}")
+    pack.metadata_path.write_text(updated, encoding="utf-8")
+    return pack.metadata_path

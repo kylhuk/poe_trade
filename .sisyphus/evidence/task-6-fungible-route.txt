@@ -1,0 +1,14 @@
+{
+  "artifact": "artifacts/ml/mirage_v1/fungible_reference-Mirage.json",
+  "league": "Mirage",
+  "route": "fungible_reference"
+}
+{
+  "comps_table": "poe_trade.ml_comps_v1",
+  "dataset_table": "poe_trade.ml_price_dataset_v1",
+  "league": "Mirage",
+  "model_dir": "artifacts/ml/mirage_v1",
+  "route": "fungible_reference",
+  "rows": 8,
+  "run_id": "eval-fungible_reference-1773348235"
+}

@@ -1,0 +1,124 @@
+{
+  "abstain_rate": 0.05,
+  "confidence_buckets": [
+    {
+      "bucket": "0-40",
+      "rows": 58
+    },
+    {
+      "bucket": "40-60",
+      "rows": 187
+    },
+    {
+      "bucket": "60-80",
+      "rows": 55
+    }
+  ],
+  "family_hotspots": [
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "logbook",
+      "mdape": 4.002142857142856
+    },
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "map",
+      "mdape": 4.002142857142856
+    },
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "fossil",
+      "mdape": 2.0021428571428572
+    },
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "cluster_jewel",
+      "mdape": 2.0021428571428572
+    },
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "scarab",
+      "mdape": 1.870308957142857
+    },
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "other",
+      "mdape": 1.6027191642857144
+    },
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "flask",
+      "mdape": 0.8637226085714288
+    },
+    {
+      "abstain_rate": 0.19642857142857134,
+      "family": "essence",
+      "mdape": 0.8021428571428574
+    }
+  ],
+  "generated_at": "2026-03-12 21:02:38",
+  "league": "Mirage",
+  "low_confidence_reasons": [
+    {
+      "reason": "",
+      "rows": 187
+    },
+    {
+      "reason": "low_support",
+      "rows": 58
+    }
+  ],
+  "model_dir": "artifacts/ml/mirage_v1",
+  "outlier_cleaning_summary": [
+    {
+      "outlier_status": "trainable",
+      "rows": 6071854
+    },
+    {
+      "outlier_status": "stale_fx",
+      "rows": 917049
+    },
+    {
+      "outlier_status": "quarantined_high_anchor",
+      "rows": 42031
+    },
+    {
+      "outlier_status": "parse_failure",
+      "rows": 25188
+    },
+    {
+      "outlier_status": "quarantined_low_anchor",
+      "rows": 6679
+    }
+  ],
+  "route_metrics": [
+    {
+      "abstain_rate": 0.05,
+      "mdape": 1.6000382,
+      "rmsle": 1.6000382,
+      "route": "sparse_retrieval",
+      "wape": 1.6000382
+    },
+    {
+      "abstain_rate": 0.05,
+      "mdape": 1.60055425,
+      "rmsle": 1.60055425,
+      "route": "fallback_abstain",
+      "wape": 1.60055425
+    },
+    {
+      "abstain_rate": 0.05,
+      "mdape": 1.6000382,
+      "rmsle": 1.6000382,
+      "route": "fungible_reference",
+      "wape": 1.6000382
+    },
+    {
+      "abstain_rate": 0.05,
+      "mdape": 1.6000382,
+      "rmsle": 1.6000382,
+      "route": "structured_boosted",
+      "wape": 1.6000382
+    }
+  ]
+}

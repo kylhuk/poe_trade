@@ -1,0 +1,10 @@
+Item Class: Maps
+Rarity: Rare
+Grim Veil
+Cemetery Map
+--------
+Map Tier: 16
+Item Level: 83
+--------
+Monsters have 30% increased Area of Effect
+Players are Cursed with Vulnerability

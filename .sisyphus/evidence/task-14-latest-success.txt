@@ -1,0 +1,6 @@
+{
+  "league": "Mirage",
+  "output_table": "poe_trade.ml_price_predictions_v1",
+  "rows_written": 300,
+  "source": "latest"
+}

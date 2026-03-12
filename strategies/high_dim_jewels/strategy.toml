@@ -1,0 +1,18 @@
+id = "high_dim_jewels"
+name = "High-Dimensional Jewel Valuation"
+enabled = false
+priority = 4
+latency_class = "delayed"
+execution_venue = "manual_trade"
+capital_tier = "advanced"
+
+[minima]
+expected_profit_chaos = 120
+roi = 0.20
+confidence = 0.30
+
+[params]
+category = "cluster_jewel"
+min_sample_count = 10
+cooldown_minutes = 240
+requires_journal = true

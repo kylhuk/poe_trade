@@ -1,80 +1,89 @@
-# Agent Playbook
+# PROJECT KNOWLEDGE BASE
 
-Purpose-built instructions for code-focused agents working inside `github.com/wenga/poe_trade`.
-This repo is currently planning-heavy with markdown, expects future Python modules/scripts for Path of Exile tooling, and relies on ClickHouse for storage.
+**Generated:** 2026-03-10T19:53:14+01:00
+**Commit:** 212ffea
+**Branch:** main
 
-## Repo Context
+## OVERVIEW
 
-- Path of Exile tooling goal: ingest trade data, support pricing heuristics, and surface Leagues/Items for downstream automation.
-- ClickHouse backend hosts historical item snapshots; schema changes go through explicit migrations and queries run against a read-optimized store.
-- Python-first development now drives new features; assume the repo root will eventually have packages such as `poe_trade` and `poe_trade.cli` once contributors add them.
-- Keep opencode hooks and any listed `.opencode/rules/*.md` guidance in mind when editing docs or code.
+Path of Exile ledger repo for ClickHouse-backed ingestion, schema migrations, and operator runbooks.
+The live implementation is a Python 3.11 package in `poe_trade/`; root markdown files are useful context but may lag shipped code.
 
-## Principles
+## STRUCTURE
 
-1. **Speed with proof**: report the commands run plus their output or explain why a run was skipped; never claim completion without evidence.
-1. **Scope discipline**: focus on one concern per edit, keep context limited to relevant files, and avoid dragging unrelated directories into the change.
-1. **Safety & security**: never log secrets, treat ClickHouse queries as production data contracts, and add negative-path coverage when you change authentication or config flow.
+```text
+poe_trade/
+|- poe_trade/              # Python package: config, db, ingestion, services
+|- schema/                 # ClickHouse migrations + sanity queries
+|- docs/                   # Ops runbooks, requirements, research, evidence
+|- tests/unit/             # Unit coverage for config, db, ingestion, services
+|- config/clickhouse/      # ClickHouse server overrides used by local runtime
+|- dashboard/internal/     # Lightweight UI assets
+`- *.md                    # Architecture, backlog, and planning context
+```
 
-## Command Recipes (Python workflow patterns)
+## WHERE TO LOOK
 
-> Repo currently lacks a formal Python package layout; treat the commands below as the templates to apply once `poe_trade` packages or scripts land.
+| Task | Location | Notes |
+|------|----------|-------|
+| Bootstrap local env | `README.md` | Canonical setup, docker, CLI, and migration commands |
+| Run services | `poe_trade/cli.py`, `poe_trade/services/` | `poe-ledger-cli`, `market_harvester`, `poe-migrate` |
+| Change ingestion logic | `poe_trade/ingestion/` | Checkpoints, rate limits, OAuth, metadata fetches |
+| Change ClickHouse access | `poe_trade/db/`, `schema/` | Python client plus SQL migration tree |
+| Update ops docs | `docs/ops-runbook.md`, `docs/evidence/` | Keep commands and tables aligned with code |
+| Add tests | `tests/unit/` | Mirror touched module, keep negative paths covered |
 
-- Create/activate virtualenv (assumes Python 3.11+ installed):
-  ```
-  python -m venv .venv
-  source .venv/bin/activate
-  ```
-- Install dependencies (add `requirements.txt` once it exists or install locally defined extras):
-  ```
-  pip install --upgrade pip
-  pip install -r requirements.txt  # or replace with internal deps when the file is added
-  ```
-- Run linters/formatters (ruff is preferred; add `ruff.toml` when configured):
-  ```
-  ruff check path/to/module  # restrict to touched modules
-  ```
-- Optional static typing (run once mypy config appears):
-  ```
-  mypy poe_trade  # narrow to directories you changed, drop once config exists
-  ```
-- Test suite with pytest (use markers or module paths once tests exist):
-  ```
-  pytest tests/  # swap for targeted `tests/unit/test_item.py` when you edit that area
-  ```
-- Run application CLI or script (replace with actual entry points later):
-  ```
-  python -m poe_trade.cli --help  # substitute real module when created
-  ```
-- Capture command outputs and paste-critical sections into your final note to satisfy the proof requirement.
+## CODE MAP
 
-## ClickHouse Schema & Query Safety
+| Symbol | Type | Location | Role |
+|--------|------|----------|------|
+| `main` | function | `poe_trade/cli.py` | CLI router for service entry points |
+| `Settings` | dataclass | `poe_trade/config/settings.py` | Environment-backed runtime config |
+| `ClickHouseClient` | class | `poe_trade/db/clickhouse.py` | HTTP client for ClickHouse queries |
+| `MigrationRunner` | class | `poe_trade/db/migrations.py` | Loads, statuses, and applies numbered SQL migrations |
+| `MarketHarvester` | class | `poe_trade/ingestion/market_harvester.py` | Public stash ingest loop and checkpoint flow |
+| `StatusReporter` | class | `poe_trade/ingestion/status.py` | Writes operational ingest status |
 
-- Always author additive migrations; never drop columns or tables without a staged data-mirroring plan.
-- Avoid `ALTER TABLE ... DELETE` or other destructive DDL in production. If a cleanup is unavoidable, document the manual approval path and include explicit `NOTE` comments in migrations.
-- Test query changes locally with `clickhouse-local` or a dev ClickHouse cluster before proposing schema tweaks.
-- Clearly state migration intent in PR descriptions: mention the target table, affected columns, and whether the change is backward-compatible.
-- Annotate any script that writes to ClickHouse with a warning comment and link to the migration plan (e.g., `# migration: add future_index to poe.trade_snapshots`).
+## CONVENTIONS
 
-## Documentation & Evidence Discipline
+- Python floor is `>=3.11`; install locally with `.venv/bin/pip install -e .`.
+- Prefer command-first evidence: quote the exact command you ran and the key output.
+- Route runtime config through `poe_trade.config.settings`; `CH_*` aliases are supported, while checkpoint-dir aliases are compatibility-only and no longer define canonical cursor storage.
+- Local orchestration is `docker compose` plus `make up` / `make down`; migrations use `poe-migrate`.
+- Treat root planning docs as context only. For behavior, prefer `README.md`, package code, `schema/`, and `docs/ops-runbook.md`.
 
-- Keep doc style concise and instruction-driven; follow the terse tone already in `AGENTS.md` and related HOWTOs.
-- When referencing commands, specify exact modules/paths that currently exist; explicitly label any references that are planned but not yet implemented.
-- Include minimal but sufficient evidence for assertions: paste the relevant command output snippet or explain why you could not capture it.
-- Treat this file as the authoritative runbook; if you update other docs, mention the change in your summary so future agents know where to look for instructions.
+## ANTI-PATTERNS (THIS PROJECT)
 
-## Working Tree Hygiene, Commit & PR Guidance
+- Never claim build/test/CLI success without output or an explicit `not run` note.
+- Never log secrets or copy OAuth credentials into docs, tests, fixtures, or examples.
+- Never make destructive ClickHouse changes (`DROP`, column reorder, mass delete) without an explicit staged plan.
+- Never revert unrelated dirty-worktree files; inspect `git status` first and leave foreign edits alone.
+- Never document planned commands as if they already exist.
 
-- Assume you may land in a dirty worktree; run `git status` before editing so you know what is already changed.
-- Do not stage or revert files you did not touch unless the user explicitly asks for it.
-- Never amend existing commits; only create commits when the user asks, and keep them scoped and descriptive.
-- When preparing a PR summary, focus on the “why,” cite the commands you ran, and list any remaining manual follow-up (tests, migrations, docs).
+## UNIQUE STYLES
 
-## Uncertainty Handling & Next Steps Checklist
+- Docs stay terse, operational, and evidence-backed.
+- Path of Exile terms stay precise: league, realm, stash, checkpoint, snapshot, trade metadata.
+- Ops docs name concrete tables/views (`bronze_ingest_checkpoints`, `bronze_requests`, `poe_ingest_status`) instead of generic dashboards.
 
-- If requirements are unclear, search the repo for similar patterns before asking; document any assumptions in your final note.
-- Only ask follow-up questions when a missing detail materially affects the outcome or involves secrets/production changes.
-- Next steps checklist:
-  1. Confirm targeted Python commands completed (or note why not).
-  1. Record ClickHouse migration intent and safety notes with the change.
-  1. Suggest 1-2 logical follow-ups (tests, docs, automation) as numbered options in your reply so the user can pick one.
+## COMMANDS
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+.venv/bin/pip install -e .
+.venv/bin/python -m poe_trade.cli --help
+.venv/bin/pytest tests/unit
+docker compose config
+make up
+make down
+poe-migrate --status --dry-run
+poe-migrate --apply
+clickhouse-client --multiquery < schema/sanity/bronze.sql
+```
+
+## NOTES
+
+- `python` is not on PATH in this environment; use `python3` or `.venv/bin/python`.
+- The old root playbook described the package layout as future work; that is stale now.
+- Child `AGENTS.md` files should only add local rules, never restate root safety policy.

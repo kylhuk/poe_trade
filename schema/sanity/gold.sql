@@ -1,30 +1,59 @@
 -- Gold layer sanity checks focused on ingestion health signals
 SELECT
+    realm,
     league,
-    service,
-    count() AS checkpoint_batches,
-    round(avg(retry_count), 2) AS avg_retry_count
-FROM poe_trade.bronze_ingest_checkpoints
-WHERE retrieved_at >= now() - INTERVAL 6 HOUR
+    count() AS market_rows,
+    max(time_bucket) AS latest_hour
+FROM poe_trade.gold_currency_ref_hour
 GROUP BY
-    league,
-    service
-ORDER BY checkpoint_batches DESC
+    realm,
+    league
+ORDER BY latest_hour DESC
 LIMIT 20;
 
 SELECT
+    realm,
+    ifNull(league, 'unknown') AS league,
+    category,
+    count() AS listing_rows,
+    max(time_bucket) AS latest_hour
+FROM poe_trade.gold_listing_ref_hour
+GROUP BY
+    realm,
     league,
-    count() AS trade_rows,
-    quantileExact(0.5)(dateDiff('second', listing_ts, delist_ts)) AS median_listing_duration
-FROM poe_trade.bronze_trade_metadata
-WHERE listing_ts IS NOT NULL
-GROUP BY league
-ORDER BY trade_rows DESC;
+    category
+ORDER BY latest_hour DESC
+LIMIT 20;
 
 SELECT
-    status,
-    count() AS status_rows,
-    round(avg(request_rate), 2) AS avg_request_rate
-FROM poe_trade.poe_ingest_status
-GROUP BY status
-ORDER BY status;
+    realm,
+    ifNull(league, 'unknown') AS league,
+    category,
+    listing_count,
+    priced_listing_count,
+    median_stack_size
+FROM poe_trade.gold_liquidity_ref_hour
+ORDER BY time_bucket DESC
+LIMIT 20;
+
+SELECT
+    realm,
+    ifNull(league, 'unknown') AS league,
+    category,
+    bulk_listing_count,
+    small_listing_count,
+    median_bulk_price_amount,
+    median_small_price_amount
+FROM poe_trade.gold_bulk_premium_hour
+ORDER BY time_bucket DESC
+LIMIT 20;
+
+SELECT
+    realm,
+    ifNull(league, 'unknown') AS league,
+    category,
+    distinct_base_types,
+    listing_count
+FROM poe_trade.gold_set_ref_hour
+ORDER BY time_bucket DESC
+LIMIT 20;
