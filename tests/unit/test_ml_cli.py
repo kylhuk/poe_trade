@@ -132,3 +132,93 @@ def test_audit_data_rejects_unvalidated_league(monkeypatch, capsys):
 
     assert result == 2
     assert "not yet validated" in capsys.readouterr().err
+
+
+def test_train_loop_forwards_bounded_controls(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.settings,
+        "get_settings",
+        lambda: SimpleNamespace(clickhouse_url="http://clickhouse"),
+    )
+
+    class _Client:
+        pass
+
+    monkeypatch.setattr(
+        cli.ClickHouseClient,
+        "from_env",
+        lambda _url: _Client(),
+    )
+
+    class _RuntimeProfile:
+        machine = "linux-x86_64"
+        cpu_cores = 12
+        total_ram_gb = 16.0
+        available_ram_gb = 8.0
+        gpu_backend_available = False
+        backend_availability = {"nvidia_smi": False, "rocm": False}
+        chosen_backend = "cpu"
+        default_workers = 6
+        memory_budget_gb = 4.0
+
+    monkeypatch.setattr(cli, "detect_runtime_profile", lambda: _RuntimeProfile())
+    monkeypatch.setattr(cli, "persist_runtime_profile", lambda _profile: None)
+
+    seen: dict[str, object] = {}
+
+    def _fake_train_loop(
+        _client,
+        *,
+        league,
+        dataset_table,
+        model_dir,
+        max_iterations,
+        max_wall_clock_seconds,
+        no_improvement_patience,
+        min_mdape_improvement,
+        resume,
+    ):
+        seen.update(
+            {
+                "league": league,
+                "dataset_table": dataset_table,
+                "model_dir": model_dir,
+                "max_iterations": max_iterations,
+                "max_wall_clock_seconds": max_wall_clock_seconds,
+                "no_improvement_patience": no_improvement_patience,
+                "min_mdape_improvement": min_mdape_improvement,
+                "resume": resume,
+            }
+        )
+        return {"status": "stopped_budget", "stop_reason": "iteration_budget_exhausted"}
+
+    monkeypatch.setattr(cli, "train_loop", _fake_train_loop)
+
+    result = cli.main(
+        [
+            "train-loop",
+            "--league",
+            "Mirage",
+            "--dataset-table",
+            "poe_trade.ml_price_dataset_v1",
+            "--model-dir",
+            "artifacts/ml/mirage_v1",
+            "--max-iterations",
+            "2",
+            "--max-wall-clock-seconds",
+            "1800",
+            "--no-improvement-patience",
+            "2",
+            "--min-mdape-improvement",
+            "0.005",
+            "--resume",
+        ]
+    )
+
+    assert result == 0
+    assert seen["max_iterations"] == 2
+    assert seen["max_wall_clock_seconds"] == 1800
+    assert seen["no_improvement_patience"] == 2
+    assert seen["min_mdape_improvement"] == 0.005
+    assert seen["resume"] is True
+    assert "iteration_budget_exhausted" in capsys.readouterr().out

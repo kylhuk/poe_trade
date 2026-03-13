@@ -14,6 +14,34 @@ class TargetContract:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class PromotionContract:
+    metric_name: str
+    coverage_floor: float
+    min_mdape_improvement: float
+    protected_cohort_max_regression: float
+    hotspot_top_n: int
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class EvaluationContract:
+    name: str
+    split_kind: str
+    supported_splits: tuple[str, ...]
+    primary_metric: str
+    verdict_enums: tuple[str, ...]
+    loop_status_enums: tuple[str, ...]
+    promotion: PromotionContract
+
+    def to_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["promotion"] = self.promotion.to_dict()
+        return payload
+
+
 TARGET_CONTRACT = TargetContract(
     name="execution-aware league price in chaos",
     description=(
@@ -29,5 +57,27 @@ TARGET_CONTRACT = TargetContract(
         "as_of_ts",
         "league",
         "outlier_status",
+    ),
+)
+
+
+MIRAGE_EVAL_CONTRACT = EvaluationContract(
+    name="mirage_eval_contract_v1",
+    split_kind="rolling",
+    supported_splits=("rolling",),
+    primary_metric="mdape",
+    verdict_enums=("promote", "hold"),
+    loop_status_enums=(
+        "completed",
+        "failed_gates",
+        "stopped_no_improvement",
+        "stopped_budget",
+    ),
+    promotion=PromotionContract(
+        metric_name="mdape",
+        coverage_floor=0.75,
+        min_mdape_improvement=0.005,
+        protected_cohort_max_regression=0.02,
+        hotspot_top_n=12,
     ),
 )

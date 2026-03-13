@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -13,7 +14,7 @@ from poe_trade.db.clickhouse import ClickHouseClientError
 from poe_trade.ingestion.poeninja_snapshot import PoeNinjaClient
 
 from .audit import VALIDATED_LEAGUES
-from .contract import TARGET_CONTRACT
+from .contract import MIRAGE_EVAL_CONTRACT, TARGET_CONTRACT
 
 
 ROUTES = (
@@ -22,6 +23,19 @@ ROUTES = (
     "sparse_retrieval",
     "fallback_abstain",
 )
+
+
+@dataclass(frozen=True)
+class TuningControls:
+    max_iterations: int
+    max_wall_clock_seconds: int
+    no_improvement_patience: int
+    min_mdape_improvement: float
+    warm_start_enabled: bool
+    resume_supported: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -616,11 +630,12 @@ def evaluate_route(
     dataset_table: str,
     model_dir: str,
     comps_table: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
     _ensure_route(route)
     _ensure_route_eval_table(client)
-    run_id = f"eval-{route}-{int(time.time())}"
+    eval_run_id = run_id or f"eval-{route}-{int(time.time())}"
     now = _now_ts()
     rows = _query_rows(
         client,
@@ -643,7 +658,7 @@ def evaluate_route(
         mdape = _to_float(row.get("mdape_proxy"), 0.0)
         insert_rows.append(
             {
-                "run_id": run_id,
+                "run_id": eval_run_id,
                 "route": route,
                 "family": family,
                 "variant": "residual_adjusted"
@@ -667,7 +682,7 @@ def evaluate_route(
         if route == "sparse_retrieval":
             insert_rows.append(
                 {
-                    "run_id": run_id,
+                    "run_id": eval_run_id,
                     "route": route,
                     "family": family,
                     "variant": "comp_baseline",
@@ -688,7 +703,7 @@ def evaluate_route(
             )
     _insert_json_rows(client, "poe_trade.ml_route_eval_v1", insert_rows)
     artifact = {
-        "run_id": run_id,
+        "run_id": eval_run_id,
         "route": route,
         "league": league,
         "dataset_table": dataset_table,
@@ -801,11 +816,13 @@ def evaluate_stack(
     output_dir: str,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
-    if split != "rolling":
-        raise ValueError("only rolling split is supported")
+    _ensure_eval_contract_split(split)
     _ensure_eval_runs_table(client)
+    _ensure_promotion_audit_table(client)
+    _ensure_route_hotspots_table(client)
     run_id = f"stack-{int(time.time())}"
     leakage_path = _write_leakage_artifact(Path(output_dir), run_id, league)
+    contract = MIRAGE_EVAL_CONTRACT
 
     route_results = []
     for route in (
@@ -821,6 +838,7 @@ def evaluate_stack(
             dataset_table=dataset_table,
             model_dir=model_dir,
             comps_table="poe_trade.ml_comps_v1",
+            run_id=run_id,
         )
         route_results.append(route_eval)
         metric_row = _query_rows(
@@ -850,7 +868,7 @@ def evaluate_stack(
                     "run_id": run_id,
                     "route": route,
                     "league": league,
-                    "split_kind": "rolling",
+                    "split_kind": contract.split_kind,
                     "raw_coverage": raw_coverage,
                     "clean_coverage": clean_coverage,
                     "outlier_drop_rate": outlier_drop_rate,
@@ -865,11 +883,66 @@ def evaluate_stack(
                 }
             ],
         )
+    baseline = _latest_run_excluding(client, league=league, run_id=run_id)
+    candidate = _aggregate_eval_run(client, league=league, run_id=run_id)
+    comparison = _candidate_vs_incumbent_summary(
+        candidate=candidate, incumbent=baseline
+    )
+    protected = _protected_cohort_check(
+        client,
+        league=league,
+        candidate_run_id=run_id,
+        incumbent_run_id=baseline.get("run_id") if baseline else None,
+    )
+    comparison["protected_cohort_regression"] = protected
+    verdict = "promote" if _should_promote(comparison) else "hold"
+    stop_reason = _promotion_stop_reason(comparison)
+    hotspot_rows = _build_route_hotspots(
+        client,
+        league=league,
+        candidate_run_id=run_id,
+        incumbent_run_id=baseline.get("run_id") if baseline else None,
+        top_n=contract.promotion.hotspot_top_n,
+    )
+    _insert_json_rows(client, "poe_trade.ml_route_hotspots_v1", hotspot_rows)
+    _insert_json_rows(
+        client,
+        "poe_trade.ml_promotion_audit_v1",
+        [
+            {
+                "league": league,
+                "candidate_run_id": run_id,
+                "incumbent_run_id": str(baseline.get("run_id") or "none")
+                if baseline
+                else "none",
+                "candidate_model_version": f"candidate-{run_id}",
+                "incumbent_model_version": str(baseline.get("run_id") or "none")
+                if baseline
+                else "none",
+                "verdict": verdict,
+                "avg_mdape_candidate": _to_float(candidate.get("avg_mdape"), 1.0),
+                "avg_mdape_incumbent": _to_float(baseline.get("avg_mdape"), 1.0)
+                if baseline
+                else _to_float(candidate.get("avg_mdape"), 1.0),
+                "coverage_candidate": _to_float(candidate.get("avg_cov"), 0.0),
+                "coverage_incumbent": _to_float(baseline.get("avg_cov"), 0.0)
+                if baseline
+                else _to_float(candidate.get("avg_cov"), 0.0),
+                "stop_reason": stop_reason,
+                "recorded_at": _now_ts(),
+            }
+        ],
+    )
     return {
         "run_id": run_id,
         "league": league,
         "routes": route_results,
         "leakage_audit_path": str(leakage_path),
+        "evaluation_contract": contract.to_dict(),
+        "candidate_vs_incumbent": comparison,
+        "route_hotspots": _present_hotspots(hotspot_rows),
+        "promotion_verdict": verdict,
+        "stop_reason": stop_reason,
     }
 
 
@@ -880,18 +953,40 @@ def train_loop(
     dataset_table: str,
     model_dir: str,
     max_iterations: int | None,
+    max_wall_clock_seconds: int | None,
+    no_improvement_patience: int | None,
+    min_mdape_improvement: float | None,
     resume: bool,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
     _ensure_train_runs_table(client)
-    if max_iterations is None:
-        iterations = -1
-    else:
-        iterations = max(1, max_iterations)
+    _ensure_tuning_rounds_table(client)
+    controls = _resolve_tuning_controls(
+        max_iterations=max_iterations,
+        max_wall_clock_seconds=max_wall_clock_seconds,
+        no_improvement_patience=no_improvement_patience,
+        min_mdape_improvement=min_mdape_improvement,
+    )
+    if resume:
+        latest = _latest_train_run_row(client, league)
+        if not latest:
+            raise ValueError("resume requested but no resumable run exists")
+    iterations = controls.max_iterations
     current_version = _active_model_version(client, league)
     completed: list[dict[str, Any]] = []
+    start = time.time()
+    no_improvement_streak = 0
+    best_mdape: float | None = None
+    final_status = "completed"
+    final_stop_reason = "iteration_budget_exhausted"
+    exhausted_iteration_budget = False
     i = 0
-    while iterations < 0 or i < iterations:
+    while i < iterations:
+        elapsed = int(max(time.time() - start, 0))
+        if elapsed >= controls.max_wall_clock_seconds:
+            final_status = "stopped_budget"
+            final_stop_reason = "wall_clock_budget_exhausted"
+            break
         run_id = f"train-{league.lower()}-{int(time.time())}-{i}"
         _write_train_run(
             client,
@@ -905,6 +1000,9 @@ def train_loop(
             eta_seconds=None,
             status="running",
             active_model_version=current_version,
+            stop_reason="running",
+            tuning_controls=controls,
+            eval_run_id="",
         )
         train_all_routes(
             client,
@@ -925,6 +1023,9 @@ def train_loop(
             eta_seconds=None,
             status="running",
             active_model_version=current_version,
+            stop_reason="running",
+            tuning_controls=controls,
+            eval_run_id="",
         )
         eval_result = evaluate_stack(
             client,
@@ -934,7 +1035,12 @@ def train_loop(
             split="rolling",
             output_dir=model_dir,
         )
-        promoted = _promotion_gate(client, league, str(eval_result["run_id"]))
+        eval_run_id = str(eval_result.get("run_id") or "")
+        warm_start_source = (
+            current_version if controls.warm_start_enabled else "cold_start"
+        )
+        comparison = eval_result.get("candidate_vs_incumbent") or {}
+        promoted = bool(eval_result.get("promotion_verdict") == "promote")
         if promoted:
             current_version = f"{league.lower()}-{int(time.time())}"
             _promote_models(
@@ -944,8 +1050,31 @@ def train_loop(
                 model_version=current_version,
             )
             status = "completed"
+            stop_reason = "promoted_against_incumbent"
         else:
             status = "failed_gates"
+            stop_reason = str(eval_result.get("stop_reason") or "failed_quality_gates")
+        latest_mdape = _to_float(comparison.get("candidate_avg_mdape"), 1.0)
+        if (
+            best_mdape is None
+            or (best_mdape - latest_mdape) >= controls.min_mdape_improvement
+        ):
+            best_mdape = latest_mdape
+            no_improvement_streak = 0
+        else:
+            no_improvement_streak += 1
+        _record_tuning_round(
+            client,
+            league=league,
+            run_id=run_id,
+            fit_round=i + 1,
+            warm_start_from=warm_start_source,
+            tuning_config_id=_tuning_config_id(controls),
+            iteration_budget=controls.max_iterations,
+            effective_controls=controls,
+            elapsed_seconds=int(max(time.time() - start, 0)),
+            candidate_vs_incumbent=comparison,
+        )
         _write_train_run(
             client,
             run_id=run_id,
@@ -958,22 +1087,44 @@ def train_loop(
             eta_seconds=0,
             status=status,
             active_model_version=current_version,
+            stop_reason=stop_reason,
+            tuning_controls=controls,
+            eval_run_id=eval_run_id,
         )
         completed.append(
             {
                 "run_id": run_id,
                 "status": status,
                 "promoted_model": current_version if promoted else None,
+                "stop_reason": stop_reason,
+                "candidate_vs_incumbent": comparison,
             }
         )
-        if resume:
-            pass
+        if no_improvement_streak >= controls.no_improvement_patience:
+            final_status = "stopped_no_improvement"
+            final_stop_reason = "no_improvement_patience_exhausted"
+            break
         i += 1
+    if i >= iterations and final_status == "completed":
+        exhausted_iteration_budget = True
+    if exhausted_iteration_budget:
+        final_status = "stopped_budget"
+        final_stop_reason = "iteration_budget_exhausted"
+    elif completed and final_status == "completed":
+        last = completed[-1]
+        final_status = str(last.get("status") or "completed")
+        final_stop_reason = str(last.get("stop_reason") or "completed")
+    if not completed and final_status == "completed":
+        final_status = "stopped_budget"
+        final_stop_reason = "no_iterations_executed"
     return {
         "league": league,
         "iterations": len(completed),
         "runs": completed,
         "active_model_version": current_version,
+        "status": final_status,
+        "stop_reason": final_stop_reason,
+        "tuning_controls": controls.to_dict(),
     }
 
 
@@ -985,7 +1136,7 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
             client,
             " ".join(
                 [
-                    "SELECT run_id, stage, current_route, routes_done, routes_total, rows_processed, eta_seconds, chosen_backend, worker_count, memory_budget_gb, active_model_version, status",
+                    "SELECT run_id, stage, current_route, routes_done, routes_total, rows_processed, eta_seconds, chosen_backend, worker_count, memory_budget_gb, active_model_version, status, stop_reason, tuning_config_id, eval_run_id",
                     "FROM poe_trade.ml_train_runs",
                     f"WHERE league = {_quote(league)}",
                     "ORDER BY updated_at DESC",
@@ -997,13 +1148,29 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
         if not rows:
             return {"league": league, "status": "no_runs"}
         latest = rows[0]
-        latest["eval_feedback"] = _latest_eval_feedback(client, league)
+        eval_run_id = str(latest.get("eval_run_id") or "")
+        if not eval_run_id:
+            eval_run_id = _latest_eval_run_id(client, league)
+        feedback = _eval_feedback_for_run(client, league=league, run_id=eval_run_id)
+        latest["eval_feedback"] = feedback
+        latest["candidate_vs_incumbent"] = feedback.get("candidate_vs_incumbent")
+        latest["latest_avg_mdape"] = feedback.get("latest_avg_mdape")
+        latest["latest_avg_interval_coverage"] = feedback.get(
+            "latest_avg_interval_coverage"
+        )
+        latest["route_hotspots"] = _latest_route_hotspots(
+            client, league, run_id=eval_run_id
+        )
+        latest["promotion_verdict"] = _promotion_verdict_for_run(
+            client, league=league, run_id=eval_run_id
+        )
+        latest["active_model_version"] = _active_model_version(client, league)
         return latest
     rows = _query_rows(
         client,
         " ".join(
             [
-                "SELECT run_id, stage, current_route, routes_done, routes_total, rows_processed, eta_seconds, chosen_backend, worker_count, memory_budget_gb, active_model_version, status",
+                "SELECT run_id, stage, current_route, routes_done, routes_total, rows_processed, eta_seconds, chosen_backend, worker_count, memory_budget_gb, active_model_version, status, stop_reason, tuning_config_id, eval_run_id",
                 "FROM poe_trade.ml_train_runs",
                 f"WHERE league = {_quote(league)} AND run_id = {_quote(run)}",
                 "ORDER BY updated_at DESC",
@@ -1015,54 +1182,110 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
     if not rows:
         return {"league": league, "run_id": run, "status": "not_found"}
     row = rows[0]
-    row["eval_feedback"] = _latest_eval_feedback(client, league)
+    eval_run_id = str(row.get("eval_run_id") or "")
+    if not eval_run_id:
+        eval_run_id = _latest_eval_run_id(client, league)
+    feedback = _eval_feedback_for_run(client, league=league, run_id=eval_run_id)
+    row["eval_feedback"] = feedback
+    row["candidate_vs_incumbent"] = feedback.get("candidate_vs_incumbent")
+    row["latest_avg_mdape"] = feedback.get("latest_avg_mdape")
+    row["latest_avg_interval_coverage"] = feedback.get("latest_avg_interval_coverage")
+    row["route_hotspots"] = _latest_route_hotspots(client, league, run_id=eval_run_id)
+    row["promotion_verdict"] = _promotion_verdict_for_run(
+        client, league=league, run_id=eval_run_id
+    )
+    row["active_model_version"] = _active_model_version(client, league)
     return row
 
 
 def _latest_eval_feedback(client: ClickHouseClient, league: str) -> dict[str, Any]:
+    run_id = _latest_eval_run_id(client, league)
+    if not run_id:
+        return {
+            "status": "no_eval_data",
+            "message": "No evaluation runs found yet.",
+        }
+    return _eval_feedback_for_run(client, league=league, run_id=run_id)
+
+
+def _latest_eval_run_id(client: ClickHouseClient, league: str) -> str:
     eval_runs = _query_rows(
         client,
         " ".join(
             [
-                "SELECT",
-                "run_id,",
-                "avg(coalesce(mdape, 1.0)) AS avg_mdape,",
-                "avg(coalesce(interval_80_coverage, 0.0)) AS avg_cov,",
-                "max(recorded_at) AS recorded_at",
+                "SELECT run_id, max(recorded_at) AS recorded_at",
                 "FROM poe_trade.ml_eval_runs",
                 f"WHERE league = {_quote(league)}",
                 "GROUP BY run_id",
                 "ORDER BY recorded_at DESC",
-                "LIMIT 2",
+                "LIMIT 1",
                 "FORMAT JSONEachRow",
             ]
         ),
     )
     if not eval_runs:
+        return ""
+    return str(eval_runs[0].get("run_id") or "")
+
+
+def _eval_feedback_for_run(
+    client: ClickHouseClient, *, league: str, run_id: str
+) -> dict[str, Any]:
+    if not run_id:
         return {
             "status": "no_eval_data",
             "message": "No evaluation runs found yet.",
         }
-    latest = eval_runs[0]
+    latest_rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT avg(coalesce(mdape, 1.0)) AS avg_mdape, avg(coalesce(interval_80_coverage, 0.0)) AS avg_cov",
+                "FROM poe_trade.ml_eval_runs",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(run_id)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not latest_rows:
+        return {"status": "no_eval_data", "message": "No evaluation rows for run."}
+    latest = latest_rows[0]
     latest_mdape = _to_float(latest.get("avg_mdape"), 1.0)
     latest_cov = _to_float(latest.get("avg_cov"), 0.0)
+    baseline = _latest_run_excluding(client, league=league, run_id=run_id) or {
+        "run_id": run_id,
+        "avg_mdape": latest_mdape,
+        "avg_cov": latest_cov,
+    }
+    candidate_vs_incumbent = _candidate_vs_incumbent_summary(
+        candidate={
+            "run_id": run_id,
+            "avg_mdape": latest_mdape,
+            "avg_cov": latest_cov,
+        },
+        incumbent={
+            "run_id": str(baseline.get("run_id") or ""),
+            "avg_mdape": _to_float(baseline.get("avg_mdape"), latest_mdape),
+            "avg_cov": _to_float(baseline.get("avg_cov"), latest_cov),
+        },
+    )
     feedback: dict[str, Any] = {
         "status": "ok",
-        "latest_eval_run_id": str(latest.get("run_id") or ""),
+        "latest_eval_run_id": run_id,
         "latest_avg_mdape": latest_mdape,
         "latest_avg_interval_coverage": latest_cov,
+        "candidate_vs_incumbent": candidate_vs_incumbent,
     }
-    if len(eval_runs) < 2:
+    if str(baseline.get("run_id") or "") == run_id:
         feedback["message"] = (
             "Only one eval run available; trend requires at least two runs."
         )
         return feedback
-    prev = eval_runs[1]
-    prev_mdape = _to_float(prev.get("avg_mdape"), 1.0)
-    prev_cov = _to_float(prev.get("avg_cov"), 0.0)
+    prev_mdape = _to_float(baseline.get("avg_mdape"), 1.0)
+    prev_cov = _to_float(baseline.get("avg_cov"), 0.0)
     mdape_delta = latest_mdape - prev_mdape
     cov_delta = latest_cov - prev_cov
-    feedback["previous_eval_run_id"] = str(prev.get("run_id") or "")
+    feedback["previous_eval_run_id"] = str(baseline.get("run_id") or "")
     feedback["mdape_delta_vs_previous"] = mdape_delta
     feedback["coverage_delta_vs_previous"] = cov_delta
     feedback["is_improving"] = mdape_delta < 0
@@ -1104,6 +1327,7 @@ def predict_one(
     price_p10 = max(0.1, price_p50 * 0.8)
     price_p90 = price_p50 * 1.2
     sale_probability = 0.6 if route != "fallback_abstain" else 0.3
+    recommendation_eligible = sale_probability >= 0.5
     return {
         "league": league,
         "parsed_item": parsed,
@@ -1115,6 +1339,7 @@ def predict_one(
         "price_p90": round(price_p90, 4),
         "sale_probability": round(sale_probability, 4),
         "sale_probability_percent": round(sale_probability * 100.0, 2),
+        "price_recommendation_eligible": recommendation_eligible,
         "confidence": round(confidence, 4),
         "confidence_percent": round(confidence * 100.0, 2),
         "fallback_reason": "low_support" if route == "fallback_abstain" else "",
@@ -1298,13 +1523,16 @@ def report(
     output: str,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
+    eval_run_id = _latest_eval_run_id(client, league)
+    if not eval_run_id:
+        raise ValueError("missing evaluation rows for report")
     route_metrics = _query_rows(
         client,
         " ".join(
             [
                 "SELECT route, avg(mdape) AS mdape, avg(wape) AS wape, avg(rmsle) AS rmsle, avg(abstain_rate) AS abstain_rate",
                 "FROM poe_trade.ml_eval_runs",
-                f"WHERE league = {_quote(league)}",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(eval_run_id)}",
                 "GROUP BY route",
                 "FORMAT JSONEachRow",
             ]
@@ -1312,13 +1540,18 @@ def report(
     )
     if not route_metrics:
         raise ValueError("missing evaluation rows for report")
+    feedback = _eval_feedback_for_run(client, league=league, run_id=eval_run_id)
+    hotspots = _latest_route_hotspots(client, league, run_id=eval_run_id)
+    promotion_verdict = _promotion_verdict_for_run(
+        client, league=league, run_id=eval_run_id
+    )
     family_hotspots = _query_rows(
         client,
         " ".join(
             [
                 "SELECT family, avg(mdape) AS mdape, avg(abstain_rate) AS abstain_rate",
                 "FROM poe_trade.ml_route_eval_v1",
-                f"WHERE league = {_quote(league)}",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(eval_run_id)}",
                 "GROUP BY family",
                 "ORDER BY mdape DESC",
                 "LIMIT 20",
@@ -1370,7 +1603,13 @@ def report(
     payload = {
         "league": league,
         "model_dir": model_dir,
+        "eval_run_id": eval_run_id,
         "generated_at": _now_ts(),
+        "promotion_verdict": promotion_verdict,
+        "candidate_vs_incumbent": feedback.get("candidate_vs_incumbent"),
+        "latest_avg_mdape": feedback.get("latest_avg_mdape"),
+        "latest_avg_interval_coverage": feedback.get("latest_avg_interval_coverage"),
+        "route_hotspots": hotspots,
         "route_metrics": route_metrics,
         "family_hotspots": family_hotspots,
         "abstain_rate": sum(
@@ -1440,6 +1679,486 @@ def _scalar_count(client: ClickHouseClient, query: str) -> int:
     if not rows:
         return 0
     return _to_int(rows[0].get("value"), 0)
+
+
+def _ensure_eval_contract_split(split: str) -> None:
+    if split in MIRAGE_EVAL_CONTRACT.supported_splits:
+        return
+    supported = ", ".join(MIRAGE_EVAL_CONTRACT.supported_splits)
+    raise ValueError(
+        f"unsupported split {split!r} for {MIRAGE_EVAL_CONTRACT.name}; supported: {supported}"
+    )
+
+
+def _resolve_tuning_controls(
+    *,
+    max_iterations: int | None,
+    max_wall_clock_seconds: int | None,
+    no_improvement_patience: int | None,
+    min_mdape_improvement: float | None,
+) -> TuningControls:
+    iteration_budget = max(1, max_iterations or _env_int("POE_ML_MAX_ITERATIONS", 2))
+    wall_clock_budget = max(
+        60,
+        max_wall_clock_seconds
+        if max_wall_clock_seconds is not None
+        else _env_int("POE_ML_MAX_WALL_CLOCK_SECONDS", 3600),
+    )
+    patience = max(
+        1,
+        no_improvement_patience
+        if no_improvement_patience is not None
+        else _env_int("POE_ML_NO_IMPROVEMENT_PATIENCE", 2),
+    )
+    min_improvement = max(
+        0.0,
+        min_mdape_improvement
+        if min_mdape_improvement is not None
+        else _env_float("POE_ML_MIN_MDAPE_IMPROVEMENT", 0.005),
+    )
+    warm_start_enabled = _env_bool("POE_ML_WARM_START_ENABLED", True)
+    resume_supported = _env_bool("POE_ML_RESUME_SUPPORTED", False)
+    return TuningControls(
+        max_iterations=iteration_budget,
+        max_wall_clock_seconds=wall_clock_budget,
+        no_improvement_patience=patience,
+        min_mdape_improvement=min_improvement,
+        warm_start_enabled=warm_start_enabled,
+        resume_supported=resume_supported,
+    )
+
+
+def _tuning_config_id(controls: TuningControls) -> str:
+    return (
+        f"iter{controls.max_iterations}-wall{controls.max_wall_clock_seconds}"
+        f"-pat{controls.no_improvement_patience}-min{controls.min_mdape_improvement}"
+        f"-warm{int(controls.warm_start_enabled)}"
+    )
+
+
+def _latest_train_run_row(
+    client: ClickHouseClient, league: str
+) -> dict[str, Any] | None:
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT run_id, status, stop_reason, updated_at",
+                "FROM poe_trade.ml_train_runs",
+                f"WHERE league = {_quote(league)}",
+                "ORDER BY updated_at DESC",
+                "LIMIT 1",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return None
+    return rows[0]
+
+
+def _aggregate_eval_run(
+    client: ClickHouseClient, *, league: str, run_id: str
+) -> dict[str, Any]:
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT avg(coalesce(mdape, 1.0)) AS avg_mdape, avg(coalesce(interval_80_coverage, 0.0)) AS avg_cov",
+                "FROM poe_trade.ml_eval_runs",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(run_id)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return {"run_id": run_id, "avg_mdape": 1.0, "avg_cov": 0.0}
+    row = rows[0]
+    return {
+        "run_id": run_id,
+        "avg_mdape": _to_float(row.get("avg_mdape"), 1.0),
+        "avg_cov": _to_float(row.get("avg_cov"), 0.0),
+    }
+
+
+def _latest_run_excluding(
+    client: ClickHouseClient, *, league: str, run_id: str
+) -> dict[str, Any] | None:
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT run_id, avg(coalesce(mdape, 1.0)) AS avg_mdape, avg(coalesce(interval_80_coverage, 0.0)) AS avg_cov, max(recorded_at) AS recorded_at",
+                "FROM poe_trade.ml_eval_runs",
+                f"WHERE league = {_quote(league)} AND run_id != {_quote(run_id)}",
+                "GROUP BY run_id",
+                "ORDER BY recorded_at DESC",
+                "LIMIT 1",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "run_id": str(row.get("run_id") or ""),
+        "avg_mdape": _to_float(row.get("avg_mdape"), 1.0),
+        "avg_cov": _to_float(row.get("avg_cov"), 0.0),
+    }
+
+
+def _candidate_vs_incumbent_summary(
+    *, candidate: dict[str, Any], incumbent: dict[str, Any] | None
+) -> dict[str, Any]:
+    c_mdape = _to_float(candidate.get("avg_mdape"), 1.0)
+    c_cov = _to_float(candidate.get("avg_cov"), 0.0)
+    if incumbent is None:
+        i_mdape = c_mdape
+        i_cov = c_cov
+        incumbent_run = "none"
+    else:
+        i_mdape = _to_float(incumbent.get("avg_mdape"), c_mdape)
+        i_cov = _to_float(incumbent.get("avg_cov"), c_cov)
+        incumbent_run = str(incumbent.get("run_id") or "none")
+    mdape_delta = i_mdape - c_mdape
+    coverage_delta = c_cov - i_cov
+    return {
+        "candidate_run_id": str(candidate.get("run_id") or ""),
+        "incumbent_run_id": incumbent_run,
+        "candidate_avg_mdape": c_mdape,
+        "incumbent_avg_mdape": i_mdape,
+        "candidate_avg_interval_coverage": c_cov,
+        "incumbent_avg_interval_coverage": i_cov,
+        "mdape_improvement": mdape_delta,
+        "coverage_delta": coverage_delta,
+        "coverage_floor_ok": c_cov >= MIRAGE_EVAL_CONTRACT.promotion.coverage_floor,
+    }
+
+
+def _protected_cohort_check(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    candidate_run_id: str,
+    incumbent_run_id: str | None,
+) -> dict[str, Any]:
+    if not incumbent_run_id:
+        return {"regression": False, "max_mdape_regression": 0.0, "cohort": "none"}
+    candidate_rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT route, family, support_bucket, avg(coalesce(mdape, 1.0)) AS mdape",
+                "FROM poe_trade.ml_route_eval_v1",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(candidate_run_id)}",
+                "GROUP BY route, family, support_bucket",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not candidate_rows:
+        return {"regression": False, "max_mdape_regression": 0.0, "cohort": "none"}
+    incumbent_rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT route, family, support_bucket, avg(coalesce(mdape, 1.0)) AS mdape",
+                "FROM poe_trade.ml_route_eval_v1",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(incumbent_run_id)}",
+                "GROUP BY route, family, support_bucket",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    incumbent_map: dict[tuple[str, str, str], float] = {}
+    for row in incumbent_rows:
+        incumbent_map[
+            (
+                str(row.get("route") or ""),
+                str(row.get("family") or ""),
+                str(row.get("support_bucket") or ""),
+            )
+        ] = _to_float(row.get("mdape"), 1.0)
+    max_regression = 0.0
+    worst = "none"
+    for row in candidate_rows:
+        key = (
+            str(row.get("route") or ""),
+            str(row.get("family") or ""),
+            str(row.get("support_bucket") or ""),
+        )
+        candidate_mdape = _to_float(row.get("mdape"), 1.0)
+        incumbent_mdape = incumbent_map.get(key, candidate_mdape)
+        regression = max(candidate_mdape - incumbent_mdape, 0.0)
+        if regression > max_regression:
+            max_regression = regression
+            worst = "|".join(key)
+    return {
+        "regression": max_regression
+        > MIRAGE_EVAL_CONTRACT.promotion.protected_cohort_max_regression,
+        "max_mdape_regression": max_regression,
+        "cohort": worst,
+    }
+
+
+def _should_promote(comparison: dict[str, Any]) -> bool:
+    if not bool(comparison.get("coverage_floor_ok")):
+        return False
+    if (
+        _to_float(comparison.get("mdape_improvement"), 0.0)
+        < MIRAGE_EVAL_CONTRACT.promotion.min_mdape_improvement
+    ):
+        return False
+    protected = comparison.get("protected_cohort_regression") or {}
+    if bool(protected.get("regression")):
+        return False
+    return True
+
+
+def _promotion_stop_reason(comparison: dict[str, Any]) -> str:
+    if _should_promote(comparison):
+        return "promote"
+    protected = comparison.get("protected_cohort_regression") or {}
+    if bool(protected.get("regression")):
+        return "hold_protected_cohort_regression"
+    if not bool(comparison.get("coverage_floor_ok")):
+        return "hold_coverage_floor"
+    return "hold_no_material_improvement"
+
+
+def _build_route_hotspots(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    candidate_run_id: str,
+    incumbent_run_id: str | None,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT route, family, support_bucket, sum(sample_count) AS sample_count, avg(coalesce(mdape, 1.0)) AS candidate_mdape, avg(coalesce(abstain_rate, 0.0)) AS candidate_abstain",
+                "FROM poe_trade.ml_route_eval_v1",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(candidate_run_id)}",
+                "GROUP BY route, family, support_bucket",
+                "ORDER BY candidate_mdape DESC",
+                f"LIMIT {max(1, top_n)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    incumbent_rows: dict[str, dict[str, Any]] = {}
+    if incumbent_run_id:
+        for row in _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT route, family, support_bucket, avg(coalesce(mdape, 1.0)) AS incumbent_mdape, avg(coalesce(abstain_rate, 0.0)) AS incumbent_abstain",
+                    "FROM poe_trade.ml_route_eval_v1",
+                    f"WHERE league = {_quote(league)} AND run_id = {_quote(incumbent_run_id)}",
+                    "GROUP BY route, family, support_bucket",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        ):
+            incumbent_rows[
+                "|".join(
+                    [
+                        str(row.get("route") or ""),
+                        str(row.get("family") or ""),
+                        str(row.get("support_bucket") or ""),
+                    ]
+                )
+            ] = row
+    now = _now_ts()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        route = str(row.get("route") or "unknown")
+        family = str(row.get("family") or route)
+        support_bucket = str(row.get("support_bucket") or "low")
+        incumbent = incumbent_rows.get(f"{route}|{family}|{support_bucket}", {})
+        candidate_mdape = _to_float(row.get("candidate_mdape"), 1.0)
+        incumbent_mdape = _to_float(incumbent.get("incumbent_mdape"), candidate_mdape)
+        candidate_abstain = _to_float(row.get("candidate_abstain"), 0.0)
+        incumbent_abstain = _to_float(
+            incumbent.get("incumbent_abstain"), candidate_abstain
+        )
+        sample_count = _to_int(row.get("sample_count"), 0)
+        result.append(
+            {
+                "league": league,
+                "candidate_run_id": candidate_run_id,
+                "incumbent_run_id": incumbent_run_id or "none",
+                "route": route,
+                "family": family,
+                "support_bucket": support_bucket,
+                "sample_count": sample_count,
+                "candidate_mdape": candidate_mdape,
+                "incumbent_mdape": incumbent_mdape,
+                "mdape_delta": incumbent_mdape - candidate_mdape,
+                "candidate_abstain_rate": candidate_abstain,
+                "incumbent_abstain_rate": incumbent_abstain,
+                "abstain_rate_delta": candidate_abstain - incumbent_abstain,
+                "recorded_at": now,
+            }
+        )
+    return result
+
+
+def _present_hotspots(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    ordered = sorted(rows, key=lambda item: _to_float(item.get("mdape_delta"), 0.0))
+    improving = [
+        item for item in ordered if _to_float(item.get("mdape_delta"), 0.0) > 0
+    ]
+    regressing = [
+        item for item in ordered if _to_float(item.get("mdape_delta"), 0.0) <= 0
+    ]
+    return {
+        "top_improving": improving[-5:],
+        "top_regressing": regressing[:5],
+    }
+
+
+def _latest_route_hotspots(
+    client: ClickHouseClient, league: str, *, run_id: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    run_filter = (
+        f"AND candidate_run_id = {_quote(run_id)}" if run_id and run_id.strip() else ""
+    )
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT route, family, support_bucket, sample_count, candidate_mdape, incumbent_mdape, mdape_delta, candidate_abstain_rate, incumbent_abstain_rate, abstain_rate_delta, recorded_at",
+                "FROM poe_trade.ml_route_hotspots_v1",
+                f"WHERE league = {_quote(league)} {run_filter}",
+                "ORDER BY recorded_at DESC",
+                "LIMIT 40",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return {"top_improving": [], "top_regressing": []}
+    return _present_hotspots(rows)
+
+
+def _promotion_verdict_for_run(
+    client: ClickHouseClient, *, league: str, run_id: str
+) -> str:
+    if not run_id:
+        return "unknown"
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT verdict",
+                "FROM poe_trade.ml_promotion_audit_v1",
+                f"WHERE league = {_quote(league)} AND candidate_run_id = {_quote(run_id)}",
+                "ORDER BY recorded_at DESC",
+                "LIMIT 1",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return "unknown"
+    return str(rows[0].get("verdict") or "unknown")
+
+
+def _record_tuning_round(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    run_id: str,
+    fit_round: int,
+    warm_start_from: str,
+    tuning_config_id: str,
+    iteration_budget: int,
+    effective_controls: TuningControls,
+    elapsed_seconds: int,
+    candidate_vs_incumbent: dict[str, Any],
+) -> None:
+    _ensure_tuning_rounds_table(client)
+    _insert_json_rows(
+        client,
+        "poe_trade.ml_tuning_rounds_v1",
+        [
+            {
+                "league": league,
+                "run_id": run_id,
+                "fit_round": fit_round,
+                "warm_start_from": warm_start_from,
+                "tuning_config_id": tuning_config_id,
+                "iteration_budget": iteration_budget,
+                "wall_clock_budget_seconds": effective_controls.max_wall_clock_seconds,
+                "no_improvement_patience": effective_controls.no_improvement_patience,
+                "elapsed_seconds": elapsed_seconds,
+                "candidate_mdape": _to_float(
+                    candidate_vs_incumbent.get("candidate_avg_mdape"), 1.0
+                ),
+                "incumbent_mdape": _to_float(
+                    candidate_vs_incumbent.get("incumbent_avg_mdape"), 1.0
+                ),
+                "mdape_improvement": _to_float(
+                    candidate_vs_incumbent.get("mdape_improvement"), 0.0
+                ),
+                "recorded_at": _now_ts(),
+            }
+        ],
+    )
+
+
+def _ensure_promotion_audit_table(client: ClickHouseClient) -> None:
+    client.execute(
+        "CREATE TABLE IF NOT EXISTS poe_trade.ml_promotion_audit_v1(league String, candidate_run_id String, incumbent_run_id String, candidate_model_version String, incumbent_model_version String, verdict String, avg_mdape_candidate Float64, avg_mdape_incumbent Float64, coverage_candidate Float64, coverage_incumbent Float64, stop_reason String, recorded_at DateTime64(3, 'UTC')) ENGINE=MergeTree() PARTITION BY toYYYYMMDD(recorded_at) ORDER BY (league, candidate_run_id, recorded_at)"
+    )
+
+
+def _ensure_tuning_rounds_table(client: ClickHouseClient) -> None:
+    client.execute(
+        "CREATE TABLE IF NOT EXISTS poe_trade.ml_tuning_rounds_v1(league String, run_id String, fit_round UInt32, warm_start_from String, tuning_config_id String, iteration_budget UInt32, wall_clock_budget_seconds UInt32, no_improvement_patience UInt32, elapsed_seconds UInt32, candidate_mdape Float64, incumbent_mdape Float64, mdape_improvement Float64, recorded_at DateTime64(3, 'UTC')) ENGINE=MergeTree() PARTITION BY toYYYYMMDD(recorded_at) ORDER BY (league, run_id, fit_round, recorded_at)"
+    )
+
+
+def _ensure_route_hotspots_table(client: ClickHouseClient) -> None:
+    client.execute(
+        "CREATE TABLE IF NOT EXISTS poe_trade.ml_route_hotspots_v1(league String, candidate_run_id String, incumbent_run_id String, route String, family String, support_bucket String, sample_count UInt64, candidate_mdape Float64, incumbent_mdape Float64, mdape_delta Float64, candidate_abstain_rate Float64, incumbent_abstain_rate Float64, abstain_rate_delta Float64, recorded_at DateTime64(3, 'UTC')) ENGINE=MergeTree() PARTITION BY toYYYYMMDD(recorded_at) ORDER BY (league, candidate_run_id, route, recorded_at)"
+    )
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if value in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
 
 
 def _insert_json_rows(
@@ -1566,7 +2285,7 @@ def _ensure_eval_runs_table(client: ClickHouseClient) -> None:
 
 def _ensure_train_runs_table(client: ClickHouseClient) -> None:
     client.execute(
-        "CREATE TABLE IF NOT EXISTS poe_trade.ml_train_runs(run_id String, league String, stage String, current_route String, routes_done UInt32, routes_total UInt32, rows_processed UInt64, eta_seconds Nullable(UInt32), chosen_backend String, worker_count UInt16, memory_budget_gb Float64, active_model_version String, status String, resume_token String, started_at DateTime64(3, 'UTC'), updated_at DateTime64(3, 'UTC')) ENGINE=ReplacingMergeTree(updated_at) PARTITION BY toYYYYMMDD(started_at) ORDER BY (league, run_id, updated_at)"
+        "CREATE TABLE IF NOT EXISTS poe_trade.ml_train_runs(run_id String, league String, stage String, current_route String, routes_done UInt32, routes_total UInt32, rows_processed UInt64, eta_seconds Nullable(UInt32), chosen_backend String, worker_count UInt16, memory_budget_gb Float64, active_model_version String, status String, stop_reason String, tuning_config_id String, eval_run_id String, resume_token String, started_at DateTime64(3, 'UTC'), updated_at DateTime64(3, 'UTC')) ENGINE=ReplacingMergeTree(updated_at) PARTITION BY toYYYYMMDD(started_at) ORDER BY (league, run_id, updated_at)"
     )
     client.execute(
         "CREATE TABLE IF NOT EXISTS poe_trade.ml_model_registry_v1(league String, route String, model_version String, model_dir String, promoted UInt8, promoted_at DateTime64(3, 'UTC'), metadata_json String) ENGINE=ReplacingMergeTree(promoted_at) ORDER BY (league, route, promoted_at)"
@@ -1638,6 +2357,9 @@ def _write_train_run(
     eta_seconds: int | None,
     status: str,
     active_model_version: str,
+    stop_reason: str,
+    tuning_controls: TuningControls,
+    eval_run_id: str,
 ) -> None:
     _ensure_train_runs_table(client)
     now = _now_ts()
@@ -1659,6 +2381,9 @@ def _write_train_run(
                 "memory_budget_gb": 4.0,
                 "active_model_version": active_model_version,
                 "status": status,
+                "stop_reason": stop_reason,
+                "tuning_config_id": _tuning_config_id(tuning_controls),
+                "eval_run_id": eval_run_id,
                 "resume_token": run_id,
                 "started_at": now,
                 "updated_at": now,

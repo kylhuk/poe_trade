@@ -49,6 +49,9 @@ class _Args(argparse.Namespace):
     model_dir: str = "artifacts/ml/mirage_v1"
     as_of: str = ""
     max_iterations: int | None = None
+    max_wall_clock_seconds: int | None = None
+    no_improvement_patience: int | None = None
+    min_mdape_improvement: float | None = None
     limit: int = 1000
     run: str = "latest"
     input_format: str = "poe-clipboard"
@@ -164,6 +167,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     _ = train_loop_parser.add_argument("--model-dir", required=True)
     _ = train_loop_parser.add_argument("--max-iterations", type=int, default=None)
+    _ = train_loop_parser.add_argument(
+        "--max-wall-clock-seconds", type=int, default=None
+    )
+    _ = train_loop_parser.add_argument(
+        "--no-improvement-patience", type=int, default=None
+    )
+    _ = train_loop_parser.add_argument(
+        "--min-mdape-improvement", type=float, default=None
+    )
     _ = train_loop_parser.add_argument("--resume", action="store_true")
 
     status_parser = subparsers.add_parser("status")
@@ -356,6 +368,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset_table=str(args.dataset_table),
                 model_dir=str(args.model_dir),
                 max_iterations=args.max_iterations,
+                max_wall_clock_seconds=args.max_wall_clock_seconds,
+                no_improvement_patience=args.no_improvement_patience,
+                min_mdape_improvement=args.min_mdape_improvement,
                 resume=bool(args.resume),
             )
             print(json.dumps(result, indent=2, sort_keys=True))
