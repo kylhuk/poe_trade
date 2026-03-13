@@ -8,39 +8,41 @@
   "family_counts": [
     {
       "family": "logbook",
-      "rows": 327
+      "rows": 325
     },
     {
       "family": "map",
-      "rows": 1346
+      "rows": 1345
     },
     {
       "family": "essence",
-      "rows": 2128
+      "rows": 2120
     },
     {
       "family": "scarab",
-      "rows": 1770
+      "rows": 1743
     },
     {
       "family": "fossil",
-      "rows": 795
+      "rows": 788
     },
     {
       "family": "flask",
-      "rows": 17649
+      "rows": 17460
     },
     {
       "family": "other",
-      "rows": 663502
+      "rows": 655090
     },
     {
       "family": "cluster_jewel",
-      "rows": 17096
+      "rows": 16912
     }
   ],
+  "fit_round": 29624,
   "league": "Mirage",
   "objective": "comparable_residual",
   "route": "sparse_retrieval",
-  "trained_at": "2026-03-12 20:44:15"
+  "trained_at": "2026-03-13 05:40:46",
+  "warm_start_from": "artifacts/ml/mirage_v1/sparse_retrieval-Mirage.json"
 }

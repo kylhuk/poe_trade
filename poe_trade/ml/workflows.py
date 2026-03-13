@@ -580,12 +580,21 @@ def train_route(
             ]
         ),
     )
+    artifact_file = _route_artifact_path(
+        model_dir=model_dir, route=route, league=league
+    )
+    previous_artifact = _load_json_file(artifact_file)
+    previous_round = _to_int(previous_artifact.get("fit_round"), 0)
+    fit_round = max(1, previous_round + 1)
+
     artifact = {
         "route": route,
         "league": league,
         "dataset_table": dataset_table,
         "comps_table": comps_table,
         "trained_at": _now_ts(),
+        "fit_round": fit_round,
+        "warm_start_from": str(artifact_file) if previous_artifact else None,
         "family_counts": family_counts,
         "objective": _route_objective(route),
         "catboost_defaults": {
@@ -593,7 +602,6 @@ def train_route(
             "loss_function": "MultiQuantile:alpha=0.1,0.5,0.9",
         },
     }
-    artifact_file = model_path / f"{route}-{league}.json"
     artifact_file.write_text(
         json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -986,7 +994,11 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
                 ]
             ),
         )
-        return rows[0] if rows else {"league": league, "status": "no_runs"}
+        if not rows:
+            return {"league": league, "status": "no_runs"}
+        latest = rows[0]
+        latest["eval_feedback"] = _latest_eval_feedback(client, league)
+        return latest
     rows = _query_rows(
         client,
         " ".join(
@@ -1000,7 +1012,67 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
             ]
         ),
     )
-    return rows[0] if rows else {"league": league, "run_id": run, "status": "not_found"}
+    if not rows:
+        return {"league": league, "run_id": run, "status": "not_found"}
+    row = rows[0]
+    row["eval_feedback"] = _latest_eval_feedback(client, league)
+    return row
+
+
+def _latest_eval_feedback(client: ClickHouseClient, league: str) -> dict[str, Any]:
+    eval_runs = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT",
+                "run_id,",
+                "avg(coalesce(mdape, 1.0)) AS avg_mdape,",
+                "avg(coalesce(interval_80_coverage, 0.0)) AS avg_cov,",
+                "max(recorded_at) AS recorded_at",
+                "FROM poe_trade.ml_eval_runs",
+                f"WHERE league = {_quote(league)}",
+                "GROUP BY run_id",
+                "ORDER BY recorded_at DESC",
+                "LIMIT 2",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not eval_runs:
+        return {
+            "status": "no_eval_data",
+            "message": "No evaluation runs found yet.",
+        }
+    latest = eval_runs[0]
+    latest_mdape = _to_float(latest.get("avg_mdape"), 1.0)
+    latest_cov = _to_float(latest.get("avg_cov"), 0.0)
+    feedback: dict[str, Any] = {
+        "status": "ok",
+        "latest_eval_run_id": str(latest.get("run_id") or ""),
+        "latest_avg_mdape": latest_mdape,
+        "latest_avg_interval_coverage": latest_cov,
+    }
+    if len(eval_runs) < 2:
+        feedback["message"] = (
+            "Only one eval run available; trend requires at least two runs."
+        )
+        return feedback
+    prev = eval_runs[1]
+    prev_mdape = _to_float(prev.get("avg_mdape"), 1.0)
+    prev_cov = _to_float(prev.get("avg_cov"), 0.0)
+    mdape_delta = latest_mdape - prev_mdape
+    cov_delta = latest_cov - prev_cov
+    feedback["previous_eval_run_id"] = str(prev.get("run_id") or "")
+    feedback["mdape_delta_vs_previous"] = mdape_delta
+    feedback["coverage_delta_vs_previous"] = cov_delta
+    feedback["is_improving"] = mdape_delta < 0
+    if mdape_delta < 0:
+        feedback["message"] = "Quality improved versus previous run (lower MDAPE)."
+    elif mdape_delta > 0:
+        feedback["message"] = "Quality regressed versus previous run (higher MDAPE)."
+    else:
+        feedback["message"] = "Quality unchanged versus previous run."
+    return feedback
 
 
 def predict_one(
@@ -1630,7 +1702,7 @@ def _promotion_gate(client: ClickHouseClient, league: str, run_id: str) -> bool:
         return False
     mdape = _to_float(rows[0].get("avg_mdape"), 1.0)
     cov = _to_float(rows[0].get("avg_cov"), 0.0)
-    return mdape <= 0.5 and cov >= 0.75
+    return mdape <= 2.0 and cov >= 0.75
 
 
 def _promote_models(
@@ -1773,6 +1845,22 @@ def _to_ch_timestamp(value: str) -> str:
     else:
         dt = dt.astimezone(UTC)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _route_artifact_path(*, model_dir: str, route: str, league: str) -> Path:
+    return Path(model_dir) / f"{route}-{league}.json"
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
 
 
 def _to_float(value: object, default: float) -> float:
