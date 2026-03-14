@@ -580,6 +580,12 @@ class ApiApp:
         if not self.settings.oauth_client_id:
             location = f"/api/v1/auth/callback?state={tx.state}&code=qa-simulated"
         else:
+            if not self.settings.poe_account_redirect_uri:
+                raise ApiError(
+                    status=500,
+                    code="oauth_config_invalid",
+                    message="POE_ACCOUNT_REDIRECT_URI must exactly match your registered OAuth redirect URI",
+                )
             location = authorize_redirect(self.settings, tx)
         return Response(
             status=302,

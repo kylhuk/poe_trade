@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 from poe_trade.config.settings import Settings
 
@@ -160,10 +161,16 @@ def clear_session(settings: Settings, *, session_id: str | None) -> None:
 
 def authorize_redirect(settings: Settings, tx: LoginTransaction) -> str:
     base = settings.poe_account_oauth_authorize_url
-    scope = settings.poe_account_oauth_scope.replace(" ", "%20")
-    return (
-        f"{base}?response_type=code&client_id={settings.oauth_client_id}"
-        f"&redirect_uri={settings.poe_account_redirect_uri}"
-        f"&scope={scope}&state={tx.state}&code_challenge={tx.code_challenge}"
-        "&code_challenge_method=S256"
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": settings.oauth_client_id,
+            "redirect_uri": settings.poe_account_redirect_uri,
+            "scope": settings.poe_account_oauth_scope,
+            "state": tx.state,
+            "code_challenge": tx.code_challenge,
+            "code_challenge_method": "S256",
+        },
+        quote_via=quote,
     )
+    return f"{base}?{query}"

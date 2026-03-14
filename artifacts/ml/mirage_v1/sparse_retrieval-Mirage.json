@@ -6,10 +6,10 @@
   "comps_table": "poe_trade.ml_comps_v1",
   "dataset_table": "poe_trade.ml_price_dataset_v1",
   "family_counts": [],
-  "fit_round": 29637,
+  "fit_round": 29639,
   "league": "Mirage",
   "objective": "comparable_residual",
   "route": "sparse_retrieval",
-  "trained_at": "2026-03-14 10:41:16",
+  "trained_at": "2026-03-14 11:27:51",
   "warm_start_from": "artifacts/ml/mirage_v1/sparse_retrieval-Mirage.json"
 }

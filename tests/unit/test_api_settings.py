@@ -26,10 +26,7 @@ def test_api_settings_defaults() -> None:
     assert cfg.account_stash_league == "Mirage"
     assert cfg.account_stash_poll_interval == 300.0
     assert cfg.auth_cookie_name == "poe_session"
-    assert (
-        cfg.poe_account_redirect_uri
-        == "https://api.poe.lama-lan.ch/api/v1/auth/callback"
-    )
+    assert cfg.poe_account_redirect_uri == ""
     assert cfg.ml_automation_league == "Mirage"
 
 
