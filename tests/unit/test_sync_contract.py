@@ -25,4 +25,5 @@ def test_queue_key_rejects_empty_realm() -> None:
 def test_supported_feed_kinds() -> None:
     assert is_supported_feed_kind(constants.FEED_KIND_PSAPI)
     assert is_supported_feed_kind(constants.FEED_KIND_CXAPI)
+    assert is_supported_feed_kind(constants.FEED_KIND_ACCOUNT_STASH)
     assert not is_supported_feed_kind("legacy")

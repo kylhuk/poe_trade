@@ -10,6 +10,7 @@ from .cxapi_sync import (
     truncate_to_hour,
 )
 from .market_harvester import MarketHarvester, oauth_client_factory
+from .account_stash_harvester import AccountStashHarvester
 from .poe_client import PoeClient, RateLimitPolicy
 from .poeninja_snapshot import (
     PoeNinjaClient,
@@ -25,6 +26,7 @@ __all__ = [
     "CxCursorPlan",
     "CxapiSync",
     "MarketHarvester",
+    "AccountStashHarvester",
     "PoeClient",
     "RateLimitPolicy",
     "cxapi_endpoint",

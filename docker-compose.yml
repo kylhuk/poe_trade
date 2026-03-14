@@ -48,5 +48,18 @@ services:
     volumes:
       - ./.state:/app/.state
 
+  account_stash_harvester:
+    build: .
+    command: ["service", "--name", "account_stash_harvester"]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    volumes:
+      - ./.state:/app/.state
+
 volumes:
   clickhouse_data:

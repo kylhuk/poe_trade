@@ -31,6 +31,44 @@ ML verdict vocabulary:
 - `stopped_no_improvement`: train-loop stopped because candidate-vs-incumbent deltas stayed below patience policy.
 - `stopped_budget`: train-loop stopped because iteration or wall-clock budget was exhausted.
 
+## Protected API Foundation
+The API service now exposes authenticated ML, Ops read models, and guarded service actions.
+Set these exact env vars before starting the API service:
+- `POE_API_BIND_HOST` (default `127.0.0.1`)
+- `POE_API_BIND_PORT` (default `8080`)
+- `POE_API_OPERATOR_TOKEN` (required)
+- `POE_API_CORS_ORIGINS` (comma-separated allowlist, for example `https://app.example.com`)
+- `POE_API_MAX_BODY_BYTES` (default `32768`)
+- `POE_API_LEAGUE_ALLOWLIST` (default `Mirage`)
+
+Start the service:
+- `POE_API_OPERATOR_TOKEN=phase1-token POE_API_CORS_ORIGINS=https://app.example.com .venv/bin/python -m poe_trade.cli service --name api -- --host 127.0.0.1 --port 8080`
+
+Verify routes:
+- `curl -i http://127.0.0.1:8080/healthz`
+- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ops/contract`
+- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ops/services`
+- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ops/messages`
+- `curl -i -X POST -H "Authorization: Bearer phase1-token" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/actions/services/market_harvester/restart`
+- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ml/contract`
+- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ml/leagues/Mirage/status`
+- `curl -i -X POST -H "Authorization: Bearer phase1-token" -H "Content-Type: application/json" --data '{"input_format":"poe-clipboard","payload":"Item Class: Maps\nRarity: Rare\nGrim Veil\nCemetery Map","output_mode":"json"}' http://127.0.0.1:8080/api/v1/ml/leagues/Mirage/predict-one`
+- `curl -i -X POST -H "Authorization: Bearer phase1-token" -H "Content-Type: application/json" --data '{"itemText":"Item Class: Maps\nRarity: Rare\nGrim Veil\nCemetery Map"}' http://127.0.0.1:8080/api/v1/ops/leagues/Mirage/price-check`
+- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://app.example.com" "http://127.0.0.1:8080/api/v1/stash/tabs?league=Mirage&realm=pc"`
+- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://evil.example.com" http://127.0.0.1:8080/api/v1/ml/leagues/Mirage/status`
+
+Current non-goals:
+- no browser-direct long-lived operator-token storage model
+- no lifecycle controls for one-shot jobs (`schema_migrator`, ad-hoc `poe-ml` commands)
+- no API self-stop/self-restart action for the serving `api` process
+- no wildcard CORS policy
+- no in-app TLS termination
+
+## Frontend local dev
+- Install deps: `cd frontend && npm install`
+- Run Vite: `npm run dev` (binds to `http://127.0.0.1:5173`)
+- Vite proxies `/api` and `/healthz` to `http://127.0.0.1:8080` by default.
+
 ## CLI surface
 - `.venv/bin/python -m poe_trade.cli service --name market_harvester -- --help` to see the market sync daemon arguments and polling knobs.
 - `market_harvester --realm <name> --once` runs one daemon cycle directly if you prefer bypassing the CLI router.
@@ -67,6 +105,7 @@ ML verdict vocabulary:
 - `POE_API_BASE_URL`, `POE_AUTH_BASE_URL`, `POE_USER_AGENT`, and the rate limit controls (`POE_RATE_LIMIT_*`).
 - `POE_REALMS`, `POE_ENABLE_PSAPI`, `POE_ENABLE_CXAPI`, `POE_PSAPI_POLL_SECONDS`, and `POE_CXAPI_*` control queue-based market sync.
 - `POE_OAUTH_CLIENT_ID`, `POE_OAUTH_CLIENT_SECRET` or `_FILE`, `POE_OAUTH_SCOPE`, and `POE_OAUTH_GRANT_TYPE` for the OAuth refresh path.
+- `POE_API_BIND_HOST`, `POE_API_BIND_PORT`, `POE_API_OPERATOR_TOKEN`, `POE_API_CORS_ORIGINS`, `POE_API_MAX_BODY_BYTES`, and `POE_API_LEAGUE_ALLOWLIST` for the protected ML API service.
 - Keep `POE_ENABLE_CXAPI=false` until the environment is ready for hourly Currency Exchange sync; when enabled, `POE_OAUTH_SCOPE` must include `service:cxapi`.
 - `POE_CHECKPOINT_DIR`, `POE_CURSOR_DIR`, and `POE_LEAGUES` remain compatibility-only aliases; ClickHouse checkpoint history is the canonical cursor source.
 

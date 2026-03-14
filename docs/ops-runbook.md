@@ -27,6 +27,11 @@
 - Alert when `poe_trade.poe_ingest_status` shows `status` containing `rate_limited` for more than a minute—use that as a cue to inspect `poe_trade.bronze_requests` rather than hammering the API.
 
 ## Reference commands
+- `curl -i http://127.0.0.1:8080/healthz` for unauthenticated API health checks.
+- `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ops/contract` to bootstrap frontend-facing route and capability metadata.
+- `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ops/services` for visible service inventory and allowed lifecycle actions.
+- `curl -i -X POST -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/actions/services/market_harvester/restart` to trigger the only supported lifecycle control path.
+- `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" "http://127.0.0.1:8080/api/v1/stash/tabs?league=Mirage&realm=pc"` to verify stash endpoint status (`feature_unavailable` is expected until stash backend rollout completes).
 - `poe-ledger-cli service --name market_harvester` to launch the market sync daemon through the CLI router and inherit the shared logging configuration.
 - `poe-ledger-cli service --name market_harvester -- --once --dry-run` to run one queue cycle without writing ClickHouse rows.
 - `poe-ledger-cli sync status` to inspect the latest queue status rows when ClickHouse is reachable.

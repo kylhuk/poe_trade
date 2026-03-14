@@ -174,6 +174,17 @@ class Settings:
     oauth_client_secret: str
     oauth_grant_type: str
     oauth_scope: str
+    api_bind_host: str
+    api_bind_port: int
+    api_operator_token: str
+    api_cors_origins: tuple[str, ...]
+    api_max_body_bytes: int
+    api_league_allowlist: tuple[str, ...]
+    enable_account_stash: bool
+    account_stash_access_token: str
+    account_stash_realm: str
+    account_stash_league: str
+    account_stash_poll_interval: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -289,6 +300,40 @@ class Settings:
                 "POE_OAUTH_GRANT_TYPE", constants.DEFAULT_OAUTH_GRANT_TYPE
             ),
             oauth_scope=_get_env_str("POE_OAUTH_SCOPE", constants.DEFAULT_OAUTH_SCOPE),
+            api_bind_host=_get_env_str(
+                "POE_API_BIND_HOST", constants.DEFAULT_API_BIND_HOST
+            ),
+            api_bind_port=_parse_env_int(
+                "POE_API_BIND_PORT", constants.DEFAULT_API_BIND_PORT
+            ),
+            api_operator_token=_get_env_str(
+                "POE_API_OPERATOR_TOKEN", constants.DEFAULT_API_OPERATOR_TOKEN
+            ),
+            api_cors_origins=_parse_env_list(
+                "POE_API_CORS_ORIGINS", list(constants.DEFAULT_API_CORS_ORIGINS)
+            ),
+            api_max_body_bytes=_parse_env_int(
+                "POE_API_MAX_BODY_BYTES", constants.DEFAULT_API_MAX_BODY_BYTES
+            ),
+            api_league_allowlist=_parse_env_list(
+                "POE_API_LEAGUE_ALLOWLIST", list(constants.DEFAULT_API_LEAGUE_ALLOWLIST)
+            ),
+            enable_account_stash=_parse_env_bool(
+                "POE_ENABLE_ACCOUNT_STASH", constants.DEFAULT_ENABLE_ACCOUNT_STASH
+            ),
+            account_stash_access_token=_get_env_str(
+                "POE_ACCOUNT_STASH_ACCESS_TOKEN", ""
+            ),
+            account_stash_realm=_get_env_str(
+                "POE_ACCOUNT_STASH_REALM", constants.DEFAULT_ACCOUNT_STASH_REALM
+            ),
+            account_stash_league=_get_env_str(
+                "POE_ACCOUNT_STASH_LEAGUE", constants.DEFAULT_ACCOUNT_STASH_LEAGUE
+            ),
+            account_stash_poll_interval=_parse_env_float(
+                "POE_ACCOUNT_STASH_POLL_INTERVAL",
+                constants.DEFAULT_ACCOUNT_STASH_POLL_INTERVAL,
+            ),
         )
 
 
