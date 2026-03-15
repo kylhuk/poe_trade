@@ -2,12 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import re
 from typing import Any
 from uuid import uuid4
 
 from ..db import ClickHouseClient
-from .registry import StrategyPack, list_strategy_packs
+from .policy import (
+    REJECTED_COOLDOWN_ACTIVE,
+    REJECTED_JOURNAL_REQUIRED,
+    CandidateDecision,
+    CandidateRow,
+    PolicyEvaluation,
+    candidate_cooldown_keys,
+    candidate_from_source_row,
+    evaluate_candidates,
+    policy_from_pack,
+)
+from .registry import StrategyPack, list_strategy_packs, load_candidate_sql
 
 UNSET_COMPLETED_AT = "1970-01-01 00:00:00.000"
 BACKTEST_SUMMARY_COLUMNS = (
@@ -33,6 +43,9 @@ _DEFAULT_SUMMARY_TEXT = {
 }
 
 
+_LEGACY_COMPAT_HASH_EXPRESSION = "toString(cityHash64(concat(ifNull(source.semantic_key, ''), '|', ifNull(source.item_or_market_key, ''))))"
+
+
 def get_strategy_pack(strategy_id: str) -> StrategyPack:
     for pack in list_strategy_packs():
         if pack.strategy_id == strategy_id:
@@ -52,7 +65,7 @@ def run_backtest(
     run_id = uuid4().hex
     started_at = datetime.now(timezone.utc)
     started_at_sql = _format_ts(started_at)
-    sql = pack.backtest_sql_path.read_text(encoding="utf-8").strip().rstrip(";")
+    sql = load_candidate_sql(pack).strip().rstrip(";")
     wrapped_sql = _build_filtered_backtest_sql(
         sql, league=league, lookback_days=lookback_days
     )
@@ -60,7 +73,6 @@ def run_backtest(
     if dry_run:
         return run_id
 
-    source_table = _extract_source_table(sql)
     client.execute(
         _build_run_insert_query(
             run_id,
@@ -81,58 +93,42 @@ def run_backtest(
     confidence: float | None = None
 
     try:
-        client.execute(
-            "INSERT INTO poe_trade.research_backtest_detail "
-            "(run_id, strategy_id, league, lookback_days, status, recorded_at, item_or_market_key, expected_profit_chaos, expected_roi, confidence, summary, detail_json) "
-            "SELECT "
-            f"'{_escape_sql(run_id)}' AS run_id, "
-            f"'{_escape_sql(strategy_id)}' AS strategy_id, "
-            f"'{_escape_sql(league)}' AS league, "
-            f"{int(lookback_days)} AS lookback_days, "
-            "'completed' AS status, "
-            "now64(3) AS recorded_at, "
-            "source.item_or_market_key AS item_or_market_key, "
-            "source.expected_profit_chaos AS expected_profit_chaos, "
-            "source.expected_roi AS expected_roi, "
-            "source.confidence AS confidence, "
-            "source.summary AS summary, "
-            "formatRowNoNewline('JSONEachRow', source.*) AS detail_json "
-            f"FROM ({wrapped_sql}) AS source"
+        source_rows = _fetch_source_rows(client, sql=wrapped_sql)
+        evaluation, eligible_rows = _evaluate_source_rows(
+            client,
+            pack,
+            source_rows=source_rows,
+            requested_league=league,
+        )
+        opportunity_count = len(evaluation.eligible)
+        expected_profit_chaos = _sum_optional(
+            candidate.expected_profit_chaos for candidate in evaluation.eligible
+        )
+        expected_roi = _avg_optional(
+            candidate.expected_roi for candidate in evaluation.eligible
+        )
+        confidence = _avg_optional(
+            candidate.confidence for candidate in evaluation.eligible
         )
 
-        summary_payload = client.execute(
-            "SELECT "
-            "count() AS opportunity_count, "
-            "sumOrNull(expected_profit_chaos) AS expected_profit_chaos, "
-            "avgOrNull(expected_roi) AS expected_roi, "
-            "avgOrNull(confidence) AS confidence "
-            "FROM poe_trade.research_backtest_detail "
-            f"WHERE run_id = '{_escape_sql(run_id)}' "
-            "FORMAT JSONEachRow"
-        )
-        summary_rows = _parse_json_rows(summary_payload)
-        if summary_rows:
-            summary_row = summary_rows[0]
-            opportunity_count = int(summary_row.get("opportunity_count", 0) or 0)
-            expected_profit_chaos = _as_optional_float(
-                summary_row.get("expected_profit_chaos")
+        if eligible_rows:
+            client.execute(
+                _build_detail_insert_query(
+                    run_id=run_id,
+                    strategy_id=strategy_id,
+                    league=league,
+                    lookback_days=lookback_days,
+                    eligible_rows=eligible_rows,
+                )
             )
-            expected_roi = _as_optional_float(summary_row.get("expected_roi"))
-            confidence = _as_optional_float(summary_row.get("confidence"))
 
         if opportunity_count == 0:
-            source_rows = _count_source_rows(
-                client,
-                source_table=source_table,
-                league=league,
-                lookback_days=lookback_days,
-            )
-            if source_rows == 0:
+            if not source_rows:
                 status = "no_data"
                 summary_text = _DEFAULT_SUMMARY_TEXT["no_data"]
             else:
                 status = "no_opportunities"
-                summary_text = _DEFAULT_SUMMARY_TEXT["no_opportunities"]
+                summary_text = _no_opportunities_summary(evaluation.decisions)
 
     except Exception as exc:
         status = "failed"
@@ -323,40 +319,193 @@ def _parse_json_rows(payload: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _count_source_rows(
+def _fetch_source_rows(
     client: ClickHouseClient,
     *,
-    source_table: str | None,
+    sql: str,
+) -> list[dict[str, Any]]:
+    candidate_sql = sql.strip().rstrip(";")
+    payload = client.execute(
+        "SELECT "
+        + "source.*, "
+        + "formatRowNoNewline('JSONEachRow', source.*) AS source_row_json, "
+        + f"{_LEGACY_COMPAT_HASH_EXPRESSION} AS legacy_hashed_item_or_market_key "
+        + f"FROM ({candidate_sql}) AS source "
+        + "FORMAT JSONEachRow"
+    )
+    return _parse_json_rows(payload)
+
+
+def _evaluate_source_rows(
+    client: ClickHouseClient,
+    pack: StrategyPack,
+    *,
+    source_rows: list[dict[str, Any]],
+    requested_league: str,
+) -> tuple[PolicyEvaluation, list[tuple[CandidateRow, dict[str, Any]]]]:
+    candidates: list[CandidateRow] = []
+    source_by_candidate_id: dict[int, dict[str, Any]] = {}
+    for source_row in source_rows:
+        candidate = candidate_from_source_row(
+            pack.strategy_id,
+            source_row,
+            default_league=requested_league,
+        )
+        candidates.append(candidate)
+        source_by_candidate_id[id(candidate)] = source_row
+    sorted_candidates = sorted(candidates, key=lambda row: row.candidate_ts)
+    policy = policy_from_pack(pack)
+    cooldown_history = _fetch_last_alerted_at_by_key(
+        client,
+        strategy_id=pack.strategy_id,
+        league=requested_league,
+    )
+    decisions: list[CandidateDecision] = []
+    eligible: list[CandidateRow] = []
+    batch: list[CandidateRow] = []
+    last_ts: datetime | None = None
+
+    def flush_batch() -> None:
+        nonlocal batch
+        if not batch:
+            return
+        step_eval = evaluate_candidates(
+            batch,
+            policy=policy,
+            requested_league=requested_league,
+            last_alerted_at_by_key=cooldown_history,
+        )
+        decisions.extend(step_eval.decisions)
+        for accepted in step_eval.eligible:
+            eligible.append(accepted)
+            for key in candidate_cooldown_keys(accepted):
+                cooldown_history[key] = accepted.candidate_ts
+        batch = []
+
+    for candidate in sorted_candidates:
+        if last_ts is None or candidate.candidate_ts != last_ts:
+            flush_batch()
+            batch = [candidate]
+            last_ts = candidate.candidate_ts
+        else:
+            batch.append(candidate)
+    flush_batch()
+    full_eval = PolicyEvaluation(eligible=tuple(eligible), decisions=tuple(decisions))
+    eligible_rows = [
+        (candidate, source_by_candidate_id[id(candidate)]) for candidate in eligible
+    ]
+    return full_eval, eligible_rows
+
+
+def _build_detail_insert_query(
+    *,
+    run_id: str,
+    strategy_id: str,
     league: str,
     lookback_days: int,
-) -> int:
-    if not source_table:
-        return 0
+    eligible_rows: list[tuple[CandidateRow, dict[str, Any]]],
+) -> str:
+    recorded_at = _format_ts(datetime.now(timezone.utc))
+    payload_rows = []
+    for candidate, source_row in eligible_rows:
+        payload_rows.append(
+            {
+                "run_id": run_id,
+                "strategy_id": strategy_id,
+                "league": league,
+                "lookback_days": int(lookback_days),
+                "status": "completed",
+                "recorded_at": recorded_at,
+                "item_or_market_key": candidate.item_or_market_key,
+                "expected_profit_chaos": candidate.expected_profit_chaos,
+                "expected_roi": candidate.expected_roi,
+                "confidence": candidate.confidence,
+                "summary": _detail_summary(strategy_id, source_row),
+                "detail_json": json.dumps(source_row, separators=(",", ":")),
+            }
+        )
+    payload = "\n".join(json.dumps(row, separators=(",", ":")) for row in payload_rows)
+    return (
+        "INSERT INTO poe_trade.research_backtest_detail "
+        "(run_id, strategy_id, league, lookback_days, status, recorded_at, item_or_market_key, expected_profit_chaos, expected_roi, confidence, summary, detail_json)\n"
+        "FORMAT JSONEachRow\n"
+        f"{payload}"
+    )
+
+
+def _detail_summary(strategy_id: str, source_row: dict[str, Any]) -> str:
+    for field in ("summary", "why_it_fired"):
+        value = source_row.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return f"eligible candidate for {strategy_id}"
+
+
+def _no_opportunities_summary(decisions: tuple[CandidateDecision, ...]) -> str:
+    reasons = {decision.reason for decision in decisions if not decision.accepted}
+    if reasons == {REJECTED_JOURNAL_REQUIRED}:
+        return "source data exists but all candidates require journal state"
+    if reasons == {REJECTED_COOLDOWN_ACTIVE}:
+        return "source data exists but candidates are still cooling down"
+    return _DEFAULT_SUMMARY_TEXT["no_opportunities"]
+
+
+def _fetch_last_alerted_at_by_key(
+    client: ClickHouseClient,
+    *,
+    strategy_id: str,
+    league: str,
+) -> dict[str, datetime]:
     payload = client.execute(
-        "SELECT count() AS source_rows "
-        f"FROM {source_table} "
-        f"WHERE ifNull(league, '') = '{_escape_sql(league)}' "
-        f"AND time_bucket >= now() - INTERVAL {max(1, int(lookback_days))} DAY "
+        "SELECT item_or_market_key, max(recorded_at) AS last_recorded_at "
+        "FROM poe_trade.scanner_alert_log "
+        f"WHERE strategy_id = '{_escape_sql(strategy_id)}' "
+        f"AND league = '{_escape_sql(league)}' "
+        "GROUP BY item_or_market_key "
         "FORMAT JSONEachRow"
     )
     rows = _parse_json_rows(payload)
-    if not rows:
-        return 0
-    return int(rows[0].get("source_rows", 0) or 0)
+    last_alerted: dict[str, datetime] = {}
+    for row in rows:
+        key = str(row.get("item_or_market_key") or "").strip()
+        if not key:
+            continue
+        parsed = _parse_datetime(row.get("last_recorded_at"))
+        if parsed is not None:
+            last_alerted[key] = parsed
+    return last_alerted
 
 
-def _extract_source_table(sql: str) -> str | None:
-    scrubbed = re.sub(r"'([^']|'')*'", "''", sql)
-    match = re.search(r"\bFROM\s+([A-Za-z0-9_.]+)", scrubbed, flags=re.IGNORECASE)
-    if not match:
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        cleaned = value.strip()
+        if cleaned.endswith("Z"):
+            cleaned = f"{cleaned[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(cleaned)
+        except ValueError:
+            return None
+    else:
         return None
-    return match.group(1)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
-def _as_optional_float(value: Any) -> float | None:
-    if value is None:
+def _sum_optional(values: Any) -> float | None:
+    numbers = [float(value) for value in values if value is not None]
+    if not numbers:
         return None
-    return float(value)
+    return float(sum(numbers))
+
+
+def _avg_optional(values: Any) -> float | None:
+    numbers = [float(value) for value in values if value is not None]
+    if not numbers:
+        return None
+    return float(sum(numbers) / len(numbers))
 
 
 def _escape_sql(value: str) -> str:
