@@ -1,0 +1,30 @@
+{
+  "task": "task-12-doc-truth",
+  "audit_date": "2026-03-14",
+  "findings": [
+    {
+      "doc": "README.md",
+      "discrepancy": "Implies Journal is available via API/CLI equally",
+      "truth": "Journal is CLI-only; /api/v1/journal/* routes return 404",
+      "remediation": "Clarify CLI-only status in CLI surface section"
+    },
+    {
+      "doc": "README.md",
+      "discrepancy": "Scanner API description is minimal and lacks new contract fields",
+      "truth": "Task 14 added semanticKey, searchHint, itemName, etc. and sort/filter validation",
+      "remediation": "Update Verify routes and CLI surface sections"
+    },
+    {
+      "doc": "docs/ops-runbook.md",
+      "discrepancy": "Implies opportunities are alert-backed",
+      "truth": "Task 14 moved dashboard topOpportunities to scanner-backed recommendations",
+      "remediation": "Update Monitoring & SLOs and Reference commands"
+    },
+    {
+      "doc": "frontend/README.md",
+      "discrepancy": "Generic Lovable template with no project-specific context",
+      "truth": "Project uses Vite/React with specific API proxying and feature stubs",
+      "remediation": "Add project-specific tech stack and known limitations (stubs)"
+    }
+  ]
+}

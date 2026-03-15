@@ -2,7 +2,7 @@
   "clickhouse_endpoint": "http://127.0.0.1:18123",
   "league": "Mirage",
   "realm": "pc",
-  "seeded_at": "2026-03-14T17:41:17.161018Z",
+  "seeded_at": "2026-03-14T20:35:55.998180Z",
   "summary": {
     "ml_promotion_audits": 1,
     "ml_train_runs": 1,

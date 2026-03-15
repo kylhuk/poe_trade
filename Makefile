@@ -1,4 +1,4 @@
-.PHONY: up down qa-up qa-down qa-seed qa-fault-scanner qa-fault-stash-empty qa-fault-api-unavailable qa-fault-service-action-failure qa-fault-clear qa-frontend qa-verify-product backtest-all
+.PHONY: up down qa-up qa-down qa-seed qa-fault-scanner qa-fault-stash-empty qa-fault-api-unavailable qa-fault-service-action-failure qa-fault-clear qa-frontend qa-verify-product ci-deterministic ci-smoke-cli ci-api-contract backtest-all
 
 COMPOSE := docker compose
 QA_COMPOSE := $(COMPOSE) -f docker-compose.yml -f docker-compose.qa.yml --env-file .env.qa
@@ -52,3 +52,24 @@ backtest-all:
 
 update:
 	$(PYTHON) -m poe_trade.cli refresh gold --group refs
+
+ci-api-contract:
+	.venv/bin/pytest tests/unit/test_api_ops_routes.py tests/unit/test_api_ops_analytics.py
+
+ci-smoke-cli:
+	$(PYTHON) -m poe_trade.cli --help
+	$(PYTHON) -m poe_trade.cli service --name market_harvester -- --help
+	$(PYTHON) -m poe_trade.cli refresh gold --group refs --dry-run
+	$(PYTHON) -m poe_trade.cli strategy list
+	$(PYTHON) -m poe_trade.cli research backtest --strategy bulk_essence --league Mirage --days 14 --dry-run
+	$(PYTHON) -m poe_trade.cli scan once --league Mirage --dry-run
+	$(PYTHON) -m poe_trade.cli journal buy --strategy bulk_essence --league Mirage --item-or-market-key sample --price-chaos 100 --quantity 20 --dry-run
+	$(PYTHON) -m poe_trade.cli report daily --help
+	$(PYTHON) -m poe_trade.cli alerts list --help
+	$(PYTHON) -m poe_trade.cli sync psapi-once --help
+
+ci-deterministic: ci-api-contract
+	.venv/bin/pytest tests/unit
+	npm --prefix frontend run test:deterministic
+	$(MAKE) ci-smoke-cli
+	docker compose -f docker-compose.yml -f docker-compose.qa.yml --env-file .env.qa.example config

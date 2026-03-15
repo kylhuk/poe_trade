@@ -34,6 +34,13 @@ def test_list_strategy_packs_discovers_initial_packs() -> None:
     }
     assert all(pack.discover_sql_path.exists() for pack in packs)
     assert all(pack.backtest_sql_path.exists() for pack in packs)
+    bulk_essence = next(pack for pack in packs if pack.strategy_id == "bulk_essence")
+    assert bulk_essence.min_expected_profit_chaos == 20.0
+    assert bulk_essence.min_expected_roi == 0.2
+    assert bulk_essence.min_confidence == 0.65
+    assert bulk_essence.min_sample_count == 30
+    assert bulk_essence.cooldown_minutes == 180
+    assert bulk_essence.requires_journal is False
 
 
 def test_set_strategy_enabled_updates_metadata(tmp_path, monkeypatch) -> None:
@@ -51,6 +58,12 @@ def test_set_strategy_enabled_updates_metadata(tmp_path, monkeypatch) -> None:
         latency_class="delayed",
         execution_venue="manual_trade",
         capital_tier="bootstrap",
+        min_expected_profit_chaos=10.0,
+        min_expected_roi=0.1,
+        min_confidence=0.5,
+        min_sample_count=5,
+        cooldown_minutes=60,
+        requires_journal=False,
         metadata_path=metadata_path,
         notes_path=Path("notes.md"),
         discover_sql_path=Path("discover.sql"),

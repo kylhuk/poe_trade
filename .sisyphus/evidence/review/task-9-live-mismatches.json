@@ -1,0 +1,11 @@
+{
+  "status": "blocked",
+  "blocker": "CORS policy and net::ERR_FAILED on API calls",
+  "mismatches": [
+    {
+      "type": "blocked-by-live-CORS",
+      "description": "Live frontend API calls to https://api.poe.lama-lan.ch are blocked by CORS policy. The frontend is unable to fetch data for services, session, and messages.",
+      "evidence": "Console errors: Access to fetch at 'https://api.poe.lama-lan.ch/api/v1/ops/services' from origin 'https://poe.lama-lan.ch' has been blocked by CORS policy"
+    }
+  ]
+}

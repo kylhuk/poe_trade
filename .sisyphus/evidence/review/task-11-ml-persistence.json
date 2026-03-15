@@ -1,0 +1,143 @@
+{
+  "task": "11",
+  "slug": "ml-persistence",
+  "generated_at": "2026-03-14T00:00:00Z",
+  "workspace": "/home/hal9000/docker/poe_trade",
+  "scope": [
+    "training loop status/history surfaces",
+    "runtime profile persistence",
+    "artifact writes and warm start behavior",
+    "active model version selection",
+    "resume semantics",
+    "restart/reload persistence"
+  ],
+  "runtime_checks": [
+    {
+      "command": ".venv/bin/poe-ml status --league Mirage --run latest",
+      "result": {
+        "run_id": "train-mirage-1773523434-0",
+        "status": "failed_gates",
+        "stop_reason": "hold_no_material_improvement",
+        "promotion_verdict": "hold",
+        "active_model_version": "none",
+        "candidate_vs_incumbent": {
+          "candidate_run_id": "stack-1773523434",
+          "incumbent_run_id": "stack-1773523314",
+          "mdape_improvement": 0.0,
+          "coverage_floor_ok": true
+        }
+      }
+    },
+    {
+      "command": "python3 inline script: workflows.status() across two fresh clients + importlib.reload(workflows), then api_ml.fetch_automation_status/history",
+      "result": {
+        "active_versions_across_reload": [
+          "none",
+          "none",
+          "none"
+        ],
+        "status_consistency": "stable across new client construction and module reload",
+        "automation_status": {
+          "status": "failed_gates",
+          "promotionVerdict": "hold",
+          "activeModelVersion": null
+        },
+        "automation_history_latest": {
+          "runId": "train-mirage-1773523434-0",
+          "status": "failed_gates",
+          "stopReason": "hold_no_material_improvement",
+          "activeModelVersion": null
+        }
+      }
+    },
+    {
+      "command": "python3 inline script: summarize ml_tuning_rounds_v1/ml_train_runs/ml_promotion_audit_v1/ml_model_registry_v1",
+      "result": {
+        "latest_tuning_round": {
+          "run_id": "train-mirage-1773523434-0",
+          "fit_round": 1,
+          "warm_start_from": "none",
+          "no_improvement_patience": 1,
+          "mdape_improvement": 0.0
+        },
+        "latest_train_run": {
+          "run_id": "train-mirage-1773523434-0",
+          "status": "failed_gates",
+          "stop_reason": "hold_no_material_improvement",
+          "resume_token": "train-mirage-1773523434-0"
+        },
+        "latest_promotion_audit": {
+          "candidate_run_id": "stack-1773523434",
+          "incumbent_run_id": "stack-1773523314",
+          "verdict": "hold",
+          "stop_reason": "hold_no_material_improvement"
+        },
+        "model_registry_latest_rows": 0
+      }
+    }
+  ],
+  "file_artifacts": {
+    "route_artifacts": [
+      {
+        "path": "artifacts/ml/mirage_v1/fungible_reference-Mirage.json",
+        "fit_round": 29687,
+        "warm_start_from": "artifacts/ml/mirage_v1/fungible_reference-Mirage.json"
+      },
+      {
+        "path": "artifacts/ml/mirage_v1/structured_boosted-Mirage.json",
+        "fit_round": 29687,
+        "warm_start_from": "artifacts/ml/mirage_v1/structured_boosted-Mirage.json"
+      },
+      {
+        "path": "artifacts/ml/mirage_v1/sparse_retrieval-Mirage.json",
+        "fit_round": 29687,
+        "warm_start_from": "artifacts/ml/mirage_v1/sparse_retrieval-Mirage.json"
+      }
+    ],
+    "runtime_profile": {
+      "path": "/home/hal9000/.cache/poe_trade/poe_ml_runtime_profile.json",
+      "exists": true,
+      "chosen_backend": "cpu",
+      "default_workers": 6,
+      "memory_budget_gb": 3.42
+    }
+  },
+  "code_audit": {
+    "active_version_source": {
+      "path": "poe_trade/ml/workflows.py",
+      "detail": "_active_model_version() reads latest promoted row from poe_trade.ml_model_registry_v1 (promoted=1)."
+    },
+    "promotion_write_path": {
+      "path": "poe_trade/ml/workflows.py",
+      "detail": "_promote_models() persists model_version per route into ml_model_registry_v1; train_loop updates current_version only on promote verdict."
+    },
+    "resume_semantics": [
+      {
+        "path": "poe_trade/ml/workflows.py",
+        "detail": "train_loop(..., resume=True) hard-fails when _latest_train_run_row() is absent."
+      },
+      {
+        "path": "poe_trade/services/ml_trainer.py",
+        "detail": "service loop always calls train_loop(..., resume=False); restart does not request explicit run resumption."
+      }
+    ],
+    "status_and_history_surfaces": [
+      {
+        "path": "poe_trade/api/ml.py",
+        "detail": "fetch_automation_status() and fetch_automation_history() project run lineage, stop reasons, and activeModelVersion."
+      },
+      {
+        "path": "poe_trade/ml/workflows.py",
+        "detail": "status() enriches latest run with candidate_vs_incumbent, route_hotspots, promotion_verdict, and active_model_version."
+      }
+    ]
+  },
+  "verdict": {
+    "active_model_version_persists_across_reload": true,
+    "active_non_none_model_proven": false,
+    "reason_active_non_none_not_proven": "No promoted rows currently exist in ml_model_registry_v1 for Mirage; persisted value is consistently 'none'/null.",
+    "runtime_profile_persistence_proven": true,
+    "warm_start_artifact_lineage_proven": true,
+    "resume_path_is_gated": true
+  }
+}

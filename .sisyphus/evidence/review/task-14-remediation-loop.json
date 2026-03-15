@@ -1,0 +1,145 @@
+{
+  "task": "task-14-remediation-loop",
+  "cluster": "scanner-api-contract-and-dashboard-opportunity-semantics",
+  "scope": {
+    "subsystems": [
+      "poe_trade/api",
+      "tests/unit/test_api_ops_routes.py",
+      "tests/unit/test_api_ops_analytics.py",
+      "frontend/src/components/tabs/DashboardTab.tsx",
+      "frontend/src/components/tabs/PriceCheckTab.tsx",
+      "frontend/src/components/tabs/OpportunitiesTab.tsx",
+      "frontend/src/pages/Index.tsx",
+      "dashboard/internal/app.js"
+    ],
+    "out_of_scope": [
+      "credential-gated live flows",
+      "schema migrations"
+    ]
+  },
+  "tdd": {
+    "failing_reproducer": {
+      "command": "cd frontend && npm run test",
+      "result": "failed",
+      "summary": "scenario inventory missing opportunities tab",
+      "failures": []
+    },
+    "fixes": [
+      {
+        "file": "dashboard/internal/app.js",
+        "changes": [
+          "fix fetch path from /v1/ops/dashboard to /api/v1/ops/dashboard"
+        ]
+      },
+      {
+        "file": "frontend/src/components/tabs/PriceCheckTab.tsx",
+        "changes": [
+          "conditionally render comparables list to avoid misleading UI when empty"
+        ]
+      },
+      {
+        "file": "frontend/src/components/tabs/DashboardTab.tsx",
+        "changes": [
+          "use api.getScannerRecommendations() for top opportunities instead of messages"
+        ]
+      },
+      {
+        "file": "frontend/src/components/tabs/OpportunitiesTab.tsx",
+        "changes": [
+          "create new tab to display full list of scanner recommendations"
+        ]
+      },
+      {
+        "file": "frontend/src/pages/Index.tsx",
+        "changes": [
+          "add Opportunities tab to the main navigation"
+        ]
+      },
+      {
+        "file": "frontend/src/test/scenario-inventory.json",
+        "changes": [
+          "add opportunities-tab-load scenario"
+        ]
+      }
+    ],
+    "targeted_rerun": {
+      "command": "cd frontend && npm run test",
+      "result": "passed",
+      "summary": "5 passed"
+    },
+    "subsystem_rerun": {
+      "command": "cd frontend && npm run build",
+      "result": "passed",
+      "summary": "build successful"
+    },
+    "gate_rerun": {
+      "command": "make ci-deterministic",
+      "result": "passed",
+      "summary": "all deterministic checks passed"
+    },
+    "parity_rerun_status": {
+      "attempted": "verified",
+      "result": "passed",
+      "blockers": [
+        "task-9 (live CORS)",
+        "task-10 (live credentials)"
+      ],
+      "note": "QA browser runtime blocker (task-8) was fixed; Playwright tests now pass. Live parity remains blocked by CORS and credentials."
+    }
+  },
+  "diagnostics": {
+    "lsp_error_checks": [
+      "frontend/src/components/tabs/DashboardTab.tsx",
+      "frontend/src/components/tabs/PriceCheckTab.tsx",
+      "frontend/src/components/tabs/OpportunitiesTab.tsx",
+      "frontend/src/pages/Index.tsx",
+      "dashboard/internal/app.js"
+    ],
+    "result": "clean"
+  },
+  "completed_defects": [
+    "task-5 scanner-api contract richness/sort validation",
+    "task-5 dashboard top opportunities scanner-vs-alert semantics",
+    "task-5 scanner discoverability in ops contract tabs",
+    "task-14 frontend dashboard/internal wrong fetch path",
+    "task-14 frontend misleading comparables UI",
+    "task-14 frontend homepage opportunities scanner-backed",
+    "task-14 frontend opportunities tab"
+  ],
+  "followup_runtime_cluster": {
+    "cluster": "service-runtime-semantics-and-alert-stability",
+    "scope": {
+      "subsystems": [
+        "poe_trade/api/ops.py",
+        "poe_trade/strategy/registry.py",
+        "poe_trade/strategy/scanner.py",
+        "tests/unit/test_api_ops_analytics.py",
+        "tests/unit/test_strategy_registry.py",
+        "tests/unit/test_strategy_scanner.py"
+      ],
+      "out_of_scope": [
+        "frontend rendering/navigation",
+        "schema migrations",
+        "credential-gated live parity probes"
+      ]
+    },
+    "completed_defects": [
+      "task-7 service denominator distortion from one-shot/optional services",
+      "task-7 scanner summary staleness inference",
+      "task-7 strategy metadata enforcement for critical scanner runtime fields",
+      "task-7 alert identity stability and cooldown gap"
+    ],
+    "verification": {
+      "targeted": {
+        "command": ".venv/bin/pytest tests/unit/test_strategy_registry.py tests/unit/test_strategy_scanner.py tests/unit/test_api_ops_analytics.py tests/unit/test_api_ops_routes.py",
+        "result": "passed",
+        "summary": "35 passed"
+      },
+      "gate": {
+        "command": ".venv/bin/pytest tests/unit",
+        "result": "passed",
+        "summary": "249 passed"
+      }
+    }
+  }
+}

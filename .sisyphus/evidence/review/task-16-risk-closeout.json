@@ -1,0 +1,90 @@
+{
+  "task": 16,
+  "slug": "risk-closeout",
+  "generated_at_utc": "2026-03-14T22:15:27Z",
+  "workdir": "/home/hal9000/docker/poe_trade",
+  "closeout_summary": {
+    "deterministic_gate": "green",
+    "remediation_cluster_task14": "verified_in_gate",
+    "docs_ci_alignment": "verified",
+    "blocked_items": 0,
+    "blocked_by_credentials_items": 1,
+    "fixed_later_items": 3,
+    "intentional_environment_difference_items": 1
+  },
+  "unresolved_risks": [
+    {
+      "risk_id": "R-016-002",
+      "title": "Live frontend parity remains blocked by CORS",
+      "classification": "fixed_later",
+      "severity": "high",
+      "evidence": [
+        ".sisyphus/evidence/review/task-9-live-parity.json",
+        ".sisyphus/evidence/review/task-9-live-mismatches.json",
+        "Origin probe to api.poe.lama-lan.ch returns no Access-Control-Allow-Origin for https://poe.lama-lan.ch"
+      ],
+      "next_action": "Align live API CORS allowlist with live frontend origin in production environment."
+    },
+    {
+      "risk_id": "R-016-003",
+      "title": "Live credential-gated auth/stash/restart flows cannot be executed",
+      "classification": "blocked_by_credentials",
+      "severity": "high",
+      "evidence": [
+        ".sisyphus/evidence/review/task-10-auth-stash-happy.json",
+        ".sisyphus/evidence/review/task-10-restart-proof.json",
+        "Current env has no live session/bootstrap creds; dotenv bearer token returns 401 auth_invalid on /api/v1/ops/services"
+      ],
+      "next_action": "Provide valid live poeSessionId bootstrap credential and live operator token, then rerun task-10 flows with allowlist safety policy."
+    },
+    {
+      "risk_id": "R-016-004",
+      "title": "ML signals still not wired into scanner recommendation contract",
+      "classification": "fixed_later",
+      "severity": "medium",
+      "evidence": [
+        ".sisyphus/evidence/review/task-11-ml-nonforgetting.json",
+        "task-11 verdict scanner_ml_influence_present=false"
+      ],
+      "next_action": "Implement additive ML-to-scanner fields/ranking path behind feature gating and verify regression safety."
+    },
+    {
+      "risk_id": "R-016-008",
+      "title": "Data-contract and gold-mart candidate gaps",
+      "classification": "fixed_later",
+      "severity": "medium",
+      "evidence": [
+        "Gold marts are coarse aggregates lacking candidate-grade fields",
+        "Gold marts currently empty in active ClickHouse"
+      ],
+      "next_action": "Implement additive candidate-grade gold marts and restore freshness to the gold-mart refresh pipeline."
+    },
+    {
+      "risk_id": "R-016-010",
+      "title": "QA trusted-origin bypass behavior differs from live bearer enforcement",
+      "classification": "intentional_environment_difference",
+      "severity": "low",
+      "evidence": [
+        "task-5 and task-12 evidence describe QA bypass as test-only and live bearer as required",
+        "README and docs now distinguish QA/local behavior from live auth expectations"
+      ],
+      "next_action": "No immediate fix required; keep docs explicit and avoid treating QA bypass as live-auth proof."
+    }
+  ],
+  "defect_closeout": {
+    "closed_by_task14": [
+      "scanner recommendation API contract regression cluster",
+      "dashboard opportunity semantics (scanner-backed top opportunities)",
+      "opportunities discoverability in ops contract"
+    ],
+    "closed_by_task16": [
+      "local end-to-end trace chain (verified via QA stack and Playwright)"
+    ],
+    "validated_by": [
+      "make ci-deterministic",
+      ".venv/bin/pytest tests/unit/test_ml_tuning.py tests/unit/test_ml_runtime.py tests/unit/test_api_ml_routes.py -q",
+      ".venv/bin/poe-ml status --league Mirage --run latest",
+      ".venv/bin/poe-migrate --status --dry-run"
+    ]
+  }
+}

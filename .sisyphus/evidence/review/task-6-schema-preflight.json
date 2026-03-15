@@ -1,0 +1,199 @@
+{
+  "task": "task-6-schema-preflight",
+  "generated_at_utc": "2026-03-14T21:13:30Z",
+  "workdir": "/home/hal9000/docker/poe_trade",
+  "inputs_reviewed": {
+    "plan": ".sisyphus/plans/comprehensive-codebase-review.md",
+    "schema_migrations": "schema/migrations/*.sql",
+    "sanity_sql": "schema/sanity/*.sql",
+    "gold_sql": "poe_trade/sql/gold/*.sql",
+    "strategy_sql": "poe_trade/sql/strategy/*/*.sql",
+    "analytics": "poe_trade/analytics/reports.py",
+    "backtest_artifact": "backtest_latest_results_mirage_14d.tsv"
+  },
+  "commands": [
+    {
+      "command": ".venv/bin/poe-migrate --status --dry-run",
+      "status": "pass",
+      "key_output": [
+        "0001..0035 applied",
+        "all migrations applied"
+      ]
+    },
+    {
+      "command": ".venv/bin/python -m poe_trade.cli refresh gold --group refs --dry-run",
+      "status": "pass",
+      "key_output": [
+        "poe_trade/sql/gold/100_currency_ref_hour.sql",
+        "poe_trade/sql/gold/110_listing_ref_hour.sql",
+        "poe_trade/sql/gold/120_liquidity_ref_hour.sql",
+        "poe_trade/sql/gold/130_bulk_premium_hour.sql",
+        "poe_trade/sql/gold/140_set_ref_hour.sql"
+      ]
+    },
+    {
+      "command": "python3 inline ClickHouse diagnostics (gold/source counts, league nulls, DESCRIBE, backtest summary)",
+      "status": "pass",
+      "key_output": [
+        "gold_currency_ref_hour rows=0 max_time=1970-01-01 00:00:00",
+        "gold_listing_ref_hour rows=0 max_time=1970-01-01 00:00:00",
+        "gold_liquidity_ref_hour rows=0 max_time=1970-01-01 00:00:00",
+        "gold_bulk_premium_hour rows=0 max_time=1970-01-01 00:00:00",
+        "gold_set_ref_hour rows=0 max_time=1970-01-01 00:00:00",
+        "raw_public_stash_pages rows=74268 max_ts=2026-03-14 19:50:42.737",
+        "v_ps_items_enriched rows=1217216 max_ts=2026-03-14 19:50:42.737",
+        "raw_currency_exchange_hour rows=0",
+        "research_backtest_summary rows for listed run_ids=0",
+        "research_backtest_detail rows for listed run_ids=0"
+      ]
+    }
+  ],
+  "migration_chain": {
+    "files": 35,
+    "version_range": "0001-0035",
+    "missing_versions": [],
+    "historical_non_additive_migrations_present": [
+      {
+        "migration": "0018_cleanup_unused_objects.sql",
+        "reason": "DROP VIEW/TABLE statements remove legacy objects"
+      },
+      {
+        "migration": "0021_raw_public_stash_pages_nullable_league.sql",
+        "reason": "table rename+copy rebuild to Nullable league"
+      },
+      {
+        "migration": "0022_queue_based_ingest_telemetry.sql",
+        "reason": "shadow-table rename+copy rebuild for ingest telemetry"
+      }
+    ],
+    "current_state": "No pending migrations; task produced no schema mutation"
+  },
+  "gold_mart_classification": [
+    {
+      "mart": "poe_trade.gold_currency_ref_hour",
+      "classification": "monitoring_coarse_state_only",
+      "suitable_for_candidate_generation": false,
+      "why": "hourly market-level aggregates with ratio-presence flags only; lacks actionable lot-level pricing depth"
+    },
+    {
+      "mart": "poe_trade.gold_listing_ref_hour",
+      "classification": "monitoring_coarse_state_only",
+      "suitable_for_candidate_generation": false,
+      "why": "aggregated by hour/category/base_type with median price; no affix roll, seller quality, or listing-level evidence"
+    },
+    {
+      "mart": "poe_trade.gold_liquidity_ref_hour",
+      "classification": "monitoring_coarse_state_only",
+      "suitable_for_candidate_generation": false,
+      "why": "category-level listing and stack summaries only"
+    },
+    {
+      "mart": "poe_trade.gold_bulk_premium_hour",
+      "classification": "monitoring_coarse_state_only",
+      "suitable_for_candidate_generation": false,
+      "why": "single fixed bulk threshold and category median spread; no per-item spread opportunities"
+    },
+    {
+      "mart": "poe_trade.gold_set_ref_hour",
+      "classification": "monitoring_coarse_state_only",
+      "suitable_for_candidate_generation": false,
+      "why": "category-level distinct-base-type counts, not set composition or completion signals"
+    }
+  ],
+  "strategy_to_source_mart": {
+    "advanced_rare_finish": "gold_listing_ref_hour",
+    "bulk_essence": "gold_bulk_premium_hour",
+    "cluster_basic": "gold_listing_ref_hour",
+    "corruption_ev": "gold_listing_ref_hour",
+    "cx_market_making": "gold_currency_ref_hour",
+    "dump_tab_reprice": "gold_listing_ref_hour",
+    "flask_basic": "gold_listing_ref_hour",
+    "fossil_scarcity": "gold_bulk_premium_hour",
+    "fragment_sets": "gold_set_ref_hour",
+    "high_dim_jewels": "gold_listing_ref_hour",
+    "rog_basic": "gold_listing_ref_hour",
+    "scarab_reroll": "gold_bulk_premium_hour"
+  },
+  "zero_row_strategy_classification": [
+    {
+      "strategy_id": "advanced_rare_finish",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_listing_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "bulk_essence",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_bulk_premium_hour has 0 rows"
+    },
+    {
+      "strategy_id": "cluster_basic",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_listing_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "corruption_ev",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_listing_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "cx_market_making",
+      "root_cause": "no_data",
+      "evidence": "gold_currency_ref_hour has 0 rows and upstream raw_currency_exchange_hour has 0 rows"
+    },
+    {
+      "strategy_id": "dump_tab_reprice",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_listing_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "flask_basic",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_listing_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "fossil_scarcity",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_bulk_premium_hour has 0 rows"
+    },
+    {
+      "strategy_id": "fragment_sets",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_set_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "high_dim_jewels",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_listing_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "rog_basic",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_listing_ref_hour has 0 rows"
+    },
+    {
+      "strategy_id": "scarab_reroll",
+      "root_cause": "no_data",
+      "evidence": "target mart gold_bulk_premium_hour has 0 rows"
+    }
+  ],
+  "ruled_out_or_narrowed": {
+    "league_nulls": "narrowed_not_primary: gold marts currently empty; source psapi marts have non-null league in enriched layer during audited window",
+    "thresholded_out": "ruled_out_for_backtest: backtest SQL writes all rows from source query and status no_opportunities/no_data is based on count, not minima thresholds",
+    "runtime_metadata_ignored": "confirmed_non_primary: minima/params fields in strategies/*/strategy.toml are not referenced by scanner/backtest Python runtime"
+  },
+  "coarse_mart_gap_assessment": {
+    "present": true,
+    "impact": "Even with data, current gold marts are coarse state summaries and cannot support robust candidate identity/execution evidence",
+    "additive_followups_recommended": [
+      "Introduce additive candidate marts keyed by (league, strategy_id, semantic_key, time_bucket) with strategy-specific evidence fields",
+      "Add diagnostics mart/view for per-mart freshness, row_count, distinct_leagues, null_or_blank_league_rows, and last_refresh_at",
+      "Expose diagnostics endpoint reading additive diagnostics view to separate no_data vs stale_refresh vs league_filter issues"
+    ]
+  },
+  "contract_and_compatibility_conclusion": {
+    "backward_forward_safety": "No contract mutation performed in this task",
+    "public_stash_immutability": "preserved",
+    "schema_fix_applied": false,
+    "fix_scope_note": "Detected defects are cross-cutting data-product gaps and refresh/freshness observability gaps; not patched here to avoid multi-cluster change"
+  }
+}

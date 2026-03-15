@@ -345,14 +345,32 @@ class ApiApp:
         return json_response(payload)
 
     def _ops_scanner_recommendations(self, _context: Mapping[str, object]) -> Response:
+        query_params = _query_params_from_context(_context)
+        sort_by = _first_query_param(query_params, "sort", default="recorded_at")
+        league = _optional_query_param(query_params, "league")
+        strategy_id = _optional_query_param(query_params, "strategy_id")
         try:
-            payload = scanner_recommendations_payload(self.client)
+            limit = _int_query_param(query_params, "limit", default=50)
+            min_confidence = _optional_float_query_param(query_params, "min_confidence")
+        except ValueError:
+            raise ApiError(status=400, code="invalid_input", message="invalid input")
+        try:
+            payload = scanner_recommendations_payload(
+                self.client,
+                limit=limit,
+                sort_by=sort_by,
+                min_confidence=min_confidence,
+                league=league,
+                strategy_id=strategy_id,
+            )
         except OpsBackendUnavailable:
             raise ApiError(
                 status=503,
                 code="backend_unavailable",
                 message="backend unavailable",
             ) from None
+        except ValueError:
+            raise ApiError(status=400, code="invalid_input", message="invalid input")
         return json_response(payload)
 
     def _ops_ack_alert(self, context: Mapping[str, object]) -> Response:
@@ -1022,6 +1040,39 @@ def _first_query_param(
     if not values:
         return default
     return values[0]
+
+
+def _optional_query_param(
+    query_params: Mapping[str, list[str]],
+    key: str,
+) -> str | None:
+    value = _first_query_param(query_params, key, default="").strip()
+    return value or None
+
+
+def _int_query_param(
+    query_params: Mapping[str, list[str]],
+    key: str,
+    *,
+    default: int,
+) -> int:
+    raw = _optional_query_param(query_params, key)
+    if raw is None:
+        return default
+    value = int(raw)
+    if value < 1:
+        raise ValueError(key)
+    return value
+
+
+def _optional_float_query_param(
+    query_params: Mapping[str, list[str]],
+    key: str,
+) -> float | None:
+    raw = _optional_query_param(query_params, key)
+    if raw is None:
+        return None
+    return float(raw)
 
 
 def _session_cookie_from_headers(

@@ -1,0 +1,138 @@
+{
+  "fixture_id": "opportunity_identity",
+  "version": "v1.0.0",
+  "purpose": "deterministic replay of stable opportunity identity behavior",
+  "normalization_rules": {
+    "text": [
+      "trim leading/trailing whitespace",
+      "collapse internal whitespace to single spaces",
+      "lowercase for identity inputs"
+    ],
+    "numbers": [
+      "max_buy rounded to 2 decimals",
+      "null remains null"
+    ],
+    "identity_exclusions": [
+      "scanner_run_id",
+      "recorded_at",
+      "alert_id",
+      "evidence_snapshot",
+      "confidence",
+      "expected_profit_chaos",
+      "expected_roi",
+      "expected_hold_minutes",
+      "liquidity_score",
+      "freshness_minutes",
+      "gold_cost"
+    ]
+  },
+  "semantic_key_materialization": {
+    "format": "league|strategy_id|execution_venue|search_hint|item_name|buy_plan|max_buy|transform_plan|exit_plan",
+    "opportunity_id_rule": "opportunity_id = 'opp::' + semantic_key"
+  },
+  "fixtures": [
+    {
+      "name": "same_semantic_fields_across_reruns_keeps_identity",
+      "input_a": {
+        "league": "Mirage",
+        "strategy_id": "bulk_essence",
+        "execution_venue": "manual_trade",
+        "search_hint": "Screaming Essence of Greed",
+        "item_name": "Screaming Essence of Greed",
+        "buy_plan": "buy <= 12c",
+        "max_buy": 12.0,
+        "transform_plan": "none",
+        "exit_plan": "list @ 18c",
+        "scanner_run_id": "qa-scan-1",
+        "recorded_at": "2026-01-01T00:00:00Z",
+        "alert_id": "qa-scan-1-1547291",
+        "evidence_snapshot": {
+          "why_it_fired": "spread>10%",
+          "sample": "A"
+        }
+      },
+      "input_b": {
+        "league": "Mirage",
+        "strategy_id": "bulk_essence",
+        "execution_venue": "manual_trade",
+        "search_hint": "  screaming essence of greed  ",
+        "item_name": "Screaming   Essence of   Greed",
+        "buy_plan": "buy <= 12c",
+        "max_buy": 12.0,
+        "transform_plan": "none",
+        "exit_plan": "list @ 18c",
+        "scanner_run_id": "qa-scan-2",
+        "recorded_at": "2026-01-01T00:30:00Z",
+        "alert_id": "qa-scan-2-1547291",
+        "evidence_snapshot": {
+          "why_it_fired": "spread>10%",
+          "sample": "B"
+        }
+      },
+      "expected": {
+        "semantic_key": "mirage|bulk_essence|manual_trade|screaming essence of greed|screaming essence of greed|buy <= 12c|12.0|none|list @ 18c",
+        "opportunity_id": "opp::mirage|bulk_essence|manual_trade|screaming essence of greed|screaming essence of greed|buy <= 12c|12.0|none|list @ 18c",
+        "identity_equal": true,
+        "notes": "run-scoped fields changed but identity remains stable"
+      }
+    },
+    {
+      "name": "semantic_change_forces_new_identity",
+      "input_a": {
+        "league": "Mirage",
+        "strategy_id": "bulk_essence",
+        "execution_venue": "manual_trade",
+        "search_hint": "Screaming Essence of Greed",
+        "item_name": "Screaming Essence of Greed",
+        "buy_plan": "buy <= 12c",
+        "max_buy": 12.0,
+        "transform_plan": "none",
+        "exit_plan": "list @ 18c"
+      },
+      "input_b": {
+        "league": "Mirage",
+        "strategy_id": "bulk_essence",
+        "execution_venue": "manual_trade",
+        "search_hint": "Screaming Essence of Greed",
+        "item_name": "Screaming Essence of Greed",
+        "buy_plan": "buy <= 11c",
+        "max_buy": 11.0,
+        "transform_plan": "none",
+        "exit_plan": "list @ 18c"
+      },
+      "expected": {
+        "semantic_key_a": "mirage|bulk_essence|manual_trade|screaming essence of greed|screaming essence of greed|buy <= 12c|12.0|none|list @ 18c",
+        "semantic_key_b": "mirage|bulk_essence|manual_trade|screaming essence of greed|screaming essence of greed|buy <= 11c|11.0|none|list @ 18c",
+        "opportunity_id_equal": false,
+        "notes": "buy-plan and max-buy changes are semantic changes"
+      }
+    },
+    {
+      "name": "alert_id_is_not_identity",
+      "input": {
+        "scanner_run_id": "qa-scan-1",
+        "item_or_market_key": "Screaming Essence of Greed",
+        "alert_id_rule_today": "concat(scanner_run_id,'-',item_or_market_key)",
+        "alert_id_example_a": "qa-scan-1-Screaming Essence of Greed",
+        "alert_id_example_b": "qa-scan-2-Screaming Essence of Greed"
+      },
+      "expected": {
+        "alert_ids_equal": false,
+        "semantic_identity_equal": true,
+        "notes": "alert lifecycle IDs may rotate each run; semantic_key remains canonical"
+      }
+    }
+  ],
+  "replay_assertions": [
+    "Given same semantic fields, semantic_key MUST be byte-identical.",
+    "Given changed semantic fields, semantic_key MUST change.",
+    "Changing only scanner_run_id/recorded_at/evidence_snapshot MUST NOT change semantic_key.",
+    "Homepage top opportunities selection MUST key on semantic_key/opportunity_id, not alert_id."
+  ],
+  "grounding": [
+    "poe_trade/strategy/scanner.py currently derives item_or_market_key from source row hash and alert_id from scanner_run_id + item_or_market_key",
+    "poe_trade/api/ops.py dashboard currently sources topOpportunities from critical messages/alerts",
+    "poe_trade/cli.py best-effort derives search_hint from evidence_snapshot",
+    "schema/migrations/0029_scanner_tables.sql persists scanner_run_id and alert_id as run-scoped fields"
+  ]
+}

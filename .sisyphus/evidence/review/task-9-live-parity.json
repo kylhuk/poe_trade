@@ -1,0 +1,27 @@
+{
+  "status": "blocked",
+  "blocker": "CORS policy and net::ERR_FAILED on API calls",
+  "details": {
+    "url": "https://poe.lama-lan.ch",
+    "network_errors": [
+      "Access to fetch at 'https://api.poe.lama-lan.ch/api/v1/ops/services' from origin 'https://poe.lama-lan.ch' has been blocked by CORS policy",
+      "Failed to load resource: net::ERR_FAILED @ https://api.poe.lama-lan.ch/api/v1/ops/services:0",
+      "Access to fetch at 'https://api.poe.lama-lan.ch/api/v1/auth/session' from origin 'https://poe.lama-lan.ch' has been blocked by CORS policy",
+      "Failed to load resource: net::ERR_FAILED @ https://api.poe.lama-lan.ch/api/v1/auth/session:0",
+      "Access to fetch at 'https://api.poe.lama-lan.ch/api/v1/ops/messages' from origin 'https://poe.lama-lan.ch' has been blocked by CORS policy",
+      "Failed to load resource: net::ERR_FAILED @ https://api.poe.lama-lan.ch/api/v1/ops/messages:0"
+    ],
+    "selectors_found": [
+      "heading 'PoE Dashboard'",
+      "tab 'Dashboard'",
+      "tab 'Services'",
+      "tab 'Analytics'",
+      "tab 'Price Check'",
+      "tab 'Stash Viewer'",
+      "tab 'Messages'",
+      "heading 'Top Opportunities'"
+    ],
+    "homepage_opportunities_semantics": "Unknown due to API failure. The UI shows 'Top Opportunities' and 'Sorted by expected net chaos per minute of human time', but the data fails to load.",
+    "opportunities_scanner_surface": "There is no dedicated 'Scanner' or 'Opportunities' tab. The opportunities are shown on the 'Dashboard' tab under 'Top Opportunities'."
+  }
+}

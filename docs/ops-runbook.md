@@ -11,6 +11,7 @@
 ## Monitoring & SLOs
 - `poe_trade.bronze_ingest_checkpoints` is the canonical queue-cursor log; watch `queue_key`, `feed_kind`, `cursor_hash`, `status`, and `retrieved_at` to diagnose drift.
 - The `StatusReporter` entries in `poe_trade.poe_ingest_status` include `queue_key`, `feed_kind`, `stalled_since`, and `error_count` for the latest daemon health view.
+- `topOpportunities` on the dashboard are sourced from scanner recommendations; `criticalAlerts` remain message-derived diagnostics only.
 - `poe_trade.bronze_requests` is the single source for rate-limit telemetry; repeated 429s or `retry_after_seconds` spikes show where the API is throttling the harvester.
 - ClickHouse health matters: use `system.metrics`/`system.events` plus the `clickhouse-client` query above to catch authentication or resource pressure before ingestion fails.
 
@@ -30,6 +31,7 @@
 - `curl -i http://127.0.0.1:8080/healthz` for unauthenticated API health checks.
 - `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ops/contract` to bootstrap frontend-facing route and capability metadata.
 - `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/ops/services` for visible service inventory and allowed lifecycle actions.
+- `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" "http://127.0.0.1:8080/api/v1/ops/scanner/recommendations?sort=liquidity_score&limit=5&min_confidence=0.8"` to inspect rich opportunity contract fields (semanticKey, searchHint, itemName, etc.).
 - `curl -i -X POST -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" http://127.0.0.1:8080/api/v1/actions/services/market_harvester/restart` to trigger the only supported lifecycle control path.
 - `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://app.example.com" "http://127.0.0.1:8080/api/v1/stash/tabs?league=Mirage&realm=pc"` to verify stash endpoint status (`feature_unavailable` is expected until stash backend rollout completes).
 - `poe-ledger-cli service --name market_harvester` to launch the market sync daemon through the CLI router and inherit the shared logging configuration.
@@ -41,8 +43,8 @@
 - `poe-ledger-cli research backtest --strategy bulk_essence --league Mirage --days 14` to print `run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary`; `no_data` means no source rows for the window, `no_opportunities` means source rows existed but strategy rows did not.
 - `poe-ledger-cli research backtest-all --league Mirage --days 14 --enabled-only` to print one summary row per enabled strategy with the same status contract.
 - `poe-ledger-cli scan once --league Mirage --dry-run` and `poe-ledger-cli scan watch --league Mirage --max-runs 2 --dry-run` to exercise recommendation runs.
-- `poe-ledger-cli journal buy --strategy bulk_essence --league Mirage --item-or-market-key sample --price-chaos 100 --quantity 20 --dry-run` to test manual journal writes.
-- `poe-ledger-cli alerts list`, `poe-ledger-cli alerts ack --id <alert_id>`, and `poe-ledger-cli report daily --league Mirage` to inspect operator output tables.
+- `poe-ledger-cli journal buy --strategy bulk_essence --league Mirage --item-or-market-key sample --price-chaos 100 --quantity 20 --dry-run` (CLI-only) to test manual journal writes.
+- `poe-ledger-cli alerts list` (diagnostics/messages), `poe-ledger-cli alerts ack --id <alert_id>`, and `poe-ledger-cli report daily --league Mirage` to inspect operator output tables.
 
 - `poe-migrate --dry-run --apply` for migrations; the runner stores state in `poe_trade.poe_schema_migrations`, so reruns are safe.
 - `clickhouse-client --query "SELECT * FROM poe_trade.bronze_ingest_checkpoints ORDER BY retrieved_at DESC LIMIT 5"` for the freshest checkpoint metadata.

@@ -1,0 +1,72 @@
+{
+  "task": "task-1-immutable-data",
+  "version": "2026-03-14",
+  "objective": "Enforce immutable-data guardrails for crawled public stash data and canonical persisted public-stash history during review execution.",
+  "immutable_targets": {
+    "primary": [
+      {
+        "name": "raw_public_stash_pages",
+        "table": "poe_trade.raw_public_stash_pages",
+        "classification": "crawled_public_stash_data"
+      },
+      {
+        "name": "bronze_ingest_checkpoints",
+        "table": "poe_trade.bronze_ingest_checkpoints",
+        "classification": "canonical_persisted_public_stash_history"
+      }
+    ],
+    "related_history_views": [
+      {
+        "name": "poe_ingest_status",
+        "table": "poe_trade.poe_ingest_status",
+        "classification": "operational_history_surface"
+      },
+      {
+        "name": "bronze_requests",
+        "table": "poe_trade.bronze_requests",
+        "classification": "request_history_surface"
+      }
+    ]
+  },
+  "forbidden_actions": {
+    "data_plane": [
+      "DELETE FROM poe_trade.raw_public_stash_pages",
+      "DELETE FROM poe_trade.bronze_ingest_checkpoints",
+      "TRUNCATE TABLE poe_trade.raw_public_stash_pages",
+      "TRUNCATE TABLE poe_trade.bronze_ingest_checkpoints",
+      "ALTER TABLE ... DELETE",
+      "ALTER TABLE ... UPDATE",
+      "DROP TABLE on any immutable target",
+      "INSERT overwrite semantics that replace canonical history"
+    ],
+    "control_plane": [
+      "Replay reset of public stash cursor/checkpoint history",
+      "Manual checkpoint rewind/reset that rewrites canonical persisted history",
+      "Any non-allowlisted live POST mutation outside service restart allowlist"
+    ],
+    "policy_text": "Delete/overwrite/replay-reset/truncate actions against crawled public stash data and canonical persisted public-stash history are explicitly prohibited."
+  },
+  "allowed_operations": {
+    "qa_only": [
+      "Deterministic fixture seeding in QA-only datasets that do not modify live canonical history"
+    ],
+    "live_readonly": [
+      "Read-only SELECT verification queries",
+      "GET/OPTIONS API inspection"
+    ],
+    "live_allowlisted_mutation": [
+      "POST /api/v1/actions/services/market_harvester/restart",
+      "POST /api/v1/actions/services/account_stash_harvester/restart",
+      "POST /api/v1/actions/services/scanner_worker/restart",
+      "POST /api/v1/actions/services/ml_trainer/restart"
+    ]
+  },
+  "enforcement": {
+    "gate": "If an operation touches immutable targets and is not an explicit read-only query, it is denied.",
+    "incident_response": [
+      "Stop execution immediately",
+      "Record attempted action and context in evidence",
+      "Escalate to orchestrator for explicit revised authorization"
+    ]
+  }
+}

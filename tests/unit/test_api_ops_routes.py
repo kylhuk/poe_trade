@@ -104,6 +104,7 @@ def test_ops_contract_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "/api/v1/ops/services" == body["routes"]["ops_services"]
     assert body["visible_service_ids"] == ["market_harvester", "api"]
     assert body["controllable_service_ids"] == ["market_harvester"]
+    assert "opportunities" in body["tabs"]
 
 
 def test_ops_services_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,6 +327,59 @@ def test_scanner_summary_route_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     body = json.loads(response.body.decode("utf-8"))
     assert response.status == 200
     assert body["status"] == "ok"
+
+
+def test_scanner_recommendations_route_rejects_unknown_sort() -> None:
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+    with pytest.raises(ApiError) as exc:
+        app.handle(
+            method="GET",
+            raw_path="/api/v1/ops/scanner/recommendations?sort=not_a_field",
+            headers=_auth_headers(),
+            body_reader=BytesIO(b""),
+        )
+    assert exc.value.status == 400
+    assert exc.value.code == "invalid_input"
+
+
+def test_scanner_recommendations_route_forwards_sort_and_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _payload(_client, **kwargs):
+        captured.update(kwargs)
+        return {
+            "recommendations": [],
+            "meta": {
+                "source": "scanner_recommendations",
+                "primaryLeague": "Mirage",
+                "generatedAt": "2026-03-14T00:00:00Z",
+            },
+        }
+
+    monkeypatch.setattr("poe_trade.api.app.scanner_recommendations_payload", _payload)
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+
+    response = app.handle(
+        method="GET",
+        raw_path=(
+            "/api/v1/ops/scanner/recommendations?sort=expected_profit_chaos"
+            "&min_confidence=0.65&league=Mirage&strategy_id=bulk_essence&limit=25"
+        ),
+        headers=_auth_headers(),
+        body_reader=BytesIO(b""),
+    )
+    body = json.loads(response.body.decode("utf-8"))
+    assert response.status == 200
+    assert body["recommendations"] == []
+    assert captured == {
+        "limit": 25,
+        "sort_by": "expected_profit_chaos",
+        "min_confidence": 0.65,
+        "league": "Mirage",
+        "strategy_id": "bulk_essence",
+    }
 
 
 def test_ack_alert_route_shape(monkeypatch: pytest.MonkeyPatch) -> None:

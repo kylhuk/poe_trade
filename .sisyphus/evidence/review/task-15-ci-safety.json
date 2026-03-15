@@ -1,0 +1,43 @@
+{
+  "task": "task-15-ci-safety",
+  "generated_at_utc": "2026-03-14T22:08:13+00:00",
+  "guardrails": {
+    "no_live_site_checks_in_default_ci": {
+      "status": "preserved",
+      "evidence": [
+        "Workflow gates execute local unit/frontend/build/inventory/CLI/compose-config commands only.",
+        "No HTTP probes against live domains were added to .github/workflows/python-ci.yml."
+      ]
+    },
+    "task14_remediation_cluster_protected": {
+      "status": "preserved",
+      "evidence": [
+        "ci-api-contract target enforces tests/unit/test_api_ops_routes.py and tests/unit/test_api_ops_analytics.py.",
+        "ci-deterministic requires ci-api-contract before full unit gate runs."
+      ]
+    },
+    "playwright_honesty": {
+      "status": "preserved",
+      "evidence": [
+        "Default CI does not claim browser-green status while task-8 browser path remains blocked.",
+        "README now states Playwright coverage is outside default deterministic gate until blocker clearance."
+      ]
+    },
+    "qa_safe_contract_checks": {
+      "status": "preserved",
+      "evidence": [
+        "Compose validation uses .env.qa.example for deterministic config rendering without requiring live credentials.",
+        "Frontend scenario inventory validation is wired into frontend test:deterministic and default CI."
+      ]
+    }
+  },
+  "changed_paths": [
+    ".github/workflows/python-ci.yml",
+    "Makefile",
+    "frontend/package.json",
+    "README.md"
+  ],
+  "residual_non_ci_blockers": [
+    "Task-8 browser-path blocker remains outside default CI and still requires dedicated remediation before making Playwright mandatory."
+  ]
+}

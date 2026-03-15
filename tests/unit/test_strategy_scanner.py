@@ -72,6 +72,12 @@ def test_run_scan_once_preserves_source_recommendation_fields_with_fallbacks(
         enabled=True,
         strategy_id="demo_strategy",
         execution_venue="manual_trade",
+        min_expected_profit_chaos=10.0,
+        min_expected_roi=0.2,
+        min_confidence=0.7,
+        min_sample_count=15,
+        cooldown_minutes=180,
+        requires_journal=False,
         discover_sql_path=discover_sql,
     )
     monkeypatch.setattr(scanner, "list_strategy_packs", lambda: [pack])
@@ -98,3 +104,55 @@ def test_run_scan_once_preserves_source_recommendation_fields_with_fallbacks(
     assert "'unknown') AS expected_hold_time" in insert_query
     assert "if(JSONHas(source_row_json, 'confidence')" in insert_query
     assert "source_row_json AS evidence_snapshot" in insert_query
+    assert (
+        "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_profit_chaos')"
+        in insert_query
+    )
+    assert (
+        "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_roi')"
+        in insert_query
+    )
+    assert (
+        "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'confidence')"
+        in insert_query
+    )
+    assert (
+        "JSONExtract(source_row_json, 'Nullable(Int64)', 'sample_count')"
+        in insert_query
+    )
+
+    alert_query = client.queries[1]
+    assert (
+        "concat(strategy_id, '|', league, '|', item_or_market_key) AS alert_id"
+        in alert_query
+    )
+    assert "LEFT JOIN (" in alert_query
+    assert (
+        "dateDiff('minute', previous.last_recorded_at, candidate.recorded_at) >= 180"
+        in alert_query
+    )
+
+
+def test_run_scan_once_skips_journal_only_strategies(monkeypatch, tmp_path) -> None:
+    scanner = importlib.import_module("poe_trade.strategy.scanner")
+    client = _RecordingClient()
+    discover_sql = tmp_path / "discover.sql"
+    discover_sql.write_text("SELECT 1", encoding="utf-8")
+    pack = SimpleNamespace(
+        enabled=True,
+        strategy_id="journal_only",
+        execution_venue="manual_trade",
+        min_expected_profit_chaos=10.0,
+        min_expected_roi=0.2,
+        min_confidence=0.7,
+        min_sample_count=15,
+        cooldown_minutes=120,
+        requires_journal=True,
+        discover_sql_path=discover_sql,
+    )
+    monkeypatch.setattr(scanner, "list_strategy_packs", lambda: [pack])
+
+    scan_id = scanner.run_scan_once(client, league="Mirage", dry_run=False)
+
+    assert len(scan_id) == 32
+    assert client.queries == []

@@ -1,0 +1,57 @@
+{
+  "task": "task-10-restart-proof",
+  "timestamp_utc": "2026-03-14T21:23:49Z",
+  "scenario_label": "live-allowlisted-mutation",
+  "result": "blocked_by_credentials",
+  "allowlist_reference": {
+    "source": ".sisyphus/evidence/review/task-1-audit-contract.json",
+    "allowed_restarts": [
+      "market_harvester",
+      "account_stash_harvester",
+      "scanner_worker",
+      "ml_trainer"
+    ]
+  },
+  "pre_action_baseline": {
+    "healthz": {
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "service": "api",
+        "version": "v1"
+      }
+    },
+    "ops_services_without_bearer": {
+      "status": 401,
+      "error_code": "auth_required"
+    }
+  },
+  "credential_gate": {
+    "required_live_operator_bearer_token": "missing_or_invalid",
+    "evidence": {
+      "env_candidate_present": false,
+      "dotenv_token_present": true,
+      "dotenv_token_live_status": 401
+    }
+  },
+  "restart_attempt": {
+    "service": "market_harvester",
+    "verb": "restart",
+    "performed": false,
+    "reason": "blocked_by_credentials",
+    "safety_note": "No live mutation executed without valid operator token"
+  },
+  "bounded_polling": {
+    "performed": false,
+    "reason": "restart_not_executed"
+  },
+  "post_action_parity": {
+    "performed": true,
+    "healthz_status": 200,
+    "parity": "unchanged"
+  },
+  "safety": {
+    "forbidden_mutations_performed": false,
+    "public_stash_data_mutation": false
+  }
+}

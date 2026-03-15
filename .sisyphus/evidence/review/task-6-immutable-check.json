@@ -1,0 +1,76 @@
+{
+  "task": "task-6-immutable-check",
+  "generated_at_utc": "2026-03-14T21:13:45Z",
+  "workdir": "/home/hal9000/docker/poe_trade",
+  "immutable_targets": [
+    "poe_trade.raw_public_stash_pages",
+    "poe_trade.bronze_ingest_checkpoints",
+    "canonical public-stash ingestion history and derivatives"
+  ],
+  "inspection_steps": [
+    {
+      "step": "migration_sql_keyword_audit",
+      "command": "python3 inline scan over schema/migrations/*.sql for DROP/TRUNCATE/DELETE/RENAME",
+      "result": {
+        "drop_table_files": [
+          "0018_cleanup_unused_objects.sql"
+        ],
+        "rename_table_files": [
+          "0021_raw_public_stash_pages_nullable_league.sql",
+          "0022_queue_based_ingest_telemetry.sql"
+        ],
+        "truncate_files": [],
+        "delete_from_files": [],
+        "note": "destructive markers are historical and already applied; this task executed no migration apply"
+      }
+    },
+    {
+      "step": "sanity_sql_write_audit",
+      "command": "python3 inline scan over schema/sanity/*.sql for write verbs",
+      "result": {
+        "write_markers": {},
+        "conclusion": "sanity queries are read-only"
+      }
+    },
+    {
+      "step": "runtime_commands_audit",
+      "commands_executed": [
+        ".venv/bin/poe-migrate --status --dry-run",
+        ".venv/bin/python -m poe_trade.cli refresh gold --group refs --dry-run",
+        "python3 inline ClickHouse SELECT/DESCRIBE diagnostics"
+      ],
+      "result": "all executed commands were read-only or dry-run"
+    }
+  ],
+  "public_stash_mutation_check": {
+    "delete_or_truncate_executed": false,
+    "update_or_mass_rewrite_executed": false,
+    "replay_reset_executed": false,
+    "drop_or_reorder_executed": false,
+    "immutable_policy_status": "pass"
+  },
+  "clickhouse_compatibility_posture": {
+    "protocol_compat_skill_applied": true,
+    "new_schema_objects_created": [],
+    "existing_schema_objects_modified": [],
+    "additive_only_policy_violated": false,
+    "backward_forward_read_safety": "unchanged by this task"
+  },
+  "risk_register": [
+    {
+      "id": "historical_non_additive_migrations",
+      "severity": "medium",
+      "detail": "0018/0021/0022 include non-additive actions; safe in this task only because no apply executed"
+    },
+    {
+      "id": "gold_refresh_visibility_gap",
+      "severity": "high",
+      "detail": "gold marts are empty while PSAPI sources have data; diagnostics should separate stale_refresh from true no_data"
+    }
+  ],
+  "conclusion": {
+    "immutable_data_preserved": true,
+    "task_side_effects": "none",
+    "followup_direction": "any remediation should be additive (diagnostics marts/views/endpoints and candidate marts), without mutating immutable source history"
+  }
+}

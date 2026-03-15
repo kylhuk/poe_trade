@@ -90,7 +90,7 @@ async function loadDashboard() {
   let payload = fallbackOpsPayload;
   let fallback = true;
   try {
-    const response = await fetch("/v1/ops/dashboard", { cache: "no-cache" });
+    const response = await fetch("/api/v1/ops/dashboard", { cache: "no-cache" });
     if (response.ok) {
       payload = await response.json();
       fallback = false;

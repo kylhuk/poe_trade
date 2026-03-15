@@ -1,4 +1,6 @@
-## Ops & Runtime UX Upgrade Plan
+# Ops & Runtime UX Upgrade Plan (PLANNING ONLY)
+
+> **Note**: This document describes a planned Streamlit-based UI upgrade. It does not reflect the current React/Vite frontend or the internal JS dashboard.
 
 ### Problem statement
 

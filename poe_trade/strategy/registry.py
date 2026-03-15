@@ -19,6 +19,12 @@ class StrategyPack:
     latency_class: str
     execution_venue: str
     capital_tier: str
+    min_expected_profit_chaos: float | None
+    min_expected_roi: float | None
+    min_confidence: float | None
+    min_sample_count: int | None
+    cooldown_minutes: int
+    requires_journal: bool
     metadata_path: Path
     notes_path: Path
     discover_sql_path: Path
@@ -42,6 +48,12 @@ def list_strategy_packs() -> list[StrategyPack]:
         if not discover_sql_path.exists() or not backtest_sql_path.exists():
             continue
         metadata = tomllib.loads(metadata_path.read_text(encoding="utf-8"))
+        minima = metadata.get("minima", {})
+        params = metadata.get("params", {})
+        if not isinstance(minima, dict):
+            minima = {}
+        if not isinstance(params, dict):
+            params = {}
         packs.append(
             StrategyPack(
                 strategy_id=str(metadata["id"]),
@@ -51,6 +63,16 @@ def list_strategy_packs() -> list[StrategyPack]:
                 latency_class=str(metadata.get("latency_class", "delayed")),
                 execution_venue=str(metadata.get("execution_venue", "manual_trade")),
                 capital_tier=str(metadata.get("capital_tier", "bootstrap")),
+                min_expected_profit_chaos=_as_optional_float(
+                    minima.get("expected_profit_chaos")
+                ),
+                min_expected_roi=_as_optional_float(minima.get("roi")),
+                min_confidence=_as_optional_float(minima.get("confidence")),
+                min_sample_count=_as_optional_int(params.get("min_sample_count")),
+                cooldown_minutes=max(
+                    0, _as_int(params.get("cooldown_minutes"), default=0)
+                ),
+                requires_journal=bool(params.get("requires_journal", False)),
                 metadata_path=metadata_path,
                 notes_path=notes_path,
                 discover_sql_path=discover_sql_path,
@@ -58,6 +80,39 @@ def list_strategy_packs() -> list[StrategyPack]:
             )
         )
     return packs
+
+
+def _as_optional_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _as_optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _as_int(value: object, *, default: int) -> int:
+    parsed = _as_optional_int(value)
+    return parsed if parsed is not None else default
 
 
 def set_strategy_enabled(strategy_id: str, enabled: bool) -> Path:
@@ -81,5 +136,5 @@ def set_strategy_enabled(strategy_id: str, enabled: bool) -> Path:
     )
     if updated == original:
         raise ValueError(f"Strategy pack missing enabled flag: {strategy_id}")
-    pack.metadata_path.write_text(updated, encoding="utf-8")
+    _ = pack.metadata_path.write_text(updated, encoding="utf-8")
     return pack.metadata_path

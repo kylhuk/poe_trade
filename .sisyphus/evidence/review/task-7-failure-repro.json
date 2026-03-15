@@ -1,0 +1,137 @@
+{
+  "task": 7,
+  "slug": "failure-repro",
+  "timestamp_utc": "2026-03-14T00:00:00Z",
+  "reproducers": [
+    {
+      "id": "strategy-metadata-not-enforced",
+      "type": "static-runtime-audit",
+      "steps": [
+        "Inspect strategy TOML for metadata keys under [minima] and [params] (min_sample_count, cooldown_minutes, requires_journal).",
+        "Inspect runtime strategy loading and scanner execution paths.",
+        "Check whether those metadata keys are parsed/enforced before recommendation insert/alert emission."
+      ],
+      "observed": {
+        "runtime_reference_map": {
+          "min_sample_count": false,
+          "cooldown_minutes": false,
+          "requires_journal": false,
+          "minima": false,
+          "params": false
+        },
+        "verdict": "metadata ignored at runtime"
+      },
+      "evidence": [
+        "strategies/bulk_essence/strategy.toml:9",
+        "strategies/high_dim_jewels/strategy.toml:18",
+        "poe_trade/strategy/registry.py:44",
+        "poe_trade/strategy/scanner.py:23"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "alert-id-run-scoped-instability",
+      "type": "deterministic-example",
+      "steps": [
+        "Read scanner alert insert expression.",
+        "Evaluate formula for same item_or_market_key across two scanner runs."
+      ],
+      "observed": {
+        "formula": "concat(scanner_run_id, '-', item_or_market_key)",
+        "same_opportunity_different_runs": [
+          "runA-123456789",
+          "runB-123456789"
+        ],
+        "verdict": "alert IDs are not stable across reruns"
+      },
+      "evidence": [
+        "poe_trade/strategy/scanner.py:59",
+        "poe_trade/strategy/alerts.py:15"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "duplicate-alert-cooldown-novelty-missing",
+      "type": "static-runtime-audit",
+      "steps": [
+        "Search strategy runtime modules for cooldown/novelty/dedupe enforcement before scanner_alert_log writes.",
+        "Confirm scanner writes one alert row per recommendation per run with status='new'."
+      ],
+      "observed": {
+        "cooldown_or_novelty_enforcement_found": false,
+        "insert_behavior": "all recommendations emit new alerts each run",
+        "verdict": "duplicate-alert spam risk for semantically identical opportunities"
+      },
+      "evidence": [
+        "poe_trade/strategy/scanner.py:57",
+        "poe_trade/strategy/scanner.py:60"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "service-snapshot-denominator-distortion",
+      "type": "runtime-probe",
+      "steps": [
+        "List static service registry.",
+        "Build snapshots with empty ingest/scanner/ml tables.",
+        "Check dashboard/frontend denominator logic."
+      ],
+      "observed": {
+        "service_ids": [
+          "clickhouse",
+          "schema_migrator",
+          "market_harvester",
+          "account_stash_harvester",
+          "scanner_worker",
+          "ml_trainer",
+          "api"
+        ],
+        "optional_service_included_when_disabled": "account_stash_harvester",
+        "one_shot_service_included": "schema_migrator",
+        "summary_total_source": "len(snapshots) / services.length"
+      },
+      "evidence": [
+        "poe_trade/api/service_control.py:43",
+        "poe_trade/api/service_control.py:73",
+        "poe_trade/api/service_control.py:223",
+        "poe_trade/api/ops.py:97",
+        "frontend/src/components/tabs/DashboardTab.tsx:37"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "scanner-summary-stale-marked-ok",
+      "type": "runtime-probe",
+      "steps": [
+        "Call scanner_summary_payload with stale last_run_at and non-zero recommendation_count.",
+        "Inspect returned status field."
+      ],
+      "observed": {
+        "input_last_run_at": "2024-01-01 00:00:00.000",
+        "returned": {
+          "status": "ok",
+          "recommendationCount": 1,
+          "lastRunAt": "2024-01-01T00:00:00.000Z"
+        },
+        "verdict": "stale scanner data is not inferred as stale/degraded"
+      },
+      "evidence": [
+        "poe_trade/api/ops.py:176",
+        "poe_trade/api/ops.py:190"
+      ],
+      "severity": "medium"
+    }
+  ],
+  "non_defect_confirmations": [
+    {
+      "id": "checkpoint-recovery-and-rate-limit-paths",
+      "result": "covered and green",
+      "evidence": [
+        "tests/unit/test_market_harvester.py:676",
+        "tests/unit/test_market_harvester.py:725",
+        "tests/unit/test_rate_limit.py:30"
+      ]
+    }
+  ],
+  "fix_applied": false
+}

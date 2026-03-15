@@ -1,0 +1,140 @@
+{
+  "task": "11",
+  "slug": "ml-nonforgetting",
+  "generated_at": "2026-03-14T00:00:00Z",
+  "workspace": "/home/hal9000/docker/poe_trade",
+  "scope": [
+    "candidate-vs-incumbent evaluation",
+    "protected cohort regression blocking",
+    "no-improvement stop behavior",
+    "hold verdict persistence",
+    "scanner product-layer ML integration status"
+  ],
+  "contracts_and_gates": {
+    "evaluation_contract": {
+      "path": "poe_trade/ml/contract.py",
+      "split_kind": "rolling",
+      "coverage_floor": 0.75,
+      "min_mdape_improvement": 0.005,
+      "protected_cohort_max_regression": 0.02,
+      "verdict_enums": [
+        "promote",
+        "hold"
+      ]
+    },
+    "promotion_logic": {
+      "path": "poe_trade/ml/workflows.py",
+      "detail": "_should_promote() requires coverage_floor_ok, mdape improvement threshold, and no protected cohort regression; _promotion_stop_reason() returns hold_protected_cohort_regression/hold_coverage_floor/hold_no_material_improvement as applicable."
+    }
+  },
+  "runtime_evidence": [
+    {
+      "command": ".venv/bin/poe-ml status --league Mirage --run latest",
+      "observed": {
+        "run_id": "train-mirage-1773523434-0",
+        "status": "failed_gates",
+        "promotion_verdict": "hold",
+        "stop_reason": "hold_no_material_improvement",
+        "candidate_vs_incumbent": {
+          "candidate_run_id": "stack-1773523434",
+          "incumbent_run_id": "stack-1773523314",
+          "mdape_improvement": 0.0,
+          "coverage_floor_ok": true
+        }
+      }
+    },
+    {
+      "command": "python3 inline script: group promotion audits by verdict + stop_reason",
+      "observed": [
+        {
+          "verdict": "hold",
+          "stop_reason": "hold_no_material_improvement",
+          "rows": 24
+        }
+      ],
+      "interpretation": "current candidate runs are blocked by no-material-improvement gate; no aggregate-only promotion observed"
+    }
+  ],
+  "test_evidence": {
+    "command": ".venv/bin/pytest tests/unit/test_ml_tuning.py tests/unit/test_ml_runtime.py tests/unit/test_api_ml_routes.py -q",
+    "result": "27 passed in 0.10s",
+    "key_assertions": [
+      {
+        "path": "tests/unit/test_ml_tuning.py",
+        "detail": "protected cohort regression forces hold and stop reason hold_protected_cohort_regression."
+      },
+      {
+        "path": "tests/unit/test_ml_tuning.py",
+        "detail": "train_loop stops with stopped_no_improvement/no_improvement_patience_exhausted when deltas fail patience policy."
+      },
+      {
+        "path": "tests/unit/test_ml_tuning.py",
+        "detail": "resume=True raises when no resumable prior run exists."
+      },
+      {
+        "path": "tests/unit/test_api_ml_routes.py",
+        "detail": "automation status/history preserve hold/failed_gates states and normalize no active model to null."
+      }
+    ]
+  },
+  "ml_to_scanner_integration_audit": {
+    "task_4a_contract_reference": {
+      "path": ".sisyphus/evidence/review/task-4a-opportunity-contract.json",
+      "required_for_ml_augmentation": [
+        "semantic_key",
+        "search_hint",
+        "item_name",
+        "expected_hold_minutes",
+        "liquidity_score",
+        "freshness_minutes",
+        "gold_cost",
+        "additive ML influence through scanner recommendation contract"
+      ]
+    },
+    "current_wiring": [
+      {
+        "path": "poe_trade/strategy/scanner.py",
+        "detail": "scanner_recommendations rows are built only from strategy SQL source_row_json fields; no read from ML prediction/model tables."
+      },
+      {
+        "path": "poe_trade/api/ops.py",
+        "detail": "scanner_recommendations_payload() selects directly from poe_trade.scanner_recommendations and does not join/inject ML score signals."
+      },
+      {
+        "path": "poe_trade/api/ops.py",
+        "detail": "ML predict_one is consumed only in price_check_payload(), not in scanner ranking/opportunity projection."
+      },
+      {
+        "path": "poe_trade/ml/workflows.py",
+        "detail": "ml_price_predictions_v1 is read for report confidence buckets/reasons, not scanner recommendation generation."
+      }
+    ],
+    "contract_gap": {
+      "status": "disconnected",
+      "description": "ML outputs currently do not feed scanner recommendation ranking or opportunity payload fields; scanner remains legacy SQL-only contract.",
+      "missing_contract_fields_in_scanner_surface": [
+        "semantic_key",
+        "search_hint",
+        "item_name",
+        "expected_hold_minutes",
+        "liquidity_score",
+        "freshness_minutes",
+        "gold_cost"
+      ],
+      "task_4a_violation_note": "Task-4A defines ML augmentation as additive via the same opportunity contract; current implementation routes ML to price-check and analytics only."
+    },
+    "additive_integration_path": [
+      "Add nullable scanner_recommendations columns for semantic_key/search_hint/item_name/expected_hold_minutes/liquidity_score/freshness_minutes/gold_cost and preserve existing fields.",
+      "Add feature-gated ML ranking columns (for example ml_score/ml_reason) to scanner read model and API payload.",
+      "Populate ML fields by joining latest prediction signals keyed on stable semantic identity; fallback cleanly when ML signal is absent.",
+      "Prove before/after scanner ranking quality under gate and preserve rollback by toggling feature flag without schema rollback."
+    ]
+  },
+  "verdict": {
+    "learning_without_forgetting_guards_exist": true,
+    "guard_enforcement_runtime_observed": "hold_no_material_improvement",
+    "protected_cohort_blocking_runtime_observed": false,
+    "protected_cohort_blocking_test_proven": true,
+    "scanner_ml_influence_present": false
+  }
+}

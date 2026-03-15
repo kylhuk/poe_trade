@@ -268,7 +268,7 @@ Status: requirements
 ### File: ask_user.md
 Status: requirements
 - Requirement ID: REQ-032
-  Requirement: Clarify which ClickHouse tables/streams populate `/v1/ops/dashboard`, define checkpoint drift automation vs operator-only handling, and decide dashboard authentication/embedding strategy.
+  Requirement: Clarify which ClickHouse tables/streams populate `/v1/ops/dashboard`; verified as `poe_trade.scanner_recommendations` for top opportunities and `poe_trade.poe_messages` for critical alerts.
   Official: no official match
   Ingestion stage: operate
   Data contract impact: none
@@ -282,6 +282,5 @@ Status: requirements
   Data contract impact: none
 
 ## Gaps
-- `/v1/ops/dashboard` still lacks a definitive mapping of ClickHouse tables/streams and the metrics it must surface before ingestion automation can be certified (see `ask_user.md`).
 - Decision-making around checkpoint drift alert automation versus operator-only responses, plus dash auth/embedding, remains outstanding and blocks the ops runbook’s execution plan (`ask_user.md`).
 - Manual-trigger proof instrumentation for integration flows (filter reloads, overlay quests, telemetry) still needs explicit verification targets before policy-compliant ingestion can ship (`10-comprehensive-feature-backlog.md`).

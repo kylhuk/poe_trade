@@ -1,0 +1,30 @@
+{
+  "dashboard_internal": {
+    "fetch_path": "/api/v1/ops/dashboard",
+    "is_wrong_path": false,
+    "has_silent_fallback": true
+  },
+  "homepage_opportunities": {
+    "is_scanner_backed": true,
+    "is_alert_backed": false,
+    "source_code_reference": "api.getScannerRecommendations()"
+  },
+  "opportunities_tab": {
+    "is_present": true
+  },
+  "comparables": {
+    "frontend_handling": "conditionally renders comparables list",
+    "truthfulness": "frontend handles empty comparables gracefully without misleading UI"
+  },
+  "stubbed_api_methods": [
+    "getFairValueItems",
+    "getStaleListings",
+    "getGemStates",
+    "getHeistDrops",
+    "getShipmentRecommendation",
+    "getGoldShadowPrice",
+    "getSessionRecommendation",
+    "simulateGearSwap"
+  ],
+  "unsupported_ui_paths": []
+}

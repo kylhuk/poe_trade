@@ -21,8 +21,12 @@ def run_scan_once(
         return scanner_run_id
 
     for pack in enabled_packs:
+        if pack.requires_journal:
+            continue
         sql = pack.discover_sql_path.read_text(encoding="utf-8").strip().rstrip(";")
-        client.execute(
+        filters = _runtime_filters(pack)
+        where_clause = f" WHERE {' AND '.join(filters)}" if filters else ""
+        _ = client.execute(
             "INSERT INTO poe_trade.scanner_recommendations "
             "WITH formatRowNoNewline('JSONEachRow', source.*) AS source_row_json "
             "SELECT "
@@ -51,15 +55,25 @@ def run_scan_once(
             "JSONExtract(source_row_json, 'Nullable(Float64)', 'confidence'), CAST(NULL AS Nullable(Float64))) AS confidence, "
             "source_row_json AS evidence_snapshot, "
             "now64(3) AS recorded_at "
-            f"FROM ({sql}) AS source"
+            f"FROM ({sql}) AS source{where_clause}"
         )
-        client.execute(
+        _ = client.execute(
             "INSERT INTO poe_trade.scanner_alert_log "
             "SELECT "
-            "concat(scanner_run_id, '-', item_or_market_key) AS alert_id, "
-            "scanner_run_id, strategy_id, league, item_or_market_key, 'new' AS status, evidence_snapshot, recorded_at "
+            "candidate.alert_id, candidate.scanner_run_id, candidate.strategy_id, candidate.league, "
+            "candidate.item_or_market_key, 'new' AS status, candidate.evidence_snapshot, candidate.recorded_at "
+            "FROM ("
+            "SELECT concat(strategy_id, '|', league, '|', item_or_market_key) AS alert_id, "
+            "scanner_run_id, strategy_id, league, item_or_market_key, evidence_snapshot, recorded_at "
             "FROM poe_trade.scanner_recommendations "
             f"WHERE scanner_run_id = '{scanner_run_id}' AND strategy_id = '{pack.strategy_id}'"
+            ") AS candidate "
+            "LEFT JOIN ("
+            "SELECT alert_id, max(recorded_at) AS last_recorded_at "
+            "FROM poe_trade.scanner_alert_log GROUP BY alert_id"
+            ") AS previous ON candidate.alert_id = previous.alert_id "
+            "WHERE previous.last_recorded_at IS NULL "
+            f"OR dateDiff('minute', previous.last_recorded_at, candidate.recorded_at) >= {pack.cooldown_minutes}"
         )
 
     return scanner_run_id
@@ -87,3 +101,64 @@ def run_scan_watch(
 def format_scan_timestamp(value: datetime | None = None) -> str:
     current = value or datetime.now(timezone.utc)
     return current.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _runtime_filters(pack: object) -> list[str]:
+    filters: list[str] = []
+    min_profit = _optional_float(getattr(pack, "min_expected_profit_chaos", None))
+    if min_profit is not None:
+        filters.append(
+            "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_profit_chaos'), CAST(-1e18 AS Float64)) "
+            f">= {min_profit:.6f}"
+        )
+    min_roi = _optional_float(getattr(pack, "min_expected_roi", None))
+    if min_roi is not None:
+        filters.append(
+            "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_roi'), CAST(-1e18 AS Float64)) "
+            f">= {min_roi:.6f}"
+        )
+    min_confidence = _optional_float(getattr(pack, "min_confidence", None))
+    if min_confidence is not None:
+        filters.append(
+            "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'confidence'), CAST(-1e18 AS Float64)) "
+            f">= {min_confidence:.6f}"
+        )
+    min_sample_count = _optional_int(getattr(pack, "min_sample_count", None))
+    if min_sample_count is not None and min_sample_count > 0:
+        filters.append(
+            "coalesce("
+            "JSONExtract(source_row_json, 'Nullable(Int64)', 'sample_count'), "
+            "JSONExtract(source_row_json, 'Nullable(Int64)', 'listing_count'), "
+            "JSONExtract(source_row_json, 'Nullable(Int64)', 'observed_samples'), "
+            "CAST(0 AS Int64)"
+            f") >= {min_sample_count}"
+        )
+    return filters
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
