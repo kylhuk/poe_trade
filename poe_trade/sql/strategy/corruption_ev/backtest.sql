@@ -1,7 +1,8 @@
 SELECT
     time_bucket,
     coalesce(league, '') AS league,
-    base_type AS item_or_market_key,
+    concat(category, ':', base_type, ':', coalesce(price_currency, 'none')) AS item_or_market_key,
+    concat(category, ':', base_type, ':', coalesce(price_currency, 'none')) AS semantic_key,
     coalesce(median_price_amount, 0.0) * 0.1 AS expected_profit_chaos,
     coalesce(median_price_amount, 0.0) / 10.0 AS expected_roi,
     least(1.0, toFloat64(listing_count) / 80.0) AS confidence,
