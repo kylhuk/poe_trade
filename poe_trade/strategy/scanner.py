@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
+import json
 import time
+from typing import cast
 from uuid import uuid4
 
 from ..db import ClickHouseClient
-from .registry import list_strategy_packs
+from .policy import (
+    CandidateRow,
+    build_evidence_snapshot,
+    candidate_from_source_row,
+    evaluate_candidates,
+    policy_from_pack,
+)
+from .registry import list_strategy_packs, load_candidate_sql
+
+
+_LEGACY_COMPAT_HASH_EXPRESSION = "toString(cityHash64(concat(ifNull(source.semantic_key, ''), '|', ifNull(source.item_or_market_key, ''))))"
 
 
 def run_scan_once(
@@ -21,60 +34,65 @@ def run_scan_once(
         return scanner_run_id
 
     for pack in enabled_packs:
+        source_rows = _fetch_candidate_source_rows(client, sql=load_candidate_sql(pack))
+        journal_active_keys: set[str] | None = None
         if pack.requires_journal:
-            continue
-        sql = pack.discover_sql_path.read_text(encoding="utf-8").strip().rstrip(";")
-        filters = _runtime_filters(pack)
-        where_clause = f" WHERE {' AND '.join(filters)}" if filters else ""
-        _ = client.execute(
-            "INSERT INTO poe_trade.scanner_recommendations "
-            "WITH formatRowNoNewline('JSONEachRow', source.*) AS source_row_json "
-            "SELECT "
-            f"'{scanner_run_id}' AS scanner_run_id, "
-            f"'{pack.strategy_id}' AS strategy_id, "
-            f"'{league}' AS league, "
-            "toString(cityHash64(source_row_json)) AS item_or_market_key, "
-            "if(JSONHas(source_row_json, 'why_it_fired'), "
-            f"JSONExtractString(source_row_json, 'why_it_fired'), 'discovered by {pack.strategy_id}') AS why_it_fired, "
-            "if(JSONHas(source_row_json, 'buy_plan'), "
-            "JSONExtractString(source_row_json, 'buy_plan'), 'buy candidate') AS buy_plan, "
-            "if(JSONHas(source_row_json, 'max_buy'), "
-            "JSONExtract(source_row_json, 'Nullable(Float64)', 'max_buy'), CAST(NULL AS Nullable(Float64))) AS max_buy, "
-            "if(JSONHas(source_row_json, 'transform_plan'), "
-            "JSONExtractString(source_row_json, 'transform_plan'), '') AS transform_plan, "
-            "if(JSONHas(source_row_json, 'exit_plan'), "
-            "JSONExtractString(source_row_json, 'exit_plan'), 'review and sell') AS exit_plan, "
-            f"'{pack.execution_venue}' AS execution_venue, "
-            "if(JSONHas(source_row_json, 'expected_profit_chaos'), "
-            "JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_profit_chaos'), CAST(NULL AS Nullable(Float64))) AS expected_profit_chaos, "
-            "if(JSONHas(source_row_json, 'expected_roi'), "
-            "JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_roi'), CAST(NULL AS Nullable(Float64))) AS expected_roi, "
-            "if(JSONHas(source_row_json, 'expected_hold_time'), "
-            "JSONExtractString(source_row_json, 'expected_hold_time'), 'unknown') AS expected_hold_time, "
-            "if(JSONHas(source_row_json, 'confidence'), "
-            "JSONExtract(source_row_json, 'Nullable(Float64)', 'confidence'), CAST(NULL AS Nullable(Float64))) AS confidence, "
-            "source_row_json AS evidence_snapshot, "
-            "now64(3) AS recorded_at "
-            f"FROM ({sql}) AS source{where_clause}"
+            journal_active_keys = _fetch_journal_active_keys(
+                client,
+                strategy_id=pack.strategy_id,
+                league=league,
+            )
+        candidates = [
+            candidate_from_source_row(
+                pack.strategy_id,
+                source_row,
+                default_league=league,
+            )
+            for source_row in source_rows
+        ]
+        source_by_candidate = {
+            id(candidate): source_row
+            for candidate, source_row in zip(candidates, source_rows, strict=False)
+        }
+        evaluation = evaluate_candidates(
+            candidates,
+            policy=policy_from_pack(pack),
+            requested_league=league,
+            journal_active_keys=journal_active_keys,
+            last_alerted_at_by_key=_fetch_last_alerted_at_by_key(
+                client,
+                strategy_id=pack.strategy_id,
+                league=league,
+            ),
         )
-        _ = client.execute(
-            "INSERT INTO poe_trade.scanner_alert_log "
-            "SELECT "
-            "candidate.alert_id, candidate.scanner_run_id, candidate.strategy_id, candidate.league, "
-            "candidate.item_or_market_key, 'new' AS status, candidate.evidence_snapshot, candidate.recorded_at "
-            "FROM ("
-            "SELECT concat(strategy_id, '|', league, '|', item_or_market_key) AS alert_id, "
-            "scanner_run_id, strategy_id, league, item_or_market_key, evidence_snapshot, recorded_at "
-            "FROM poe_trade.scanner_recommendations "
-            f"WHERE scanner_run_id = '{scanner_run_id}' AND strategy_id = '{pack.strategy_id}'"
-            ") AS candidate "
-            "LEFT JOIN ("
-            "SELECT alert_id, max(recorded_at) AS last_recorded_at "
-            "FROM poe_trade.scanner_alert_log GROUP BY alert_id"
-            ") AS previous ON candidate.alert_id = previous.alert_id "
-            "WHERE previous.last_recorded_at IS NULL "
-            f"OR dateDiff('minute', previous.last_recorded_at, candidate.recorded_at) >= {pack.cooldown_minutes}"
-        )
+        recommendation_rows = [
+            _recommendation_payload(
+                scanner_run_id=scanner_run_id,
+                pack=pack,
+                candidate=candidate,
+                source_row=source_by_candidate[id(candidate)],
+            )
+            for candidate in evaluation.eligible
+        ]
+        if recommendation_rows:
+            _ = client.execute(
+                "INSERT INTO poe_trade.scanner_recommendations "
+                + "(scanner_run_id, strategy_id, league, item_or_market_key, why_it_fired, buy_plan, max_buy, transform_plan, exit_plan, execution_venue, expected_profit_chaos, expected_roi, expected_hold_time, confidence, evidence_snapshot, recorded_at)\n"
+                + "FORMAT JSONEachRow\n"
+                + "\n".join(
+                    json.dumps(row, separators=(",", ":"))
+                    for row in recommendation_rows
+                )
+            )
+            _ = client.execute(
+                "INSERT INTO poe_trade.scanner_alert_log "
+                + "(alert_id, scanner_run_id, strategy_id, league, item_or_market_key, status, evidence_snapshot, recorded_at)\n"
+                + "FORMAT JSONEachRow\n"
+                + "\n".join(
+                    json.dumps(_alert_payload(row), separators=(",", ":"))
+                    for row in recommendation_rows
+                )
+            )
 
     return scanner_run_id
 
@@ -103,40 +121,174 @@ def format_scan_timestamp(value: datetime | None = None) -> str:
     return current.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
-def _runtime_filters(pack: object) -> list[str]:
-    filters: list[str] = []
-    min_profit = _optional_float(getattr(pack, "min_expected_profit_chaos", None))
-    if min_profit is not None:
-        filters.append(
-            "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_profit_chaos'), CAST(-1e18 AS Float64)) "
-            f">= {min_profit:.6f}"
-        )
-    min_roi = _optional_float(getattr(pack, "min_expected_roi", None))
-    if min_roi is not None:
-        filters.append(
-            "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'expected_roi'), CAST(-1e18 AS Float64)) "
-            f">= {min_roi:.6f}"
-        )
-    min_confidence = _optional_float(getattr(pack, "min_confidence", None))
-    if min_confidence is not None:
-        filters.append(
-            "coalesce(JSONExtract(source_row_json, 'Nullable(Float64)', 'confidence'), CAST(-1e18 AS Float64)) "
-            f">= {min_confidence:.6f}"
-        )
-    min_sample_count = _optional_int(getattr(pack, "min_sample_count", None))
-    if min_sample_count is not None and min_sample_count > 0:
-        filters.append(
-            "coalesce("
-            "JSONExtract(source_row_json, 'Nullable(Int64)', 'sample_count'), "
-            "JSONExtract(source_row_json, 'Nullable(Int64)', 'listing_count'), "
-            "JSONExtract(source_row_json, 'Nullable(Int64)', 'observed_samples'), "
-            "CAST(0 AS Int64)"
-            f") >= {min_sample_count}"
-        )
-    return filters
+def _fetch_candidate_source_rows(
+    client: ClickHouseClient,
+    *,
+    sql: str,
+) -> list[dict[str, object]]:
+    candidate_sql = sql.strip().rstrip(";")
+    payload = client.execute(
+        "SELECT "
+        + "source.*, "
+        + "formatRowNoNewline('JSONEachRow', source.*) AS source_row_json, "
+        + f"{_LEGACY_COMPAT_HASH_EXPRESSION} AS legacy_hashed_item_or_market_key "
+        + f"FROM ({candidate_sql}) AS source "
+        + "FORMAT JSONEachRow"
+    )
+    return _parse_json_rows(payload)
 
 
-def _optional_float(value: object) -> float | None:
+def _fetch_last_alerted_at_by_key(
+    client: ClickHouseClient,
+    *,
+    strategy_id: str,
+    league: str,
+) -> dict[str, datetime]:
+    payload = client.execute(
+        "SELECT item_or_market_key, max(recorded_at) AS last_recorded_at "
+        + "FROM poe_trade.scanner_alert_log "
+        + f"WHERE strategy_id = '{_escape_sql(strategy_id)}' "
+        + f"AND league = '{_escape_sql(league)}' "
+        + "GROUP BY item_or_market_key "
+        + "FORMAT JSONEachRow"
+    )
+    rows = _parse_json_rows(payload)
+    last_alerted: dict[str, datetime] = {}
+    for row in rows:
+        key = str(row.get("item_or_market_key") or "").strip()
+        if not key:
+            continue
+        parsed = _parse_datetime(row.get("last_recorded_at"))
+        if parsed is not None:
+            last_alerted[key] = parsed
+    return last_alerted
+
+
+def _fetch_journal_active_keys(
+    client: ClickHouseClient,
+    *,
+    strategy_id: str,
+    league: str,
+) -> set[str]:
+    payload = client.execute(
+        "SELECT item_or_market_key "
+        + "FROM poe_trade.journal_positions "
+        + f"WHERE strategy_id = '{_escape_sql(strategy_id)}' "
+        + f"AND league = '{_escape_sql(league)}' "
+        + "FORMAT JSONEachRow"
+    )
+    rows = _parse_json_rows(payload)
+    active_keys: set[str] = set()
+    for row in rows:
+        key = str(row.get("item_or_market_key") or "").strip()
+        if key:
+            active_keys.add(key)
+    return active_keys
+
+
+def _recommendation_payload(
+    *,
+    scanner_run_id: str,
+    pack: object,
+    candidate: CandidateRow,
+    source_row: Mapping[str, object],
+) -> dict[str, object]:
+    recorded_at = format_scan_timestamp()
+    evidence_snapshot = build_evidence_snapshot(candidate)
+    semantic_item_or_market_key = _canonical_item_or_market_key(
+        candidate.item_or_market_key
+    )
+    source_row_json = str(source_row.get("source_row_json") or "")
+    if source_row_json:
+        _ = evidence_snapshot.setdefault("source_row_json", source_row_json)
+        _ = evidence_snapshot.setdefault("evidence_snapshot", source_row_json)
+    return {
+        "scanner_run_id": scanner_run_id,
+        "strategy_id": candidate.strategy_id,
+        "league": candidate.league,
+        "item_or_market_key": semantic_item_or_market_key,
+        "why_it_fired": _non_empty_text(
+            source_row.get("why_it_fired"),
+            fallback=f"discovered by {candidate.strategy_id}",
+        ),
+        "buy_plan": _non_empty_text(
+            source_row.get("buy_plan"), fallback="buy candidate"
+        ),
+        "max_buy": _as_optional_float(source_row.get("max_buy")),
+        "transform_plan": _non_empty_text(
+            source_row.get("transform_plan"), fallback=""
+        ),
+        "exit_plan": _non_empty_text(
+            source_row.get("exit_plan"),
+            fallback="review and sell",
+        ),
+        "execution_venue": str(getattr(pack, "execution_venue", "manual_trade")),
+        "expected_profit_chaos": candidate.expected_profit_chaos,
+        "expected_roi": candidate.expected_roi,
+        "expected_hold_time": _non_empty_text(
+            source_row.get("expected_hold_time"),
+            fallback="unknown",
+        ),
+        "confidence": candidate.confidence,
+        "evidence_snapshot": json.dumps(evidence_snapshot, separators=(",", ":")),
+        "recorded_at": recorded_at,
+    }
+
+
+def _alert_payload(recommendation_row: Mapping[str, object]) -> dict[str, object]:
+    strategy_id = str(recommendation_row.get("strategy_id") or "")
+    league = str(recommendation_row.get("league") or "")
+    semantic_item_or_market_key = _canonical_item_or_market_key(
+        recommendation_row.get("item_or_market_key")
+    )
+    return {
+        "alert_id": f"{strategy_id}|{league}|{semantic_item_or_market_key}",
+        "scanner_run_id": recommendation_row.get("scanner_run_id"),
+        "strategy_id": strategy_id,
+        "league": league,
+        "item_or_market_key": semantic_item_or_market_key,
+        "status": "new",
+        "evidence_snapshot": recommendation_row.get("evidence_snapshot"),
+        "recorded_at": recommendation_row.get("recorded_at"),
+    }
+
+
+def _parse_json_rows(payload: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line in payload.splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        parsed = cast(object, json.loads(cleaned))
+        if isinstance(parsed, dict):
+            rows.append(cast(dict[str, object], parsed))
+    return rows
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        cleaned = value.strip()
+        if cleaned.endswith("Z"):
+            cleaned = f"{cleaned[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(cleaned)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _non_empty_text(value: object, *, fallback: str) -> str:
+    cleaned = str(value or "").strip()
+    return cleaned if cleaned else fallback
+
+
+def _as_optional_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -149,16 +301,9 @@ def _optional_float(value: object) -> float | None:
     return None
 
 
-def _optional_int(value: object) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str) and value.strip():
-        try:
-            return int(value)
-        except ValueError:
-            return None
-    return None
+def _canonical_item_or_market_key(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _escape_sql(value: str) -> str:
+    return value.replace("'", "''")
