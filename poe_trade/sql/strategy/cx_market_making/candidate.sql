@@ -1,0 +1,23 @@
+SELECT
+    toDateTime(time_bucket) AS time_bucket,
+    realm,
+    coalesce(league, '') AS league,
+    concat(base_code, '/', quote_code) AS item_or_market_key,
+    concat(base_code, '/', quote_code) AS semantic_key,
+    (toFloat64(has_highest_ratio) - toFloat64(has_lowest_ratio)) * 5.0 AS expected_profit_chaos,
+    if(has_lowest_ratio = 1, 0.1, 0.0) AS expected_roi,
+    least(1.0, toFloat64(sample_count) / 120.0) AS confidence,
+    sample_count AS sample_count,
+    sample_count AS listing_count,
+    'Currency ratio imbalance suggests spread trade opportunity' AS why_it_fired,
+    'Take balanced buys/sells across the base/quote pair while spread holds' AS buy_plan,
+    'Let the ratio oscillate toward equilibrium before scaling deeper' AS transform_plan,
+    'Exit once the lowest ratio clears or the spread collapses' AS exit_plan,
+    '2h' AS expected_hold_time,
+    market_id,
+    base_code,
+    quote_code,
+    has_lowest_ratio,
+    has_highest_ratio,
+    updated_at
+FROM poe_trade.gold_currency_ref_hour;
