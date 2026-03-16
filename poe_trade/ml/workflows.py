@@ -137,7 +137,7 @@ def build_fx(
     *,
     league: str,
     output_table: str,
-    snapshot_table: str = "poe_trade.ml_poeninja_currency_snapshot_v1",
+    snapshot_table: str = "poe_trade.raw_poeninja_currency_overview",
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
     _ensure_fx_table(client, output_table)
@@ -634,9 +634,7 @@ def _training_aggregate_rows(
     ]
     if before_as_of_ts:
         cutoff = _to_ch_timestamp(before_as_of_ts)
-        filters.append(
-            f"as_of_ts < toDateTime64({_quote(cutoff)}, 3, 'UTC')"
-        )
+        filters.append(f"as_of_ts < toDateTime64({_quote(cutoff)}, 3, 'UTC')")
     where_clause = " AND ".join(filters)
     query = " ".join(
         [
@@ -736,7 +734,9 @@ def _fit_route_bundle_from_aggregates(
         if _to_float(row.get("target_p50"), 0.0) > 0.0
         and _to_int(row.get("sample_count"), 0) > 0
     ]
-    sample_weights = [max(1.0, _to_float(row.get("sample_count"), 1.0)) for row in usable_rows]
+    sample_weights = [
+        max(1.0, _to_float(row.get("sample_count"), 1.0)) for row in usable_rows
+    ]
     train_row_count = int(sum(sample_weights))
     stats: dict[str, Any] = {
         "train_row_count": train_row_count,
@@ -829,16 +829,24 @@ def _prediction_records_from_rows(
         actual = _to_float(row.get("normalized_price_chaos"), 0.0)
         if actual <= 0.0:
             continue
-        predicted = _predict_with_bundle(bundle=bundle, parsed_item=row) if bundle else None
+        predicted = (
+            _predict_with_bundle(bundle=bundle, parsed_item=row) if bundle else None
+        )
         if predicted is None:
             price_p50 = fallback_price
             price_p10 = max(0.1, price_p50 * 0.8)
             price_p90 = max(price_p50, price_p50 * 1.2)
             used_model = False
         else:
-            price_p10 = max(0.1, _to_float(predicted.get("price_p10"), fallback_price * 0.8))
-            price_p50 = max(price_p10, _to_float(predicted.get("price_p50"), fallback_price))
-            price_p90 = max(price_p50, _to_float(predicted.get("price_p90"), fallback_price * 1.2))
+            price_p10 = max(
+                0.1, _to_float(predicted.get("price_p10"), fallback_price * 0.8)
+            )
+            price_p50 = max(
+                price_p10, _to_float(predicted.get("price_p50"), fallback_price)
+            )
+            price_p90 = max(
+                price_p50, _to_float(predicted.get("price_p90"), fallback_price * 1.2)
+            )
             used_model = True
         records.append(
             {
@@ -956,8 +964,12 @@ def train_route(
         trained_at=trained_at,
     )
 
-    artifact_file = _route_artifact_path(model_dir=model_dir, route=route, league=league)
-    model_bundle_path = _route_model_bundle_path(model_dir=model_dir, route=route, league=league)
+    artifact_file = _route_artifact_path(
+        model_dir=model_dir, route=route, league=league
+    )
+    model_bundle_path = _route_model_bundle_path(
+        model_dir=model_dir, route=route, league=league
+    )
     previous_artifact = _load_json_file(artifact_file)
     previous_round = _to_int(previous_artifact.get("fit_round"), 0)
     fit_round = max(1, previous_round + 1)
@@ -990,7 +1002,9 @@ def train_route(
         ),
         "sale_model_available": bool(bundle_stats.get("sale_model_available")),
         "model_bundle_path": None,
-        "support_reference_p50": _to_float(bundle_stats.get("support_reference_p50"), 0.0),
+        "support_reference_p50": _to_float(
+            bundle_stats.get("support_reference_p50"), 0.0
+        ),
         "support_reference_row_count": _to_int(bundle_stats.get("train_row_count"), 0),
     }
 
@@ -1058,7 +1072,8 @@ def evaluate_route(
     records = _prediction_records_from_rows(
         holdout_rows,
         bundle=bundle,
-        reference_price=_to_float(bundle_stats.get("support_reference_p50"), 0.0) or 1.0,
+        reference_price=_to_float(bundle_stats.get("support_reference_p50"), 0.0)
+        or 1.0,
     )
     overall_metrics = _metrics_from_prediction_records(records)
 
@@ -1084,7 +1099,9 @@ def evaluate_route(
                 "wape": _to_float(family_metrics.get("wape"), 1.0),
                 "rmsle": _to_float(family_metrics.get("rmsle"), 1.0),
                 "abstain_rate": _to_float(family_metrics.get("abstain_rate"), 1.0),
-                "interval_80_coverage": _to_float(family_metrics.get("interval_80_coverage"), 0.0),
+                "interval_80_coverage": _to_float(
+                    family_metrics.get("interval_80_coverage"), 0.0
+                ),
                 "freshness_minutes": 0.0,
                 "support_bucket": _support_bucket_for_count(sample_count),
                 "recorded_at": now,
@@ -1104,7 +1121,9 @@ def evaluate_route(
         "wape": _to_float(overall_metrics.get("wape"), 1.0),
         "rmsle": _to_float(overall_metrics.get("rmsle"), 1.0),
         "abstain_rate": _to_float(overall_metrics.get("abstain_rate"), 1.0),
-        "interval_80_coverage": _to_float(overall_metrics.get("interval_80_coverage"), 0.0),
+        "interval_80_coverage": _to_float(
+            overall_metrics.get("interval_80_coverage"), 0.0
+        ),
         "train_row_count": _to_int(bundle_stats.get("train_row_count"), 0),
         "feature_row_count": _to_int(bundle_stats.get("feature_row_count"), 0),
         "model_backend": bundle_stats.get("model_backend") or "heuristic_fallback",
@@ -1257,7 +1276,9 @@ def evaluate_stack(
                     "wape": _to_float(route_eval.get("wape"), 1.0),
                     "rmsle": _to_float(route_eval.get("rmsle"), 1.0),
                     "abstain_rate": abstain_rate if sample_count > 0 else 1.0,
-                    "interval_80_coverage": _to_float(route_eval.get("interval_80_coverage"), 0.0),
+                    "interval_80_coverage": _to_float(
+                        route_eval.get("interval_80_coverage"), 0.0
+                    ),
                     "leakage_violations": 0,
                     "leakage_audit_path": str(leakage_path),
                     "recorded_at": _now_ts(),
@@ -1613,13 +1634,15 @@ def _eval_feedback_for_run(
     latest = latest_rows[0]
     latest_mdape = _to_float(latest.get("avg_mdape"), 1.0)
     latest_cov = _to_float(latest.get("avg_cov"), 0.0)
-    baseline = _latest_promoted_run_excluding(
-        client, league=league, run_id=run_id
-    ) or _latest_run_excluding(client, league=league, run_id=run_id) or {
-        "run_id": run_id,
-        "avg_mdape": latest_mdape,
-        "avg_cov": latest_cov,
-    }
+    baseline = (
+        _latest_promoted_run_excluding(client, league=league, run_id=run_id)
+        or _latest_run_excluding(client, league=league, run_id=run_id)
+        or {
+            "run_id": run_id,
+            "avg_mdape": latest_mdape,
+            "avg_cov": latest_cov,
+        }
+    )
     candidate_vs_incumbent = _candidate_vs_incumbent_summary(
         candidate={
             "run_id": run_id,
@@ -1701,7 +1724,9 @@ def predict_one(
         price_p10 = max(0.1, float(model_prediction["price_p10"]))
         price_p50 = max(price_p10, float(model_prediction["price_p50"]))
         price_p90 = max(price_p50, float(model_prediction["price_p90"]))
-        sale_probability = min(1.0, max(0.0, float(model_prediction["sale_probability"])))
+        sale_probability = min(
+            1.0, max(0.0, float(model_prediction["sale_probability"]))
+        )
         confidence = _model_confidence(
             route,
             support=support,
@@ -1815,7 +1840,9 @@ def predict_batch(
             price_p10 = max(0.1, float(model_prediction["price_p10"]))
             price_p50 = max(price_p10, float(model_prediction["price_p50"]))
             price_p90 = max(price_p50, float(model_prediction["price_p90"]))
-            sale_probability = min(1.0, max(0.0, float(model_prediction["sale_probability"])))
+            sale_probability = min(
+                1.0, max(0.0, float(model_prediction["sale_probability"]))
+            )
             confidence = _model_confidence(
                 route,
                 support=_to_int(bundle.get("support_count_recent"), 0),
@@ -1840,7 +1867,9 @@ def predict_batch(
             support_count_recent=_to_int(bundle["support_count_recent"], 0),
             freshness_minutes=30.0,
             base_comp_price_p50=base_price if route == "sparse_retrieval" else None,
-            residual_adjustment=(price_p50 - base_price) if route == "sparse_retrieval" else 0.0,
+            residual_adjustment=(price_p50 - base_price)
+            if route == "sparse_retrieval"
+            else 0.0,
             fallback_reason=fallback_reason,
             prediction_explainer_json=json.dumps(
                 {
@@ -2226,7 +2255,6 @@ def _latest_run_excluding(
     }
 
 
-
 def _latest_promoted_run_excluding(
     client: ClickHouseClient, *, league: str, run_id: str
 ) -> dict[str, Any] | None:
@@ -2268,6 +2296,7 @@ def _latest_promoted_run_excluding(
         "avg_mdape": _to_float(row.get("avg_mdape"), 1.0),
         "avg_cov": _to_float(row.get("avg_cov"), 0.0),
     }
+
 
 def _candidate_vs_incumbent_summary(
     *, candidate: dict[str, Any], incumbent: dict[str, Any] | None
@@ -3120,7 +3149,9 @@ def _feature_dict_from_parsed_item(item: dict[str, Any]) -> dict[str, Any]:
         "corrupted": _to_float(item.get("corrupted"), 0.0),
         "fractured": _to_float(item.get("fractured"), 0.0),
         "synthesised": _to_float(item.get("synthesised"), 0.0),
-        "mod_token_count": _bucket_mod_token_count(item.get("mod_token_count", item.get("mod_count"))),
+        "mod_token_count": _bucket_mod_token_count(
+            item.get("mod_token_count", item.get("mod_count"))
+        ),
     }
 
 
@@ -3134,7 +3165,9 @@ def _load_active_route_artifact(
     model_dir = _active_model_dir_for_route(client, league=league, route=route)
     if not model_dir:
         return {}
-    return _load_json_file(_route_artifact_path(model_dir=model_dir, route=route, league=league))
+    return _load_json_file(
+        _route_artifact_path(model_dir=model_dir, route=route, league=league)
+    )
 
 
 def _active_model_dir_for_route(
@@ -3220,7 +3253,9 @@ def _predict_with_artifact(
     return _predict_with_bundle(bundle=bundle, parsed_item=parsed_item)
 
 
-def _dataset_row_count(client: ClickHouseClient, dataset_table: str, league: str) -> int:
+def _dataset_row_count(
+    client: ClickHouseClient, dataset_table: str, league: str
+) -> int:
     return _scalar_count(
         client,
         " ".join(

@@ -5,6 +5,7 @@ SERVICE_NAMES = [
     "account_stash_harvester",
     "scanner_worker",
     "ml_trainer",
+    "poeninja_snapshot",
     "api",
 ]
 OPTIONAL_SERVICES: list[str] = []
