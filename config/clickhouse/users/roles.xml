@@ -1,0 +1,24 @@
+<clickhouse>
+	<roles>
+		<poe_ro>
+			<grants>
+				<query>GRANT SHOW ON poe_trade.*</query>
+			</grants>
+		</poe_ro>
+		<poe_rw>
+			<grants>
+				<query>GRANT ALL ON poe_trade.*</query>
+			</grants>
+		</poe_rw>
+		<admin>
+			<grants>
+				<query>GRANT ALL ON *.*</query>
+			</grants>
+		</admin>
+		<default>
+			<grants>
+				<query>REVOKE ALL ON *.*</query>
+			</grants>
+		</default>
+	</roles>
+</clickhouse>

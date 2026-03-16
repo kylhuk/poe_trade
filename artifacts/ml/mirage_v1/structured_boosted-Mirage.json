@@ -6,10 +6,10 @@
   "comps_table": "poe_trade.ml_comps_v1",
   "dataset_table": "poe_trade.ml_price_dataset_v1",
   "family_counts": [],
-  "fit_round": 32392,
+  "fit_round": 32569,
   "league": "Mirage",
   "objective": "catboost_multi_quantile",
   "route": "structured_boosted",
-  "trained_at": "2026-03-16 09:48:13",
+  "trained_at": "2026-03-16 10:48:02",
   "warm_start_from": "artifacts/ml/mirage_v1/structured_boosted-Mirage.json"
 }

@@ -1,0 +1,26 @@
+<clickhouse>
+	<users>
+		<poe_ingest>
+			<profile>default</profile>
+			<networks>
+				<ip>::/0</ip>
+			</networks>
+			<password_sha256_hex>bbcd5a2a8d0ec71478508f39700201ff8ec8e85e5457c12262b55407a4541536</password_sha256_hex>
+			<quota>default</quota>
+			<grants>
+				<query>GRANT poe_rw</query>
+			</grants>
+		</poe_ingest>
+		<poe>
+			<profile>default</profile>
+			<networks>
+				<ip>::/0</ip>
+			</networks>
+			<password_sha256_hex>6db7636b5922f26c1eb855fda18da3c40913d6237e21a90fb155b85868b9bfde</password_sha256_hex>
+			<quota>default</quota>
+			<grants>
+				<query>GRANT poe_ro</query>
+			</grants>
+		</poe>
+	</users>
+</clickhouse>

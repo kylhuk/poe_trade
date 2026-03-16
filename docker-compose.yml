@@ -5,8 +5,8 @@ services:
     image: clickhouse/clickhouse-server:latest
     environment:
       CLICKHOUSE_DB: ${CH_DATABASE:-poe_trade}
-      CLICKHOUSE_USER: ${CH_USER:-poe_ingest}
-      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-poe_ingest}
+      #CLICKHOUSE_USER: ${CH_USER:-poe_ingest}
+      #CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-poe_ingest}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
       - "8123:8123"
@@ -14,6 +14,8 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./config/clickhouse/docker_related_config.xml:/etc/clickhouse-server/config.d/docker_related_config.xml:ro
+      - ./config/clickhouse/users:/etc/clickhouse-server/users.d
+      - ./logs/clickhouse:/var/log/clickhouse-server
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client -q 'SELECT 1' >/dev/null 2>&1 || exit 1"]
@@ -22,6 +24,7 @@ services:
       retries: 5
     networks:
       - default
+      - lama-lan_backend
 
   schema_migrator:
     build: .
@@ -150,5 +153,6 @@ volumes:
 
 networks:
   default:
+    internal: true
   lama-lan_backend:
     external: true
