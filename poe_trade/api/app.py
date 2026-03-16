@@ -42,8 +42,11 @@ from .ops import (
     analytics_backtests,
     analytics_ingestion,
     analytics_ml,
+    analytics_pricing_outliers,
     analytics_report,
     analytics_scanner,
+    analytics_search_history,
+    analytics_search_suggestions,
     contract_payload as ops_contract_payload,
     dashboard_payload,
     scanner_recommendations_payload,
@@ -403,6 +406,7 @@ class ApiApp:
             if self.settings.api_league_allowlist
             else ""
         )
+        query_params = cast(dict[str, list[str]], context.get("query_params") or {})
         try:
             if kind == "ingestion":
                 payload = analytics_ingestion(self.client)
@@ -416,6 +420,23 @@ class ApiApp:
                 payload = analytics_ml(self.client, league=league)
             elif kind == "report":
                 payload = analytics_report(self.client, league=league)
+            elif kind == "search-suggestions":
+                payload = analytics_search_suggestions(
+                    self.client,
+                    query=str((query_params.get("query") or [""])[0] or ""),
+                )
+            elif kind == "search-history":
+                payload = analytics_search_history(
+                    self.client,
+                    query_params=query_params,
+                    default_league=league,
+                )
+            elif kind == "pricing-outliers":
+                payload = analytics_pricing_outliers(
+                    self.client,
+                    query_params=query_params,
+                    default_league=league,
+                )
             else:
                 raise ApiError(
                     status=404,

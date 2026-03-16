@@ -2602,17 +2602,18 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
         raise ValueError("invalid clipboard text: expected at least 3 non-empty lines")
     rarity = ""
     item_class = ""
+    item_name = ""
     base_type = ""
     ilvl = 0
     stack_size = 1
     corrupted = 0
     fractured = 0
     synthesised = 0
+    rarity_index: int | None = None
     for idx, line in enumerate(lines):
         if line.startswith("Rarity:"):
             rarity = line.replace("Rarity:", "").strip()
-            if idx + 1 < len(lines):
-                base_type = lines[idx + 1]
+            rarity_index = idx
         if line.startswith("Item Class:"):
             item_class = line.replace("Item Class:", "").strip()
         if line.startswith("Item Level:"):
@@ -2632,12 +2633,32 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
             fractured = 1
         if "synthesised" in line.lower() or "synthesized" in line.lower():
             synthesised = 1
+
+    header_lines: list[str] = []
+    if rarity_index is not None:
+        cursor = rarity_index + 1
+        while cursor < len(lines):
+            line = lines[cursor]
+            if line == "--------":
+                break
+            header_lines.append(line)
+            cursor += 1
+
+    if len(header_lines) >= 2 and rarity in {"Rare", "Unique"}:
+        item_name = header_lines[0]
+        base_type = header_lines[1]
+    elif header_lines:
+        base_type = header_lines[0]
+
     if not base_type:
         base_type = lines[0]
+
     category = "other"
     lowered = f"{item_class} {base_type}".lower()
     if "map" in lowered or base_type.endswith(" Map"):
         category = "map"
+    elif "logbook" in lowered:
+        category = "logbook"
     elif "scarab" in lowered:
         category = "scarab"
     elif "fossil" in lowered:
@@ -2652,6 +2673,7 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
     return {
         "rarity": rarity,
         "item_class": item_class,
+        "item_name": item_name,
         "base_type": base_type,
         "category": category,
         "mod_count": mod_count,

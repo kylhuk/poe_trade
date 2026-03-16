@@ -33,9 +33,9 @@ services:
     env_file:
       - .env
     environment:
-      POE_CLICKHOUSE_USER: ${CH_USER:-poe_ingest}
-      POE_CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-poe_ingest}
-      POE_CLICKHOUSE_URL: http://clickhouse:8123
+      POE_CLICKHOUSE_USER: ${POE_CLICKHOUSE_USER:-poe_ingest}
+      POE_CLICKHOUSE_PASSWORD: ${POE_CLICKHOUSE_PASSWORD:-poe_ingest}
+      POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_URL:-http://clickhouse:8123}
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -54,7 +54,7 @@ services:
     env_file:
       - .env
     environment:
-      POE_CLICKHOUSE_URL: http://clickhouse:8123
+      POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_URL:-http://clickhouse:8123}
     volumes:
       - ./.state:/app/.state
     networks:
@@ -71,7 +71,7 @@ services:
     env_file:
       - .env
     environment:
-      POE_CLICKHOUSE_URL: http://clickhouse:8123
+      POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_URL:-http://clickhouse:8123}
       POE_ENABLE_ACCOUNT_STASH: "true"
       POE_ACCOUNT_STASH_REALM: pc
       POE_ACCOUNT_STASH_LEAGUE: Mirage
@@ -93,7 +93,7 @@ services:
     env_file:
       - .env
     environment:
-      POE_CLICKHOUSE_URL: http://clickhouse:8123
+      POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_URL:-http://clickhouse:8123}
     volumes:
       - ./.state:/app/.state
     networks:
@@ -110,7 +110,7 @@ services:
     env_file:
       - .env
     environment:
-      POE_CLICKHOUSE_URL: http://clickhouse:8123
+      POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_URL:-http://clickhouse:8123}
       POE_ML_AUTOMATION_ENABLED: "true"
       POE_ML_AUTOMATION_LEAGUE: Mirage
       POE_ML_AUTOMATION_INTERVAL_SECONDS: "120"
@@ -139,7 +139,7 @@ services:
       POE_API_BIND_PORT: "8080"
       POE_API_CORS_ORIGINS: ${POE_API_CORS_ORIGINS:-https://poe.lama-lan.ch}
       POE_API_TRUSTED_ORIGIN_BYPASS: "true"
-      POE_CLICKHOUSE_URL: http://clickhouse:8123
+      POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_URL:-http://clickhouse:8123}
       POE_ENABLE_ACCOUNT_STASH: "true"
       POE_ACCOUNT_STASH_REALM: pc
       POE_ACCOUNT_STASH_LEAGUE: Mirage
@@ -153,6 +153,5 @@ volumes:
 
 networks:
   default:
-    internal: true
   lama-lan_backend:
     external: true

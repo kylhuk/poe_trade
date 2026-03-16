@@ -1,0 +1,1171 @@
+diff --git a/poe_trade/api/app.py b/poe_trade/api/app.py
+index cf4a2a6..4eb8fe9 100644
+--- a/poe_trade/api/app.py
++++ b/poe_trade/api/app.py
+@@ -42,8 +42,11 @@ from .ops import (
+     analytics_backtests,
+     analytics_ingestion,
+     analytics_ml,
++    analytics_pricing_outliers,
+     analytics_report,
+     analytics_scanner,
++    analytics_search_history,
++    analytics_search_suggestions,
+     contract_payload as ops_contract_payload,
+     dashboard_payload,
+     scanner_recommendations_payload,
+@@ -403,6 +406,7 @@ class ApiApp:
+             if self.settings.api_league_allowlist
+             else ""
+         )
++        query_params = cast(dict[str, list[str]], context.get("query_params") or {})
+         try:
+             if kind == "ingestion":
+                 payload = analytics_ingestion(self.client)
+@@ -416,6 +420,23 @@ class ApiApp:
+                 payload = analytics_ml(self.client, league=league)
+             elif kind == "report":
+                 payload = analytics_report(self.client, league=league)
++            elif kind == "search-suggestions":
++                payload = analytics_search_suggestions(
++                    self.client,
++                    query=str((query_params.get("query") or [""])[0] or ""),
++                )
++            elif kind == "search-history":
++                payload = analytics_search_history(
++                    self.client,
++                    query_params=query_params,
++                    default_league=league,
++                )
++            elif kind == "pricing-outliers":
++                payload = analytics_pricing_outliers(
++                    self.client,
++                    query_params=query_params,
++                    default_league=league,
++                )
+             else:
+                 raise ApiError(
+                     status=404,
+diff --git a/poe_trade/api/ops.py b/poe_trade/api/ops.py
+index 8c964bd..28d8317 100644
+--- a/poe_trade/api/ops.py
++++ b/poe_trade/api/ops.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import base64
+ import json
++from collections.abc import Mapping
+ from datetime import datetime, timezone
+ from typing import Any
+ 
+@@ -11,6 +12,7 @@ from poe_trade.config import constants
+ from poe_trade.config.settings import Settings
+ from poe_trade.db import ClickHouseClient
+ from poe_trade.db.clickhouse import ClickHouseClientError
++from poe_trade.ml import workflows as ml_workflows
+ from poe_trade.strategy.alerts import ack_alert, list_alerts
+ 
+ from .ml import fetch_predict_one, fetch_status
+@@ -46,6 +48,9 @@ def contract_payload(
+             "ops_scanner_recommendations": "/api/v1/ops/scanner/recommendations",
+             "ops_alert_ack": "/api/v1/ops/alerts/{alert_id}/ack",
+             "ops_analytics": "/api/v1/ops/analytics/{kind}",
++            "ops_search_suggestions": "/api/v1/ops/analytics/search-suggestions",
++            "ops_search_history": "/api/v1/ops/analytics/search-history",
++            "ops_pricing_outliers": "/api/v1/ops/analytics/pricing-outliers",
+             "service_action": "/api/v1/actions/services/{service_id}/{verb}",
+             "ml_predict_one": "/api/v1/ml/leagues/{league}/predict-one",
+             "stash_tabs": "/api/v1/stash/tabs?league={league}&realm={realm}",
+@@ -661,7 +666,11 @@ def price_check_payload(
+         "confidence": prediction.get("confidence")
+         or prediction.get("confidence_percent")
+         or 0.0,
+-        "comparables": [],
++        "comparables": _price_check_comparables(
++            client,
++            league=league,
++            item_text=item_text,
++        ),
+         "interval": interval,
+         "saleProbabilityPercent": prediction.get("saleProbabilityPercent")
+         or prediction.get("sale_probability_percent"),
+@@ -673,6 +682,456 @@ def price_check_payload(
+     }
+ 
+ 
++def analytics_search_suggestions(
++    client: ClickHouseClient,
++    *,
++    query: str,
++    limit: int = 8,
++) -> dict[str, Any]:
++    compact_query = query.strip()
++    if not compact_query:
++        return {"query": "", "suggestions": []}
++    query_limit = max(1, min(limit, 20))
++    label_expr = _search_item_label_sql()
++    kind_expr = _search_item_kind_sql()
++    rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "SELECT",
++                f"{label_expr} AS item_name,",
++                f"{kind_expr} AS item_kind,",
++                "count() AS match_count",
++                "FROM poe_trade.ml_price_dataset_v1",
++                "WHERE normalized_price_chaos IS NOT NULL",
++                "AND normalized_price_chaos > 0",
++                f"AND positionCaseInsensitiveUTF8({label_expr}, {_quote_sql_string(compact_query)}) > 0",
++                "GROUP BY item_name, item_kind",
++                "ORDER BY match_count DESC, item_name ASC",
++                f"LIMIT {query_limit} FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    return {
++        "query": compact_query,
++        "suggestions": [
++            {
++                "itemName": str(row.get("item_name") or ""),
++                "itemKind": str(row.get("item_kind") or "base_type"),
++                "matchCount": _as_int(row.get("match_count")),
++            }
++            for row in rows
++            if str(row.get("item_name") or "").strip()
++        ],
++    }
++
++
++def analytics_search_history(
++    client: ClickHouseClient,
++    *,
++    query_params: Mapping[str, list[str]],
++    default_league: str | None = None,
++) -> dict[str, Any]:
++    compact_query = _first_query_param(query_params, "query")
++    league = _first_query_param(query_params, "league") or (default_league or "")
++    sort = _normalize_history_sort(_first_query_param(query_params, "sort"))
++    order = _normalize_sort_order(_first_query_param(query_params, "order"))
++    price_min = _query_param_float(query_params, "price_min")
++    price_max = _query_param_float(query_params, "price_max")
++    time_from = _query_param_datetime(query_params, "time_from")
++    time_to = _query_param_datetime(query_params, "time_to")
++    query_limit = _query_param_int(query_params, "limit", default=200, minimum=1, maximum=500)
++
++    league_where = _history_where_clause(
++        query=compact_query,
++        league=None,
++        price_min=None,
++        price_max=None,
++        time_from=None,
++        time_to=None,
++    )
++    ranges_where = _history_where_clause(
++        query=compact_query,
++        league=league,
++        price_min=None,
++        price_max=None,
++        time_from=None,
++        time_to=None,
++    )
++    price_hist_where = _history_where_clause(
++        query=compact_query,
++        league=league,
++        price_min=None,
++        price_max=None,
++        time_from=time_from,
++        time_to=time_to,
++    )
++    time_hist_where = _history_where_clause(
++        query=compact_query,
++        league=league,
++        price_min=price_min,
++        price_max=price_max,
++        time_from=None,
++        time_to=None,
++    )
++    rows_where = _history_where_clause(
++        query=compact_query,
++        league=league,
++        price_min=price_min,
++        price_max=price_max,
++        time_from=time_from,
++        time_to=time_to,
++    )
++
++    league_rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "SELECT league",
++                "FROM poe_trade.ml_price_dataset_v1",
++                league_where,
++                "GROUP BY league",
++                "ORDER BY league ASC FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    range_rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "SELECT",
++                "min(normalized_price_chaos) AS min_price,",
++                "max(normalized_price_chaos) AS max_price,",
++                "min(as_of_ts) AS min_added_on,",
++                "max(as_of_ts) AS max_added_on",
++                "FROM poe_trade.ml_price_dataset_v1",
++                ranges_where,
++                "FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    ranges = range_rows[0] if range_rows else {}
++    min_price = _coerce_float(ranges.get("min_price"))
++    max_price = _coerce_float(ranges.get("max_price"))
++    min_added_on = _as_iso_utc(ranges.get("min_added_on"))
++    max_added_on = _as_iso_utc(ranges.get("max_added_on"))
++
++    price_bucket = _history_price_bucket_size(min_price, max_price)
++    price_rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "SELECT",
++                f"floor(normalized_price_chaos / {price_bucket}) * {price_bucket} AS bucket_start,",
++                f"floor(normalized_price_chaos / {price_bucket}) * {price_bucket} + {price_bucket} AS bucket_end,",
++                "count() AS count",
++                "FROM poe_trade.ml_price_dataset_v1",
++                price_hist_where,
++                "GROUP BY bucket_start, bucket_end",
++                "ORDER BY bucket_start ASC FORMAT JSONEachRow",
++            ]
++        ),
++    )
++
++    time_bucket_seconds = _history_time_bucket_seconds(min_added_on, max_added_on)
++    time_rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "SELECT",
++                f"toDateTime(intDiv(toUInt32(toUnixTimestamp(as_of_ts)), {time_bucket_seconds}) * {time_bucket_seconds}, 'UTC') AS bucket_start,",
++                f"toDateTime(intDiv(toUInt32(toUnixTimestamp(as_of_ts)), {time_bucket_seconds}) * {time_bucket_seconds} + {time_bucket_seconds}, 'UTC') AS bucket_end,",
++                "count() AS count",
++                "FROM poe_trade.ml_price_dataset_v1",
++                time_hist_where,
++                "GROUP BY bucket_start, bucket_end",
++                "ORDER BY bucket_start ASC FORMAT JSONEachRow",
++            ]
++        ),
++    )
++
++    label_expr = _search_item_label_sql()
++    row_rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "SELECT",
++                f"{label_expr} AS item_name,",
++                "league,",
++                "normalized_price_chaos AS listed_price,",
++                "as_of_ts AS added_on",
++                "FROM poe_trade.ml_price_dataset_v1",
++                rows_where,
++                f"ORDER BY {_history_order_sql(sort, order)}",
++                f"LIMIT {query_limit} FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    return {
++        "query": {
++            "text": compact_query,
++            "league": league,
++            "sort": sort,
++            "order": order,
++        },
++        "filters": {
++            "leagueOptions": [str(row.get("league") or "") for row in league_rows if str(row.get("league") or "").strip()],
++            "price": {
++                "min": min_price if min_price is not None else 0.0,
++                "max": max_price if max_price is not None else 0.0,
++            },
++            "datetime": {
++                "min": min_added_on,
++                "max": max_added_on,
++            },
++        },
++        "histograms": {
++            "price": [
++                {
++                    "bucketStart": _coerce_float(row.get("bucket_start")) or 0.0,
++                    "bucketEnd": _coerce_float(row.get("bucket_end")) or 0.0,
++                    "count": _as_int(row.get("count")),
++                }
++                for row in price_rows
++            ],
++            "datetime": [
++                {
++                    "bucketStart": _as_iso_utc(row.get("bucket_start")),
++                    "bucketEnd": _as_iso_utc(row.get("bucket_end")),
++                    "count": _as_int(row.get("count")),
++                }
++                for row in time_rows
++            ],
++        },
++        "rows": [
++            {
++                "itemName": str(row.get("item_name") or ""),
++                "league": str(row.get("league") or ""),
++                "listedPrice": _coerce_float(row.get("listed_price")) or 0.0,
++                "currency": "chaos",
++                "addedOn": _as_iso_utc(row.get("added_on")),
++            }
++            for row in row_rows
++        ],
++    }
++
++
++def analytics_pricing_outliers(
++    client: ClickHouseClient,
++    *,
++    query_params: Mapping[str, list[str]],
++    default_league: str | None = None,
++) -> dict[str, Any]:
++    league = _first_query_param(query_params, "league") or (default_league or "")
++    limit = _query_param_int(query_params, "limit", default=100, minimum=1, maximum=500)
++    minimum_support = _query_param_int(query_params, "min_total", default=20, minimum=1, maximum=5000)
++    sort = _normalize_outlier_sort(_first_query_param(query_params, "sort"))
++    order = _normalize_sort_order(_first_query_param(query_params, "order"), default="desc")
++    query_text = _first_query_param(query_params, "query")
++    league_clause = _outlier_league_clause(league)
++    item_label_expr = _search_item_label_sql("d")
++    summary_filter = ""
++    if query_text:
++        quoted_query = _quote_sql_string(query_text)
++        summary_filter = (
++            "WHERE positionCaseInsensitiveUTF8(item_name, "
++            + quoted_query
++            + ") > 0 OR positionCaseInsensitiveUTF8(affix_analyzed, "
++            + quoted_query
++            + ") > 0"
++        )
++    summary_rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "WITH base AS (",
++                "SELECT",
++                f"{item_label_expr} AS item_name,",
++                "d.base_type AS base_type,",
++                "ifNull(d.rarity, '') AS rarity,",
++                "d.item_id AS item_id,",
++                "d.as_of_ts AS as_of_ts,",
++                "toFloat64(d.normalized_price_chaos) AS listed_price",
++                "FROM poe_trade.ml_price_dataset_v1 AS d",
++                f"WHERE {league_clause}",
++                "AND d.normalized_price_chaos IS NOT NULL",
++                "AND d.normalized_price_chaos > 0",
++                "),",
++                "item_thresholds AS (",
++                "SELECT item_name, base_type, rarity,",
++                "quantileTDigest(0.1)(listed_price) AS p10,",
++                "quantileTDigest(0.5)(listed_price) AS median,",
++                "quantileTDigest(0.9)(listed_price) AS p90,",
++                "count() AS items_total",
++                "FROM base",
++                "GROUP BY item_name, base_type, rarity",
++                f"HAVING items_total >= {minimum_support}",
++                "),",
++                "item_weekly AS (",
++                "SELECT t.item_name, t.base_type, t.rarity, toStartOfWeek(b.as_of_ts) AS week_start,",
++                "countIf(b.listed_price <= t.p10) AS too_cheap_count",
++                "FROM base AS b",
++                "INNER JOIN item_thresholds AS t ON b.item_name = t.item_name AND b.base_type = t.base_type AND b.rarity = t.rarity",
++                "GROUP BY t.item_name, t.base_type, t.rarity, week_start",
++                "),",
++                "item_rows AS (",
++                "SELECT t.item_name AS item_name, '' AS affix_analyzed, t.p10 AS p10, t.median AS median, t.p90 AS p90,",
++                "round(avg(w.too_cheap_count), 4) AS items_per_week, t.items_total AS items_total, 'item' AS analysis_level",
++                "FROM item_thresholds AS t",
++                "LEFT JOIN item_weekly AS w ON t.item_name = w.item_name AND t.base_type = w.base_type AND t.rarity = w.rarity",
++                "GROUP BY t.item_name, t.base_type, t.rarity, t.p10, t.median, t.p90, t.items_total",
++                "),",
++                "affix_base AS (",
++                "SELECT b.item_name, b.base_type, b.rarity, b.as_of_ts, b.listed_price,",
++                "coalesce(nullIf(c.mod_text, ''), nullIf(t.mod_token, '')) AS affix_analyzed",
++                "FROM base AS b",
++                f"INNER JOIN poe_trade.ml_item_mod_tokens_v1 AS t ON assumeNotNull(b.item_id) = t.item_id AND t.league = {_quote_sql_string(league)}",
++                "LEFT JOIN poe_trade.ml_mod_catalog_v1 AS c ON c.mod_token = t.mod_token",
++                "WHERE b.item_id IS NOT NULL",
++                "),",
++                "affix_thresholds AS (",
++                "SELECT item_name, base_type, rarity, affix_analyzed,",
++                "quantileTDigest(0.1)(listed_price) AS p10,",
++                "quantileTDigest(0.5)(listed_price) AS median,",
++                "quantileTDigest(0.9)(listed_price) AS p90,",
++                "count() AS items_total",
++                "FROM affix_base",
++                "WHERE affix_analyzed IS NOT NULL",
++                "GROUP BY item_name, base_type, rarity, affix_analyzed",
++                f"HAVING items_total >= {minimum_support}",
++                "),",
++                "affix_weekly AS (",
++                "SELECT t.item_name, t.base_type, t.rarity, t.affix_analyzed, toStartOfWeek(a.as_of_ts) AS week_start,",
++                "countIf(a.listed_price <= t.p10) AS too_cheap_count",
++                "FROM affix_base AS a",
++                "INNER JOIN affix_thresholds AS t ON a.item_name = t.item_name AND a.base_type = t.base_type AND a.rarity = t.rarity AND a.affix_analyzed = t.affix_analyzed",
++                "GROUP BY t.item_name, t.base_type, t.rarity, t.affix_analyzed, week_start",
++                "),",
++                "affix_rows AS (",
++                "SELECT t.item_name AS item_name, t.affix_analyzed AS affix_analyzed, t.p10 AS p10, t.median AS median, t.p90 AS p90,",
++                "round(avg(w.too_cheap_count), 4) AS items_per_week, t.items_total AS items_total, 'affix' AS analysis_level",
++                "FROM affix_thresholds AS t",
++                "LEFT JOIN affix_weekly AS w ON t.item_name = w.item_name AND t.base_type = w.base_type AND t.rarity = w.rarity AND t.affix_analyzed = w.affix_analyzed",
++                "GROUP BY t.item_name, t.base_type, t.rarity, t.affix_analyzed, t.p10, t.median, t.p90, t.items_total",
++                ")",
++                "SELECT * FROM (SELECT * FROM item_rows UNION ALL SELECT * FROM affix_rows)",
++                summary_filter,
++                f"ORDER BY {_outlier_order_sql(sort, order)}",
++                f"LIMIT {limit} FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    weekly_rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "WITH base AS (",
++                "SELECT",
++                f"{item_label_expr} AS item_name,",
++                "d.base_type AS base_type,",
++                "ifNull(d.rarity, '') AS rarity,",
++                "d.as_of_ts AS as_of_ts,",
++                "toFloat64(d.normalized_price_chaos) AS listed_price",
++                "FROM poe_trade.ml_price_dataset_v1 AS d",
++                f"WHERE {league_clause}",
++                "AND d.normalized_price_chaos IS NOT NULL",
++                "AND d.normalized_price_chaos > 0",
++                "),",
++                "item_thresholds AS (",
++                "SELECT item_name, base_type, rarity,",
++                "quantileTDigest(0.1)(listed_price) AS p10,",
++                "count() AS items_total",
++                "FROM base",
++                "GROUP BY item_name, base_type, rarity",
++                f"HAVING items_total >= {minimum_support}",
++                ")",
++                "SELECT toStartOfWeek(b.as_of_ts) AS week_start, countIf(b.listed_price <= t.p10) AS too_cheap_count",
++                "FROM base AS b",
++                "INNER JOIN item_thresholds AS t ON b.item_name = t.item_name AND b.base_type = t.base_type AND b.rarity = t.rarity",
++                "GROUP BY week_start",
++                "ORDER BY week_start ASC FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    return {
++        "query": {"league": league, "sort": sort, "order": order, "minTotal": minimum_support},
++        "rows": [
++            {
++                "itemName": str(row.get("item_name") or ""),
++                "affixAnalyzed": str(row.get("affix_analyzed") or ""),
++                "p10": _coerce_float(row.get("p10")) or 0.0,
++                "median": _coerce_float(row.get("median")) or 0.0,
++                "p90": _coerce_float(row.get("p90")) or 0.0,
++                "itemsPerWeek": _coerce_float(row.get("items_per_week")) or 0.0,
++                "itemsTotal": _as_int(row.get("items_total")),
++                "analysisLevel": str(row.get("analysis_level") or "item"),
++            }
++            for row in summary_rows
++        ],
++        "weekly": [
++            {
++                "weekStart": _as_iso_utc(row.get("week_start")),
++                "tooCheapCount": _as_int(row.get("too_cheap_count")),
++            }
++            for row in weekly_rows
++        ],
++    }
++
++
++def _price_check_comparables(
++    client: ClickHouseClient,
++    *,
++    league: str,
++    item_text: str,
++) -> list[dict[str, Any]]:
++    try:
++        parsed = ml_workflows._parse_clipboard_item(item_text)
++    except ValueError:
++        return []
++    base_type = str(parsed.get("base_type") or "").strip()
++    if not base_type:
++        return []
++    clauses = [
++        f"league = {_quote_sql_string(league)}",
++        "normalized_price_chaos IS NOT NULL",
++        "normalized_price_chaos > 0",
++        f"base_type = {_quote_sql_string(base_type)}",
++    ]
++    rarity = str(parsed.get("rarity") or "").strip()
++    if rarity:
++        clauses.append(f"ifNull(rarity, '') = {_quote_sql_string(rarity)}")
++    item_name = str(parsed.get("item_name") or "").strip()
++    if rarity == "Unique" and item_name:
++        clauses.append(f"nullIf(item_name, '') = {_quote_sql_string(item_name)}")
++    label_expr = _search_item_label_sql()
++    rows = _safe_json_rows(
++        client,
++        " ".join(
++            [
++                "SELECT",
++                f"{label_expr} AS item_name,",
++                "league,",
++                "normalized_price_chaos AS listed_price,",
++                "as_of_ts AS added_on",
++                "FROM poe_trade.ml_price_dataset_v1",
++                "WHERE " + " AND ".join(clauses),
++                "ORDER BY as_of_ts DESC",
++                "LIMIT 8 FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    return [
++        {
++            "name": str(row.get("item_name") or base_type),
++            "price": _coerce_float(row.get("listed_price")) or 0.0,
++            "currency": "chaos",
++            "league": str(row.get("league") or league),
++            "addedOn": _as_iso_utc(row.get("added_on")),
++        }
++        for row in rows
++    ]
++
++
+ def _safe_json_rows(client: ClickHouseClient, query: str) -> list[dict[str, Any]]:
+     try:
+         payload = client.execute(query).strip()
+@@ -750,10 +1209,177 @@ def _as_int(value: object) -> int:
+ 
+ 
+ def _quote_sql_string(value: str) -> str:
+-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
++    escaped = value.replace('\\', '\\\\').replace("'", "\\'")
+     return f"'{escaped}'"
+ 
+ 
++def _first_query_param(query_params: Mapping[str, list[str]], key: str) -> str:
++    values = query_params.get(key) or []
++    if not values:
++        return ""
++    return str(values[0] or "").strip()
++
++
++def _query_param_float(query_params: Mapping[str, list[str]], key: str) -> float | None:
++    raw = _first_query_param(query_params, key)
++    if not raw:
++        return None
++    try:
++        return float(raw)
++    except ValueError:
++        return None
++
++
++def _query_param_int(
++    query_params: Mapping[str, list[str]],
++    key: str,
++    *,
++    default: int,
++    minimum: int,
++    maximum: int,
++) -> int:
++    raw = _first_query_param(query_params, key)
++    if not raw:
++        return default
++    try:
++        parsed = int(raw)
++    except ValueError:
++        return default
++    return max(minimum, min(maximum, parsed))
++
++
++def _query_param_datetime(query_params: Mapping[str, list[str]], key: str) -> str | None:
++    raw = _first_query_param(query_params, key)
++    if not raw:
++        return None
++    parsed = _parse_iso_utc(raw)
++    if parsed is None:
++        return None
++    return parsed.strftime("%Y-%m-%d %H:%M:%S")
++
++
++def _search_item_label_sql(alias: str = "") -> str:
++    prefix = f"{alias}." if alias else ""
++    return (
++        "if("
++        f"lowerUTF8(ifNull({prefix}rarity, '')) = 'unique' AND nullIf({prefix}item_name, '') IS NOT NULL, "
++        f"nullIf({prefix}item_name, ''), {prefix}base_type"
++        ")"
++    )
++
++
++def _search_item_kind_sql(alias: str = "") -> str:
++    prefix = f"{alias}." if alias else ""
++    return (
++        "if("
++        f"lowerUTF8(ifNull({prefix}rarity, '')) = 'unique' AND nullIf({prefix}item_name, '') IS NOT NULL, "
++        "'unique_name', 'base_type'"
++        ")"
++    )
++
++
++def _history_where_clause(
++    *,
++    query: str,
++    league: str | None,
++    price_min: float | None,
++    price_max: float | None,
++    time_from: str | None,
++    time_to: str | None,
++) -> str:
++    label_expr = _search_item_label_sql()
++    clauses = ["normalized_price_chaos IS NOT NULL", "normalized_price_chaos > 0"]
++    compact_query = query.strip()
++    if compact_query:
++        clauses.append(
++            f"positionCaseInsensitiveUTF8({label_expr}, {_quote_sql_string(compact_query)}) > 0"
++        )
++    compact_league = (league or "").strip()
++    if compact_league and compact_league.lower() != "all":
++        clauses.append(f"league = {_quote_sql_string(compact_league)}")
++    if price_min is not None:
++        clauses.append(f"normalized_price_chaos >= {price_min}")
++    if price_max is not None:
++        clauses.append(f"normalized_price_chaos <= {price_max}")
++    if time_from is not None:
++        clauses.append(f"as_of_ts >= toDateTime({_quote_sql_string(time_from)}, 'UTC')")
++    if time_to is not None:
++        clauses.append(f"as_of_ts <= toDateTime({_quote_sql_string(time_to)}, 'UTC')")
++    return "WHERE " + " AND ".join(clauses)
++
++
++def _normalize_sort_order(value: str, *, default: str = "asc") -> str:
++    normalized = value.lower().strip() if value else default
++    if normalized not in {"asc", "desc"}:
++        return default
++    return normalized
++
++
++def _normalize_history_sort(value: str) -> str:
++    if value in {"item_name", "league", "listed_price", "added_on"}:
++        return value
++    return "added_on"
++
++
++def _history_order_sql(sort: str, order: str) -> str:
++    column = {
++        "item_name": "item_name",
++        "league": "league",
++        "listed_price": "listed_price",
++        "added_on": "added_on",
++    }.get(sort, "added_on")
++    return f"{column} {order.upper()}"
++
++
++def _history_price_bucket_size(min_price: float | None, max_price: float | None) -> str:
++    if min_price is None or max_price is None or max_price <= min_price:
++        return "1"
++    bucket = max((max_price - min_price) / 20.0, 1.0)
++    return _float_sql(bucket)
++
++
++def _history_time_bucket_seconds(min_added_on: str | None, max_added_on: str | None) -> int:
++    if not min_added_on or not max_added_on:
++        return 86400
++    start = _parse_iso_utc(min_added_on)
++    end = _parse_iso_utc(max_added_on)
++    if start is None or end is None or end <= start:
++        return 86400
++    bucket = int((end - start).total_seconds() / 20.0)
++    return max(3600, bucket)
++
++
++def _normalize_outlier_sort(value: str) -> str:
++    if value in {"item_name", "affix_analyzed", "p10", "median", "p90", "items_per_week", "items_total"}:
++        return value
++    return "items_total"
++
++
++def _outlier_order_sql(sort: str, order: str) -> str:
++    column = {
++        "item_name": "item_name",
++        "affix_analyzed": "affix_analyzed",
++        "p10": "p10",
++        "median": "median",
++        "p90": "p90",
++        "items_per_week": "items_per_week",
++        "items_total": "items_total",
++    }.get(sort, "items_total")
++    return f"{column} {order.upper()}, item_name ASC"
++
++
++def _outlier_league_clause(league: str | None) -> str:
++    compact_league = (league or "").strip()
++    if not compact_league or compact_league.lower() == "all":
++        return "1"
++    return f"d.league = {_quote_sql_string(compact_league)}"
++
++
++def _float_sql(value: float) -> str:
++    text = f"{value:.6f}".rstrip("0").rstrip(".")
++    return text or "0"
++
++
+ def _scanner_expected_hold_minutes_sql(
+     *,
+     evidence_snapshot_expr: str,
+diff --git a/poe_trade/ml/workflows.py b/poe_trade/ml/workflows.py
+index fdd1881..7acd82b 100644
+--- a/poe_trade/ml/workflows.py
++++ b/poe_trade/ml/workflows.py
+@@ -2602,17 +2602,18 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
+         raise ValueError("invalid clipboard text: expected at least 3 non-empty lines")
+     rarity = ""
+     item_class = ""
++    item_name = ""
+     base_type = ""
+     ilvl = 0
+     stack_size = 1
+     corrupted = 0
+     fractured = 0
+     synthesised = 0
++    rarity_index: int | None = None
+     for idx, line in enumerate(lines):
+         if line.startswith("Rarity:"):
+             rarity = line.replace("Rarity:", "").strip()
+-            if idx + 1 < len(lines):
+-                base_type = lines[idx + 1]
++            rarity_index = idx
+         if line.startswith("Item Class:"):
+             item_class = line.replace("Item Class:", "").strip()
+         if line.startswith("Item Level:"):
+@@ -2632,12 +2633,32 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
+             fractured = 1
+         if "synthesised" in line.lower() or "synthesized" in line.lower():
+             synthesised = 1
++
++    header_lines: list[str] = []
++    if rarity_index is not None:
++        cursor = rarity_index + 1
++        while cursor < len(lines):
++            line = lines[cursor]
++            if line == "--------":
++                break
++            header_lines.append(line)
++            cursor += 1
++
++    if len(header_lines) >= 2 and rarity in {"Rare", "Unique"}:
++        item_name = header_lines[0]
++        base_type = header_lines[1]
++    elif header_lines:
++        base_type = header_lines[0]
++
+     if not base_type:
+         base_type = lines[0]
++
+     category = "other"
+     lowered = f"{item_class} {base_type}".lower()
+     if "map" in lowered or base_type.endswith(" Map"):
+         category = "map"
++    elif "logbook" in lowered:
++        category = "logbook"
+     elif "scarab" in lowered:
+         category = "scarab"
+     elif "fossil" in lowered:
+@@ -2652,6 +2673,7 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
+     return {
+         "rarity": rarity,
+         "item_class": item_class,
++        "item_name": item_name,
+         "base_type": base_type,
+         "category": category,
+         "mod_count": mod_count,
+diff --git a/tests/test_app_new_analytics_routes.py b/tests/test_app_new_analytics_routes.py
+new file mode 100644
+index 0000000..97b54d7
+--- /dev/null
++++ b/tests/test_app_new_analytics_routes.py
+@@ -0,0 +1,52 @@
++from __future__ import annotations
++
++import json
++import os
++import sys
++from io import BytesIO
++from unittest import mock
++
++sys.path.insert(0, '/mnt/data/devrepo')
++
++from poe_trade.api import app as api_app
++from poe_trade.api.app import ApiApp
++from poe_trade.config.settings import Settings
++from poe_trade.db import ClickHouseClient
++
++
++def _settings() -> Settings:
++    env = {
++        'POE_API_OPERATOR_TOKEN': 'phase1-token',
++        'POE_API_CORS_ORIGINS': 'https://app.example.com',
++        'POE_API_MAX_BODY_BYTES': '32768',
++        'POE_API_LEAGUE_ALLOWLIST': 'Mirage',
++    }
++    with mock.patch.dict(os.environ, env, clear=True):
++        return Settings.from_env()
++
++
++def _auth_headers() -> dict[str, str]:
++    return {'Authorization': 'Bearer phase1-token', 'Origin': 'https://app.example.com'}
++
++
++def test_search_history_route_is_available_and_returns_json(monkeypatch) -> None:
++    monkeypatch.setattr(
++        api_app,
++        'analytics_search_history',
++        lambda client, query_params, default_league: {
++            'rows': [],
++            'filters': {'leagueOptions': ['Mirage'], 'price': {'min': 0.0, 'max': 0.0}, 'datetime': {'min': None, 'max': None}},
++            'histograms': {'price': [], 'datetime': []},
++        },
++    )
++    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint='http://ch'))
++
++    response = app.handle(
++        method='GET',
++        raw_path='/api/v1/ops/analytics/search-history?query=Hubris%20Circlet',
++        headers=_auth_headers(),
++        body_reader=BytesIO(b''),
++    )
++
++    assert response.status == 200
++    assert json.loads(response.body.decode('utf-8'))['rows'] == []
+diff --git a/tests/test_ml_clipboard_parsing.py b/tests/test_ml_clipboard_parsing.py
+new file mode 100644
+index 0000000..95336ff
+--- /dev/null
++++ b/tests/test_ml_clipboard_parsing.py
+@@ -0,0 +1,47 @@
++from __future__ import annotations
++
++import sys
++
++sys.path.insert(0, '/mnt/data/devrepo')
++
++from poe_trade.ml.workflows import _parse_clipboard_item
++
++
++RARE_HELM = '''Rarity: Rare
++Grim Bane
++Hubris Circlet
++--------
++Quality: +20%
++Item Level: 86
++--------
+++2 to Level of Socketed Minion Gems
+++93 to maximum Life
++'''
++
++UNIQUE_HELM = '''Item Class: Helmets
++Rarity: Unique
++Crown of the Inward Eye
++Prophet Crown
++--------
++Quality: +20%
++Item Level: 84
++--------
++Has 1 Socket
++'''
++
++
++def test_parse_clipboard_item_extracts_generated_name_and_base_type_for_rare_item() -> None:
++    parsed = _parse_clipboard_item(RARE_HELM)
++
++    assert parsed['item_name'] == 'Grim Bane'
++    assert parsed['base_type'] == 'Hubris Circlet'
++    assert parsed['rarity'] == 'Rare'
++
++
++def test_parse_clipboard_item_extracts_unique_name_and_base_type_separately() -> None:
++    parsed = _parse_clipboard_item(UNIQUE_HELM)
++
++    assert parsed['item_name'] == 'Crown of the Inward Eye'
++    assert parsed['base_type'] == 'Prophet Crown'
++    assert parsed['item_class'] == 'Helmets'
++    assert parsed['rarity'] == 'Unique'
+diff --git a/tests/test_price_check_comparables.py b/tests/test_price_check_comparables.py
+new file mode 100644
+index 0000000..2416dda
+--- /dev/null
++++ b/tests/test_price_check_comparables.py
+@@ -0,0 +1,82 @@
++from __future__ import annotations
++
++import sys
++from collections.abc import Mapping
++
++sys.path.insert(0, '/mnt/data/devrepo')
++
++from poe_trade.api import ops as api_ops
++from poe_trade.db import ClickHouseClient
++
++
++RARE_HELM = '''Rarity: Rare
++Grim Bane
++Hubris Circlet
++--------
++Quality: +20%
++Item Level: 86
++--------
+++2 to Level of Socketed Minion Gems
+++93 to maximum Life
++'''
++
++
++class _RecordingClickHouse(ClickHouseClient):
++    def __init__(self, responses: list[str]) -> None:
++        super().__init__(endpoint='http://clickhouse')
++        self.responses = list(responses)
++        self.queries: list[str] = []
++
++    def execute(self, query: str, settings: Mapping[str, str] | None = None) -> str:  # type: ignore[override]
++        del settings
++        self.queries.append(query)
++        if self.responses:
++            return self.responses.pop(0)
++        return ''
++
++
++def test_price_check_payload_uses_base_type_lookup_and_returns_recent_comparables(monkeypatch) -> None:
++    monkeypatch.setattr(
++        api_ops,
++        'fetch_predict_one',
++        lambda _client, league, request_payload: {
++            'predictedValue': 120.0,
++            'currency': 'chaos',
++            'confidence': 0.64,
++            'interval': {'p10': 90.0, 'p90': 150.0},
++            'saleProbabilityPercent': 58.0,
++            'priceRecommendationEligible': True,
++            'fallbackReason': '',
++        },
++    )
++    client = _RecordingClickHouse(
++        [
++            '\n'.join(
++                [
++                    '{"item_name":"Hubris Circlet","league":"Mirage","listed_price":118.0,"added_on":"2026-03-15 12:00:00"}',
++                    '{"item_name":"Hubris Circlet","league":"Mirage","listed_price":125.0,"added_on":"2026-03-14 12:00:00"}',
++                ]
++            )
++        ]
++    )
++
++    payload = api_ops.price_check_payload(client, league='Mirage', item_text=RARE_HELM)
++
++    assert payload['comparables'] == [
++        {
++            'name': 'Hubris Circlet',
++            'price': 118.0,
++            'currency': 'chaos',
++            'league': 'Mirage',
++            'addedOn': '2026-03-15T12:00:00Z',
++        },
++        {
++            'name': 'Hubris Circlet',
++            'price': 125.0,
++            'currency': 'chaos',
++            'league': 'Mirage',
++            'addedOn': '2026-03-14T12:00:00Z',
++        },
++    ]
++    assert any("base_type = 'Hubris Circlet'" in query for query in client.queries)
++    assert not any('Grim Bane' in query for query in client.queries)
+diff --git a/tests/test_pricing_outliers.py b/tests/test_pricing_outliers.py
+new file mode 100644
+index 0000000..45dd155
+--- /dev/null
++++ b/tests/test_pricing_outliers.py
+@@ -0,0 +1,72 @@
++from __future__ import annotations
++
++import sys
++from collections.abc import Mapping
++
++sys.path.insert(0, '/mnt/data/devrepo')
++
++from poe_trade.api.ops import analytics_pricing_outliers
++from poe_trade.db import ClickHouseClient
++
++
++class _SequentialClickHouse(ClickHouseClient):
++    def __init__(self, responses: list[str]) -> None:
++        super().__init__(endpoint='http://clickhouse')
++        self.responses = list(responses)
++        self.queries: list[str] = []
++
++    def execute(self, query: str, settings: Mapping[str, str] | None = None) -> str:  # type: ignore[override]
++        del settings
++        self.queries.append(query)
++        if self.responses:
++            return self.responses.pop(0)
++        return ''
++
++
++def test_pricing_outliers_returns_item_and_affix_summaries_with_weekly_counts() -> None:
++    client = _SequentialClickHouse(
++        [
++            '\n'.join(
++                [
++                    '{"item_name":"Hubris Circlet","affix_analyzed":"","p10":80.0,"median":120.0,"p90":210.0,"items_per_week":1.5,"items_total":30,"analysis_level":"item"}',
++                    '{"item_name":"Hubris Circlet","affix_analyzed":"+93 to maximum Life","p10":95.0,"median":145.0,"p90":240.0,"items_per_week":0.5,"items_total":12,"analysis_level":"affix"}',
++                ]
++            ),
++            '{"week_start":"2026-03-02 00:00:00","too_cheap_count":3}\n{"week_start":"2026-03-09 00:00:00","too_cheap_count":2}',
++        ]
++    )
++
++    payload = analytics_pricing_outliers(
++        client,
++        query_params={'league': ['Mirage'], 'limit': ['50']},
++        default_league='Mirage',
++    )
++
++    assert payload['rows'] == [
++        {
++            'itemName': 'Hubris Circlet',
++            'affixAnalyzed': '',
++            'p10': 80.0,
++            'median': 120.0,
++            'p90': 210.0,
++            'itemsPerWeek': 1.5,
++            'itemsTotal': 30,
++            'analysisLevel': 'item',
++        },
++        {
++            'itemName': 'Hubris Circlet',
++            'affixAnalyzed': '+93 to maximum Life',
++            'p10': 95.0,
++            'median': 145.0,
++            'p90': 240.0,
++            'itemsPerWeek': 0.5,
++            'itemsTotal': 12,
++            'analysisLevel': 'affix',
++        },
++    ]
++    assert payload['weekly'] == [
++        {'weekStart': '2026-03-02T00:00:00Z', 'tooCheapCount': 3},
++        {'weekStart': '2026-03-09T00:00:00Z', 'tooCheapCount': 2},
++    ]
++    assert any('quantileTDigest(0.1)' in query for query in client.queries)
++    assert any('ml_item_mod_tokens_v1' in query for query in client.queries)
+diff --git a/tests/test_search_history_analytics.py b/tests/test_search_history_analytics.py
+new file mode 100644
+index 0000000..ba471a0
+--- /dev/null
++++ b/tests/test_search_history_analytics.py
+@@ -0,0 +1,94 @@
++from __future__ import annotations
++
++import sys
++from collections.abc import Mapping
++
++sys.path.insert(0, '/mnt/data/devrepo')
++
++from poe_trade.api.ops import analytics_search_history, analytics_search_suggestions
++from poe_trade.db import ClickHouseClient
++
++
++class _SequentialClickHouse(ClickHouseClient):
++    def __init__(self, responses: list[str]) -> None:
++        super().__init__(endpoint='http://clickhouse')
++        self.responses = list(responses)
++        self.queries: list[str] = []
++
++    def execute(self, query: str, settings: Mapping[str, str] | None = None) -> str:  # type: ignore[override]
++        del settings
++        self.queries.append(query)
++        if self.responses:
++            return self.responses.pop(0)
++        return ''
++
++
++def test_search_suggestions_returns_ranked_candidates() -> None:
++    client = _SequentialClickHouse(
++        [
++            '\n'.join(
++                [
++                    '{"item_name":"Hubris Circlet","item_kind":"base_type","match_count":42}',
++                    '{"item_name":"Hubris Circlet","item_kind":"base_type","match_count":21}',
++                ]
++            )
++        ]
++    )
++
++    payload = analytics_search_suggestions(client, query='hub')
++
++    assert payload == {
++        'query': 'hub',
++        'suggestions': [
++            {'itemName': 'Hubris Circlet', 'itemKind': 'base_type', 'matchCount': 42},
++            {'itemName': 'Hubris Circlet', 'itemKind': 'base_type', 'matchCount': 21},
++        ],
++    }
++    assert any('LIMIT 8' in query for query in client.queries)
++
++
++def test_search_history_returns_db_driven_rows_histograms_and_filter_ranges() -> None:
++    client = _SequentialClickHouse(
++        [
++            '{"league":"Mirage"}\n{"league":"Standard"}',
++            '{"min_price":10.0,"max_price":220.0,"min_added_on":"2026-03-01 00:00:00","max_added_on":"2026-03-15 00:00:00"}',
++            '{"bucket_start":0.0,"bucket_end":50.0,"count":2}',
++            '{"bucket_start":"2026-03-01 00:00:00","bucket_end":"2026-03-08 00:00:00","count":4}',
++            '{"item_name":"Hubris Circlet","league":"Mirage","listed_price":118.0,"added_on":"2026-03-15 12:00:00"}',
++        ]
++    )
++
++    payload = analytics_search_history(
++        client,
++        query_params={
++            'query': ['Hubris Circlet'],
++            'league': ['Mirage'],
++            'sort': ['listed_price'],
++            'order': ['asc'],
++            'price_min': ['50'],
++            'price_max': ['150'],
++        },
++        default_league='Mirage',
++    )
++
++    assert payload['filters']['leagueOptions'] == ['Mirage', 'Standard']
++    assert payload['filters']['price'] == {'min': 10.0, 'max': 220.0}
++    assert payload['filters']['datetime'] == {
++        'min': '2026-03-01T00:00:00Z',
++        'max': '2026-03-15T00:00:00Z',
++    }
++    assert payload['histograms']['price'] == [{'bucketStart': 0.0, 'bucketEnd': 50.0, 'count': 2}]
++    assert payload['histograms']['datetime'] == [
++        {'bucketStart': '2026-03-01T00:00:00Z', 'bucketEnd': '2026-03-08T00:00:00Z', 'count': 4}
++    ]
++    assert payload['rows'] == [
++        {
++            'itemName': 'Hubris Circlet',
++            'league': 'Mirage',
++            'listedPrice': 118.0,
++            'currency': 'chaos',
++            'addedOn': '2026-03-15T12:00:00Z',
++        }
++    ]
++    assert any('ORDER BY listed_price ASC' in query for query in client.queries)
++    assert any("league = 'Mirage'" in query for query in client.queries)
+
