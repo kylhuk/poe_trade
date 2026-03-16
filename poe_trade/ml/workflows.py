@@ -1264,7 +1264,9 @@ def evaluate_stack(
                 }
             ],
         )
-    baseline = _latest_run_excluding(client, league=league, run_id=run_id)
+    baseline = _latest_promoted_run_excluding(
+        client, league=league, run_id=run_id
+    ) or _latest_run_excluding(client, league=league, run_id=run_id)
     candidate = _aggregate_eval_run(client, league=league, run_id=run_id)
     comparison = _candidate_vs_incumbent_summary(
         candidate=candidate, incumbent=baseline
@@ -1433,8 +1435,10 @@ def train_loop(
             status = "completed"
             stop_reason = "promoted_against_incumbent"
         else:
-            status = "failed_gates"
-            stop_reason = str(eval_result.get("stop_reason") or "failed_quality_gates")
+            status = "completed"
+            stop_reason = str(
+                eval_result.get("stop_reason") or "hold_no_material_improvement"
+            )
         latest_mdape = _to_float(comparison.get("candidate_avg_mdape"), 1.0)
         if (
             best_mdape is None
@@ -1513,19 +1517,7 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
     _ensure_supported_league(league)
     _ensure_train_runs_table(client)
     if run == "latest":
-        rows = _query_rows(
-            client,
-            " ".join(
-                [
-                    "SELECT run_id, stage, current_route, routes_done, routes_total, rows_processed, eta_seconds, chosen_backend, worker_count, memory_budget_gb, active_model_version, status, stop_reason, tuning_config_id, eval_run_id",
-                    "FROM poe_trade.ml_train_runs",
-                    f"WHERE league = {_quote(league)}",
-                    "ORDER BY updated_at DESC",
-                    "LIMIT 1",
-                    "FORMAT JSONEachRow",
-                ]
-            ),
-        )
+        rows = train_run_history(client, league=league, limit=1)
         if not rows:
             return {"league": league, "status": "no_runs"}
         latest = rows[0]
@@ -1547,19 +1539,7 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
         )
         latest["active_model_version"] = _active_model_version(client, league)
         return latest
-    rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT run_id, stage, current_route, routes_done, routes_total, rows_processed, eta_seconds, chosen_backend, worker_count, memory_budget_gb, active_model_version, status, stop_reason, tuning_config_id, eval_run_id",
-                "FROM poe_trade.ml_train_runs",
-                f"WHERE league = {_quote(league)} AND run_id = {_quote(run)}",
-                "ORDER BY updated_at DESC",
-                "LIMIT 1",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
+    rows = train_run_history(client, league=league, limit=1, run_id=run)
     if not rows:
         return {"league": league, "run_id": run, "status": "not_found"}
     row = rows[0]
@@ -1633,7 +1613,9 @@ def _eval_feedback_for_run(
     latest = latest_rows[0]
     latest_mdape = _to_float(latest.get("avg_mdape"), 1.0)
     latest_cov = _to_float(latest.get("avg_cov"), 0.0)
-    baseline = _latest_run_excluding(client, league=league, run_id=run_id) or {
+    baseline = _latest_promoted_run_excluding(
+        client, league=league, run_id=run_id
+    ) or _latest_run_excluding(client, league=league, run_id=run_id) or {
         "run_id": run_id,
         "avg_mdape": latest_mdape,
         "avg_cov": latest_cov,
@@ -2051,7 +2033,58 @@ def _ensure_route(route: str) -> None:
 
 
 def _now_ts() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _train_run_stage_rank(stage: object) -> int:
+    value = str(stage or "").strip().lower()
+    if value == "done":
+        return 3
+    if value == "evaluate":
+        return 2
+    if value == "dataset":
+        return 1
+    return 0
+
+
+def _train_run_sort_key(row: dict[str, Any]) -> tuple[str, int]:
+    return (str(row.get("updated_at") or ""), _train_run_stage_rank(row.get("stage")))
+
+
+def _collapse_train_run_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_run_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        existing = by_run_id.get(run_id)
+        if existing is None or _train_run_sort_key(row) > _train_run_sort_key(existing):
+            by_run_id[run_id] = dict(row)
+    return sorted(by_run_id.values(), key=_train_run_sort_key, reverse=True)
+
+
+def train_run_history(
+    client: ClickHouseClient, *, league: str, limit: int = 20, run_id: str | None = None
+) -> list[dict[str, Any]]:
+    _ensure_train_runs_table(client)
+    filters = [f"league = {_quote(league)}"]
+    if run_id:
+        filters.append(f"run_id = {_quote(run_id)}")
+    row_limit = 16 if run_id else max(32, max(1, limit) * 8)
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT run_id, stage, current_route, routes_done, routes_total, rows_processed, eta_seconds, chosen_backend, worker_count, memory_budget_gb, active_model_version, status, stop_reason, tuning_config_id, eval_run_id, updated_at",
+                "FROM poe_trade.ml_train_runs",
+                f"WHERE {' AND '.join(filters)}",
+                "ORDER BY updated_at DESC",
+                f"LIMIT {row_limit}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    return _collapse_train_run_rows(rows)[: max(1, limit)]
 
 
 def _quote(value: str) -> str:
@@ -2136,19 +2169,7 @@ def _tuning_config_id(controls: TuningControls) -> str:
 def _latest_train_run_row(
     client: ClickHouseClient, league: str
 ) -> dict[str, Any] | None:
-    rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT run_id, status, stop_reason, updated_at",
-                "FROM poe_trade.ml_train_runs",
-                f"WHERE league = {_quote(league)}",
-                "ORDER BY updated_at DESC",
-                "LIMIT 1",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
+    rows = train_run_history(client, league=league, limit=1)
     if not rows:
         return None
     return rows[0]
@@ -2204,6 +2225,49 @@ def _latest_run_excluding(
         "avg_cov": _to_float(row.get("avg_cov"), 0.0),
     }
 
+
+
+def _latest_promoted_run_excluding(
+    client: ClickHouseClient, *, league: str, run_id: str
+) -> dict[str, Any] | None:
+    promotion_rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT candidate_run_id, max(recorded_at) AS recorded_at",
+                "FROM poe_trade.ml_promotion_audit_v1",
+                f"WHERE league = {_quote(league)} AND verdict = 'promote' AND candidate_run_id != {_quote(run_id)}",
+                "GROUP BY candidate_run_id",
+                "ORDER BY recorded_at DESC",
+                "LIMIT 1",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not promotion_rows:
+        return None
+    promoted_run_id = str(promotion_rows[0].get("candidate_run_id") or "").strip()
+    if not promoted_run_id:
+        return None
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT avg(coalesce(mdape, 1.0)) AS avg_mdape, avg(coalesce(interval_80_coverage, 0.0)) AS avg_cov",
+                "FROM poe_trade.ml_eval_runs",
+                f"WHERE league = {_quote(league)} AND run_id = {_quote(promoted_run_id)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "run_id": promoted_run_id,
+        "avg_mdape": _to_float(row.get("avg_mdape"), 1.0),
+        "avg_cov": _to_float(row.get("avg_cov"), 0.0),
+    }
 
 def _candidate_vs_incumbent_summary(
     *, candidate: dict[str, Any], incumbent: dict[str, Any] | None

@@ -69,12 +69,7 @@ def fetch_predict_one(
 
 def fetch_automation_status(client: ClickHouseClient, *, league: str) -> dict[str, Any]:
     status_payload = fetch_status(client, league=league)
-    history_rows = _query_rows(
-        client,
-        "SELECT run_id, status, stop_reason, active_model_version, updated_at "
-        "FROM poe_trade.ml_train_runs "
-        f"WHERE league = {_quote(league)} ORDER BY updated_at DESC LIMIT 1 FORMAT JSONEachRow",
-    )
+    history_rows = workflows.train_run_history(client, league=league, limit=1)
     latest = history_rows[0] if history_rows else {}
     active_model_version = _opt_model_version(latest.get("active_model_version"))
     if active_model_version is None:
@@ -103,27 +98,7 @@ def fetch_automation_status(client: ClickHouseClient, *, league: str) -> dict[st
 def fetch_automation_history(
     client: ClickHouseClient, *, league: str, limit: int = 20
 ) -> dict[str, Any]:
-    run_rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT run_id,",
-                "argMax(status, updated_at) AS status,",
-                "argMax(stop_reason, updated_at) AS stop_reason,",
-                "argMax(active_model_version, updated_at) AS active_model_version,",
-                "argMax(tuning_config_id, updated_at) AS tuning_config_id,",
-                "argMax(eval_run_id, updated_at) AS eval_run_id,",
-                "max(updated_at) AS updated_at,",
-                "max(rows_processed) AS rows_processed",
-                "FROM poe_trade.ml_train_runs",
-                f"WHERE league = {_quote(league)}",
-                "GROUP BY run_id",
-                "ORDER BY updated_at DESC",
-                f"LIMIT {max(1, limit)}",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
+    run_rows = workflows.train_run_history(client, league=league, limit=limit)
     eval_rows = _query_rows(
         client,
         " ".join(

@@ -9,26 +9,39 @@ from poe_trade.ml import workflows
 
 class QueryRouter:
     def __call__(self, _client: ClickHouseClient, query: str):
-        if "FROM poe_trade.ml_train_runs" in query and "GROUP BY run_id" in query:
+        if "FROM poe_trade.ml_train_runs" in query and "ORDER BY updated_at DESC" in query:
             return [
                 {
                     "run_id": "train-2",
+                    "stage": "dataset",
+                    "status": "running",
+                    "stop_reason": "running",
+                    "active_model_version": "mirage-2",
+                    "tuning_config_id": "cfg-2",
+                    "eval_run_id": "eval-2",
+                    "updated_at": "2026-03-15 12:00:00.000",
+                    "rows_processed": 2400,
+                },
+                {
+                    "run_id": "train-2",
+                    "stage": "done",
                     "status": "completed",
                     "stop_reason": "promoted_against_incumbent",
                     "active_model_version": "mirage-2",
                     "tuning_config_id": "cfg-2",
                     "eval_run_id": "eval-2",
-                    "updated_at": "2026-03-15 12:00:00",
+                    "updated_at": "2026-03-15 12:00:00.000",
                     "rows_processed": 2400,
                 },
                 {
                     "run_id": "train-1",
-                    "status": "failed_gates",
+                    "stage": "done",
+                    "status": "completed",
                     "stop_reason": "hold_no_material_improvement",
                     "active_model_version": "mirage-1",
                     "tuning_config_id": "cfg-1",
                     "eval_run_id": "eval-1",
-                    "updated_at": "2026-03-14 06:00:00",
+                    "updated_at": "2026-03-14 06:00:00.000",
                     "rows_processed": 1800,
                 },
             ]
@@ -107,7 +120,9 @@ class QueryRouter:
 def test_fetch_automation_history_exposes_observability_panels(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(api_ml, "_query_rows", QueryRouter())
+    router = QueryRouter()
+    monkeypatch.setattr(api_ml, "_query_rows", router)
+    monkeypatch.setattr(workflows, "_query_rows", router)
 
     payload = api_ml.fetch_automation_history(
         ClickHouseClient(endpoint="http://ch"), league="Mirage", limit=10
