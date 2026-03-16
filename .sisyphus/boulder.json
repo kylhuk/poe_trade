@@ -1,10 +1,10 @@
 {
-  "active_plan": "/home/hal9000/docker/poe_trade/.sisyphus/plans/opportunity-pipeline-contract-parity.md",
-  "started_at": "2026-03-15T20:45:49.423Z",
+  "active_plan": "/home/hal9000/docker/poe_trade/.sisyphus/plans/fix-ml-pipeline.md",
+  "started_at": "2026-03-16T19:01:08.688Z",
   "session_ids": [
-    "ses_30ce329d6ffewlXVDzzjzifZrl"
+    "ses_307fa008cffekz4BECG61Jblh2"
   ],
-  "plan_name": "opportunity-pipeline-contract-parity",
+  "plan_name": "fix-ml-pipeline",
   "agent": "atlas",
   "worktree_path": "/home/hal9000/docker/poe_trade"
 }

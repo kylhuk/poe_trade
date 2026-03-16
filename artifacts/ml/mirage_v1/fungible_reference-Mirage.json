@@ -1,15 +1,30 @@
 {
-  "catboost_defaults": {
-    "has_time": true,
-    "loss_function": "MultiQuantile:alpha=0.1,0.5,0.9"
-  },
   "comps_table": "poe_trade.ml_comps_v1",
   "dataset_table": "poe_trade.ml_price_dataset_v1",
   "family_counts": [],
-  "fit_round": 33643,
+  "feature_row_count": 0,
+  "features": [
+    "category",
+    "base_type",
+    "rarity",
+    "ilvl",
+    "stack_size",
+    "corrupted",
+    "fractured",
+    "synthesised",
+    "mod_token_count"
+  ],
+  "fit_round": 34141,
   "league": "Mirage",
+  "model_backend": "heuristic_fallback",
+  "model_bundle_path": null,
   "objective": "reference_quantiles",
   "route": "fungible_reference",
-  "trained_at": "2026-03-16 18:01:37",
+  "sale_model_available": false,
+  "support_reference_p50": 0.0,
+  "support_reference_row_count": 0,
+  "train_row_count": 0,
+  "trained_at": "2026-03-16 20:49:37.498",
+  "training_status": "insufficient_rows",
   "warm_start_from": "artifacts/ml/mirage_v1/fungible_reference-Mirage.json"
 }
