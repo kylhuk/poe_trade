@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import uuid
@@ -8,6 +9,10 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import joblib
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.feature_extraction import DictVectorizer
 
 from poe_trade.db import ClickHouseClient
 from poe_trade.db.clickhouse import ClickHouseClientError
@@ -23,6 +28,20 @@ ROUTES = (
     "sparse_retrieval",
     "fallback_abstain",
 )
+
+MODEL_FEATURE_FIELDS = (
+    "category",
+    "base_type",
+    "rarity",
+    "ilvl",
+    "stack_size",
+    "corrupted",
+    "fractured",
+    "synthesised",
+    "mod_token_count",
+)
+
+_MODEL_BUNDLE_CACHE: dict[str, dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -582,26 +601,38 @@ def train_route(
     _ensure_route(route)
     model_path = Path(model_dir)
     model_path.mkdir(parents=True, exist_ok=True)
-    family_counts = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT category AS family, count() AS rows",
-                f"FROM {dataset_table}",
-                f"WHERE league = {_quote(league)}",
-                "GROUP BY family",
-                "FORMAT JSONEachRow",
-            ]
-        ),
+
+    query = " ".join(
+        [
+            "SELECT",
+            "category,",
+            "base_type,",
+            "ifNull(rarity, '') AS rarity,",
+            "toFloat64(ifNull(ilvl, 0)) AS ilvl,",
+            "toFloat64(ifNull(stack_size, 1)) AS stack_size,",
+            "toFloat64(ifNull(corrupted, 0)) AS corrupted,",
+            "toFloat64(ifNull(fractured, 0)) AS fractured,",
+            "toFloat64(ifNull(synthesised, 0)) AS synthesised,",
+            "toFloat64(ifNull(mod_token_count, 0)) AS mod_token_count,",
+            "toFloat64(normalized_price_chaos) AS normalized_price_chaos,",
+            "toFloat64(ifNull(sale_probability_label, 0.0)) AS sale_probability_label",
+            f"FROM {dataset_table}",
+            f"WHERE league = {_quote(league)}",
+            "AND normalized_price_chaos IS NOT NULL",
+            f"AND {_route_training_predicate(route)}",
+            "FORMAT JSONEachRow",
+        ]
     )
-    artifact_file = _route_artifact_path(
-        model_dir=model_dir, route=route, league=league
-    )
+    rows = _query_rows(client, query)
+    train_rows = [row for row in rows if _to_float(row.get('normalized_price_chaos'), 0.0) > 0.0]
+
+    artifact_file = _route_artifact_path(model_dir=model_dir, route=route, league=league)
+    model_bundle_path = _route_model_bundle_path(model_dir=model_dir, route=route, league=league)
     previous_artifact = _load_json_file(artifact_file)
     previous_round = _to_int(previous_artifact.get("fit_round"), 0)
     fit_round = max(1, previous_round + 1)
 
-    artifact = {
+    artifact: dict[str, Any] = {
         "route": route,
         "league": league,
         "dataset_table": dataset_table,
@@ -609,17 +640,103 @@ def train_route(
         "trained_at": _now_ts(),
         "fit_round": fit_round,
         "warm_start_from": str(artifact_file) if previous_artifact else None,
-        "family_counts": family_counts,
         "objective": _route_objective(route),
-        "catboost_defaults": {
-            "has_time": True,
-            "loss_function": "MultiQuantile:alpha=0.1,0.5,0.9",
-        },
+        "model_backend": "heuristic_fallback",
+        "features": list(MODEL_FEATURE_FIELDS),
+        "train_row_count": len(train_rows),
+        "family_counts": _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT category AS family, count() AS rows",
+                    f"FROM {dataset_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY family",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        ),
+        "sale_model_available": False,
+        "model_bundle_path": None,
     }
+
+    if len(train_rows) >= 25:
+        feature_rows = [_feature_dict_from_row(row) for row in train_rows]
+        vectorizer = DictVectorizer(sparse=True)
+        X = vectorizer.fit_transform(feature_rows)
+        y_price = [_to_float(row.get("normalized_price_chaos"), 0.0) for row in train_rows]
+        y_sale = [min(1.0, max(0.0, _to_float(row.get("sale_probability_label"), 0.0))) for row in train_rows]
+
+        model_p10 = GradientBoostingRegressor(
+            loss="quantile",
+            alpha=0.10,
+            n_estimators=120,
+            learning_rate=0.05,
+            max_depth=3,
+            min_samples_leaf=5,
+            random_state=42,
+        )
+        model_p50 = GradientBoostingRegressor(
+            loss="quantile",
+            alpha=0.50,
+            n_estimators=120,
+            learning_rate=0.05,
+            max_depth=3,
+            min_samples_leaf=5,
+            random_state=43,
+        )
+        model_p90 = GradientBoostingRegressor(
+            loss="quantile",
+            alpha=0.90,
+            n_estimators=120,
+            learning_rate=0.05,
+            max_depth=3,
+            min_samples_leaf=5,
+            random_state=44,
+        )
+        model_p10.fit(X, y_price)
+        model_p50.fit(X, y_price)
+        model_p90.fit(X, y_price)
+
+        sale_model = None
+        if len({round(value, 4) for value in y_sale}) > 1:
+            sale_model = GradientBoostingRegressor(
+                loss="squared_error",
+                n_estimators=80,
+                learning_rate=0.05,
+                max_depth=2,
+                min_samples_leaf=5,
+                random_state=45,
+            )
+            sale_model.fit(X, y_sale)
+
+        bundle = {
+            "vectorizer": vectorizer,
+            "price_models": {"p10": model_p10, "p50": model_p50, "p90": model_p90},
+            "sale_model": sale_model,
+            "feature_fields": list(MODEL_FEATURE_FIELDS),
+            "trained_at": artifact["trained_at"],
+        }
+        joblib.dump(bundle, model_bundle_path)
+        _MODEL_BUNDLE_CACHE[str(model_bundle_path)] = bundle
+        artifact["model_backend"] = "sklearn_gradient_boosting"
+        artifact["model_bundle_path"] = str(model_bundle_path)
+        artifact["sale_model_available"] = sale_model is not None
+        artifact["support_reference_p50"] = _median(y_price)
+        artifact["support_reference_row_count"] = len(train_rows)
+    else:
+        artifact["training_status"] = "insufficient_rows"
+
     artifact_file.write_text(
         json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    return {"route": route, "league": league, "artifact": str(artifact_file)}
+    return {
+        "route": route,
+        "league": league,
+        "artifact": str(artifact_file),
+        "rows_trained": len(train_rows),
+        "model_backend": artifact.get("model_backend"),
+    }
 
 
 def evaluate_route(
@@ -1308,25 +1425,50 @@ def predict_one(
     parsed = _parse_clipboard_item(clipboard_text)
     route_bundle = _route_for_item(parsed)
     route = route_bundle["route"]
-    support = route_bundle["support_count_recent"]
+    support = _support_count_recent(
+        client,
+        league=league,
+        category=parsed["category"],
+        base_type=parsed["base_type"],
+    )
     base_price = _reference_price(
         client,
         league=league,
         category=parsed["category"],
         base_type=parsed["base_type"],
     )
-    if route == "fallback_abstain":
-        confidence = 0.25
-    elif route == "sparse_retrieval":
-        confidence = 0.45
-    elif route == "structured_boosted":
-        confidence = 0.62
+
+    artifact = _load_active_route_artifact(client, league=league, route=route)
+    model_prediction = _predict_with_artifact(
+        artifact=artifact,
+        parsed_item=parsed,
+    )
+
+    if model_prediction is None:
+        if route == "fallback_abstain":
+            confidence = 0.25
+        elif route == "sparse_retrieval":
+            confidence = 0.45
+        elif route == "structured_boosted":
+            confidence = 0.62
+        else:
+            confidence = 0.7
+        price_p50 = base_price
+        price_p10 = max(0.1, price_p50 * 0.8)
+        price_p90 = price_p50 * 1.2
+        sale_probability = 0.6 if route != "fallback_abstain" else 0.3
+        fallback_reason = "low_support" if route == "fallback_abstain" else ""
     else:
-        confidence = 0.7
-    price_p50 = base_price
-    price_p10 = max(0.1, price_p50 * 0.8)
-    price_p90 = price_p50 * 1.2
-    sale_probability = 0.6 if route != "fallback_abstain" else 0.3
+        price_p10 = max(0.1, float(model_prediction["price_p10"]))
+        price_p50 = max(price_p10, float(model_prediction["price_p50"]))
+        price_p90 = max(price_p50, float(model_prediction["price_p90"]))
+        sale_probability = min(1.0, max(0.0, float(model_prediction["sale_probability"])))
+        support_factor = min(1.0, math.log1p(max(support, 0)) / math.log1p(250.0))
+        confidence = min(0.95, 0.35 + 0.35 * support_factor + 0.25 * min(1.0, float(artifact.get("train_row_count") or 0) / 500.0))
+        if route == "fallback_abstain":
+            confidence = min(confidence, 0.35)
+        fallback_reason = ""
+
     recommendation_eligible = sale_probability >= 0.5
     return {
         "league": league,
@@ -1342,7 +1484,7 @@ def predict_one(
         "price_recommendation_eligible": recommendation_eligible,
         "confidence": round(confidence, 4),
         "confidence_percent": round(confidence * 100.0, 2),
-        "fallback_reason": "low_support" if route == "fallback_abstain" else "",
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -1903,15 +2045,17 @@ def _protected_cohort_check(
 
 
 def _should_promote(comparison: dict[str, Any]) -> bool:
+    protected = comparison.get("protected_cohort_regression") or {}
+    if bool(protected.get("regression")):
+        return False
     if not bool(comparison.get("coverage_floor_ok")):
         return False
+    if str(comparison.get("incumbent_run_id") or "") in {"", "none"}:
+        return True
     if (
         _to_float(comparison.get("mdape_improvement"), 0.0)
         < MIRAGE_EVAL_CONTRACT.promotion.min_mdape_improvement
     ):
-        return False
-    protected = comparison.get("protected_cohort_regression") or {}
-    if bool(protected.get("regression")):
         return False
     return True
 
@@ -2459,6 +2603,11 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
     rarity = ""
     item_class = ""
     base_type = ""
+    ilvl = 0
+    stack_size = 1
+    corrupted = 0
+    fractured = 0
+    synthesised = 0
     for idx, line in enumerate(lines):
         if line.startswith("Rarity:"):
             rarity = line.replace("Rarity:", "").strip()
@@ -2466,6 +2615,23 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
                 base_type = lines[idx + 1]
         if line.startswith("Item Class:"):
             item_class = line.replace("Item Class:", "").strip()
+        if line.startswith("Item Level:"):
+            try:
+                ilvl = int(line.replace("Item Level:", "").strip())
+            except ValueError:
+                ilvl = 0
+        if line.startswith("Stack Size:"):
+            raw = line.replace("Stack Size:", "").strip().split("/", 1)[0].strip()
+            try:
+                stack_size = max(1, int(raw))
+            except ValueError:
+                stack_size = 1
+        if line.lower() == "corrupted":
+            corrupted = 1
+        if "fractured" in line.lower():
+            fractured = 1
+        if "synthesised" in line.lower() or "synthesized" in line.lower():
+            synthesised = 1
     if not base_type:
         base_type = lines[0]
     category = "other"
@@ -2482,12 +2648,19 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
         category = "cluster_jewel"
     elif "flask" in lowered:
         category = "flask"
+    mod_count = max(len(lines) - 5, 0)
     return {
         "rarity": rarity,
         "item_class": item_class,
         "base_type": base_type,
         "category": category,
-        "mod_count": max(len(lines) - 5, 0),
+        "mod_count": mod_count,
+        "mod_token_count": mod_count,
+        "ilvl": ilvl,
+        "stack_size": stack_size,
+        "corrupted": corrupted,
+        "fractured": fractured,
+        "synthesised": synthesised,
     }
 
 
@@ -2570,6 +2743,169 @@ def _to_ch_timestamp(value: str) -> str:
     else:
         dt = dt.astimezone(UTC)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _route_training_predicate(route: str) -> str:
+    if route == "fungible_reference":
+        return "category IN ('essence', 'fossil', 'scarab', 'map', 'logbook')"
+    if route == "structured_boosted":
+        return "rarity = 'Unique'"
+    if route == "sparse_retrieval":
+        return "rarity = 'Rare' OR category = 'cluster_jewel'"
+    return "category NOT IN ('essence', 'fossil', 'scarab', 'map', 'logbook') AND ifNull(rarity, '') NOT IN ('Unique', 'Rare') AND category != 'cluster_jewel'"
+
+
+def _feature_dict_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "category": str(row.get("category") or "other"),
+        "base_type": str(row.get("base_type") or "unknown"),
+        "rarity": str(row.get("rarity") or ""),
+        "ilvl": _to_float(row.get("ilvl"), 0.0),
+        "stack_size": max(1.0, _to_float(row.get("stack_size"), 1.0)),
+        "corrupted": _to_float(row.get("corrupted"), 0.0),
+        "fractured": _to_float(row.get("fractured"), 0.0),
+        "synthesised": _to_float(row.get("synthesised"), 0.0),
+        "mod_token_count": _to_float(row.get("mod_token_count"), 0.0),
+    }
+
+
+def _feature_dict_from_parsed_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "category": str(item.get("category") or "other"),
+        "base_type": str(item.get("base_type") or "unknown"),
+        "rarity": str(item.get("rarity") or ""),
+        "ilvl": _to_float(item.get("ilvl"), 0.0),
+        "stack_size": max(1.0, _to_float(item.get("stack_size"), 1.0)),
+        "corrupted": _to_float(item.get("corrupted"), 0.0),
+        "fractured": _to_float(item.get("fractured"), 0.0),
+        "synthesised": _to_float(item.get("synthesised"), 0.0),
+        "mod_token_count": _to_float(item.get("mod_token_count"), _to_float(item.get("mod_count"), 0.0)),
+    }
+
+
+def _route_model_bundle_path(*, model_dir: str, route: str, league: str) -> Path:
+    return Path(model_dir) / f"{route}-{league}.joblib"
+
+
+def _load_active_route_artifact(
+    client: ClickHouseClient, *, league: str, route: str
+) -> dict[str, Any]:
+    model_dir = _active_model_dir_for_route(client, league=league, route=route)
+    if not model_dir:
+        return {}
+    return _load_json_file(_route_artifact_path(model_dir=model_dir, route=route, league=league))
+
+
+def _active_model_dir_for_route(
+    client: ClickHouseClient, *, league: str, route: str
+) -> str:
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT model_dir",
+                "FROM poe_trade.ml_model_registry_v1",
+                f"WHERE league = {_quote(league)} AND route = {_quote(route)} AND promoted = 1",
+                "ORDER BY promoted_at DESC",
+                "LIMIT 1",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if rows:
+        return str(rows[0].get("model_dir") or "")
+    default_dir = Path("artifacts/ml") / f"{league.lower()}_v1"
+    if default_dir.exists():
+        return str(default_dir)
+    return ""
+
+
+def _load_model_bundle(bundle_path: str) -> dict[str, Any] | None:
+    if not bundle_path:
+        return None
+    cached = _MODEL_BUNDLE_CACHE.get(bundle_path)
+    if cached is not None:
+        return cached
+    path = Path(bundle_path)
+    if not path.exists():
+        return None
+    loaded = joblib.load(path)
+    if not isinstance(loaded, dict):
+        return None
+    _MODEL_BUNDLE_CACHE[bundle_path] = loaded
+    return loaded
+
+
+def _predict_with_artifact(
+    *, artifact: dict[str, Any], parsed_item: dict[str, Any]
+) -> dict[str, float] | None:
+    bundle_path = str(artifact.get("model_bundle_path") or "")
+    if not bundle_path:
+        return None
+    bundle = _load_model_bundle(bundle_path)
+    if bundle is None:
+        return None
+    vectorizer = bundle.get("vectorizer")
+    price_models = bundle.get("price_models") or {}
+    if vectorizer is None or not isinstance(price_models, dict):
+        return None
+    features = _feature_dict_from_parsed_item(parsed_item)
+    X = vectorizer.transform([features])
+    p10_model = price_models.get("p10")
+    p50_model = price_models.get("p50")
+    p90_model = price_models.get("p90")
+    if p10_model is None or p50_model is None or p90_model is None:
+        return None
+    p10 = float(p10_model.predict(X)[0])
+    p50 = float(p50_model.predict(X)[0])
+    p90 = float(p90_model.predict(X)[0])
+    ordered = sorted([max(0.1, p10), max(0.1, p50), max(0.1, p90)])
+    sale_model = bundle.get("sale_model")
+    if sale_model is None:
+        sale_probability = 0.6
+    else:
+        sale_probability = min(1.0, max(0.0, float(sale_model.predict(X)[0])))
+    return {
+        "price_p10": ordered[0],
+        "price_p50": ordered[1],
+        "price_p90": ordered[2],
+        "sale_probability": sale_probability,
+    }
+
+
+def _support_count_recent(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    category: str,
+    base_type: str,
+) -> int:
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT count() AS sample_count",
+                "FROM poe_trade.ml_price_dataset_v1",
+                f"WHERE league = {_quote(league)}",
+                f"AND category = {_quote(category)}",
+                f"AND base_type = {_quote(base_type)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return 0
+    return _to_int(rows[0].get("sample_count"), 0)
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
 
 
 def _route_artifact_path(*, model_dir: str, route: str, league: str) -> Path:

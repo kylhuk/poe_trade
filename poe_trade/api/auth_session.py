@@ -11,12 +11,46 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 from poe_trade.config.settings import Settings
 
 
-_ACCOUNT_NAME_TEXT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{1,63}$")
+_ACCOUNT_NAME_TEXT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._#-]{1,63}$")
+_PROFILE_URL_PATTERN = re.compile(r"/account/view-profile/([^\"'/?<>=\s]+)")
+_PROFILE_META_PATTERN = re.compile(
+    r"content=[\"']Profile\s*-\s*([^\"']+)\s*-\s*Path of Exile[\"']",
+    flags=re.IGNORECASE,
+)
+_PROFILE_TITLE_PATTERN = re.compile(
+    r"<title>\s*([^<]+?)\s*(?:['’]s profile|[-–—]\s*Path of Exile|Profile)\s*</title>",
+    flags=re.IGNORECASE,
+)
+
+
+class AuthSessionError(Exception):
+    def __init__(self, message: str, *, code: str, status: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+class AccountResolutionError(AuthSessionError, ValueError):
+    pass
+
+
+class OAuthExchangeError(AuthSessionError, RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class OAuthExchangeResult:
+    account_name: str
+    access_token: str
+    refresh_token: str
+    token_type: str
+    expires_in: int | None
+    scope: str
 
 
 def _now() -> datetime:
@@ -114,43 +148,217 @@ def clear_credential_state(settings: Settings) -> dict[str, Any]:
 def resolve_account_name(settings: Settings, *, poe_session_id: str) -> str:
     trimmed_session_id = poe_session_id.strip()
     if not trimmed_session_id:
-        raise ValueError("poeSessionId is required")
+        raise AccountResolutionError(
+            "poeSessionId is required",
+            code="missing_poe_session_id",
+            status=400,
+        )
     request_headers = {
-        "Accept": "application/json, text/plain;q=0.9",
+        "Accept": "application/json, text/html;q=0.9, text/plain;q=0.8",
         "Cookie": f"POESESSID={trimmed_session_id}",
         "User-Agent": settings.poe_user_agent,
     }
-    urls = _account_name_candidate_urls(settings)
-    for url in urls:
-        request = urllib.request.Request(url, headers=request_headers, method="GET")
-        try:
-            with urllib.request.urlopen(
-                request, timeout=settings.poe_request_timeout
-            ) as resp:
-                body = resp.read().decode("utf-8", errors="strict")
-        except (UnicodeDecodeError, urllib.error.URLError):
+
+    saw_upstream = False
+    saw_invalid_session = False
+
+    for url in _account_name_candidate_urls(settings):
+        body, status = _http_get_text(
+            url,
+            headers=request_headers,
+            timeout=settings.poe_request_timeout,
+        )
+        if status is None:
             continue
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            account_name = _extract_account_name_from_text(body)
-            if account_name:
-                return account_name
+        saw_upstream = True
+        if status in {401, 403}:
+            saw_invalid_session = True
             continue
-        account_name = _extract_account_name(payload)
+        account_name = _extract_account_name_from_response_body(body)
         if account_name:
             return account_name
-    raise ValueError("unable to resolve account name")
+
+    for url in _account_name_html_urls(settings):
+        body, status = _http_get_text(
+            url,
+            headers=request_headers,
+            timeout=settings.poe_request_timeout,
+        )
+        if status is None:
+            continue
+        saw_upstream = True
+        if status in {401, 403}:
+            saw_invalid_session = True
+            continue
+        account_name = _extract_account_name_from_html(body)
+        if account_name:
+            return account_name
+
+    if saw_invalid_session:
+        raise AccountResolutionError(
+            "invalid POESESSID or account profile unavailable",
+            code="invalid_poe_session",
+            status=400,
+        )
+    if not saw_upstream:
+        raise AccountResolutionError(
+            "account resolution upstream unavailable",
+            code="account_resolution_unavailable",
+            status=502,
+        )
+    raise AccountResolutionError(
+        "unable to resolve account name from POESESSID",
+        code="account_resolution_failed",
+        status=400,
+    )
+
+
+def exchange_oauth_code(
+    settings: Settings,
+    *,
+    code: str,
+    state: str,
+) -> OAuthExchangeResult:
+    if not code.strip():
+        raise OAuthExchangeError(
+            "code is required", code="missing_code", status=400
+        )
+    if not validate_state(settings, state=state):
+        raise OAuthExchangeError(
+            "invalid state", code="invalid_state", status=400
+        )
+    tx_state = _load_json(_state_path(settings))
+    code_verifier = str(tx_state.get("code_verifier") or "").strip()
+    if not code_verifier:
+        raise OAuthExchangeError(
+            "missing code verifier",
+            code="missing_code_verifier",
+            status=400,
+        )
+    if not settings.oauth_client_id.strip():
+        raise OAuthExchangeError(
+            "missing oauth client id",
+            code="oauth_client_id_missing",
+            status=500,
+        )
+    if not settings.poe_account_redirect_uri.strip():
+        raise OAuthExchangeError(
+            "missing oauth redirect uri",
+            code="oauth_redirect_uri_missing",
+            status=500,
+        )
+
+    form = {
+        "client_id": settings.oauth_client_id,
+        "grant_type": "authorization_code",
+        "code": code.strip(),
+        "redirect_uri": settings.poe_account_redirect_uri,
+        "scope": settings.poe_account_oauth_scope,
+        "code_verifier": code_verifier,
+    }
+    if settings.oauth_client_secret.strip():
+        form["client_secret"] = settings.oauth_client_secret
+
+    body, status = _http_post_form(
+        settings.poe_account_oauth_token_url,
+        form=form,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": settings.poe_user_agent,
+        },
+        timeout=settings.poe_request_timeout,
+    )
+    if status is None:
+        raise OAuthExchangeError(
+            "oauth token endpoint unavailable",
+            code="oauth_token_unavailable",
+            status=502,
+        )
+    payload = _parse_json_object(body)
+    if payload is None:
+        raise OAuthExchangeError(
+            "invalid oauth token response",
+            code="oauth_invalid_response",
+            status=502,
+        )
+    if status >= 400 or payload.get("error"):
+        message = str(
+            payload.get("error_description")
+            or payload.get("error")
+            or "oauth code exchange failed"
+        )
+        raise OAuthExchangeError(
+            message,
+            code="oauth_exchange_failed",
+            status=400 if status in {400, 401, 403} else 502,
+        )
+    access_token = str(payload.get("access_token") or "").strip()
+    refresh_token = str(payload.get("refresh_token") or "").strip()
+    token_type = str(payload.get("token_type") or "bearer").strip() or "bearer"
+    scope = str(payload.get("scope") or settings.poe_account_oauth_scope).strip()
+    account_name = _extract_account_name(payload)
+    if not account_name and access_token:
+        account_name = resolve_account_name_from_access_token(
+            settings, access_token=access_token
+        )
+    if not account_name:
+        raise OAuthExchangeError(
+            "oauth token response missing account name",
+            code="oauth_missing_account_name",
+            status=502,
+        )
+    expires_in = payload.get("expires_in")
+    expires_int: int | None
+    if expires_in is None:
+        expires_int = None
+    else:
+        try:
+            expires_int = int(expires_in)
+        except (TypeError, ValueError):
+            expires_int = None
+    return OAuthExchangeResult(
+        account_name=account_name,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type=token_type,
+        expires_in=expires_int,
+        scope=scope,
+    )
+
+
+def resolve_account_name_from_access_token(
+    settings: Settings,
+    *,
+    access_token: str,
+) -> str:
+    token = access_token.strip()
+    if not token:
+        return ""
+    headers = {
+        "Accept": "application/json, text/plain;q=0.9",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": settings.poe_user_agent,
+    }
+    for url in _account_name_candidate_urls(settings):
+        body, status = _http_get_text(
+            url, headers=headers, timeout=settings.poe_request_timeout
+        )
+        if status is None or status >= 400:
+            continue
+        account_name = _extract_account_name_from_response_body(body)
+        if account_name:
+            return account_name
+    return ""
 
 
 def _account_name_candidate_urls(settings: Settings) -> tuple[str, ...]:
-    base = settings.poe_api_base_url.rstrip("/")
+    api_base = settings.poe_api_base_url.rstrip("/")
+    auth_base = settings.poe_auth_base_url.rstrip("/")
     candidates = (
-        f"{base}/account/profile",
-        f"{base}/account-profile",
-        f"{base}/account",
-        "https://www.pathofexile.com/api/account-profile",
-        "https://www.pathofexile.com/character-window/get-account-name",
+        f"{api_base}/account/profile",
+        f"{api_base}/account-profile",
+        f"{api_base}/account",
+        f"{auth_base}/api/account-profile",
     )
     deduped: list[str] = []
     seen: set[str] = set()
@@ -162,16 +370,43 @@ def _account_name_candidate_urls(settings: Settings) -> tuple[str, ...]:
     return tuple(deduped)
 
 
+def _account_name_html_urls(settings: Settings) -> tuple[str, ...]:
+    auth_base = settings.poe_auth_base_url.rstrip("/")
+    return (
+        f"{auth_base}/my-account",
+        f"{auth_base}/account/profile",
+    )
+
+
 def _extract_account_name(payload: Any) -> str | None:
     if isinstance(payload, dict):
-        for key in ("accountName", "account_name", "name"):
+        for key in (
+            "accountName",
+            "account_name",
+            "name",
+            "username",
+            "display_name",
+        ):
             candidate = payload.get(key)
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
+            normalized = _normalize_account_name(candidate)
+            if normalized:
+                return normalized
         nested = payload.get("account")
         if isinstance(nested, dict):
             return _extract_account_name(nested)
     return None
+
+
+def _extract_account_name_from_response_body(payload: str) -> str | None:
+    parsed = _parse_json_object(payload)
+    if parsed is not None:
+        account_name = _extract_account_name(parsed)
+        if account_name:
+            return account_name
+    account_name = _extract_account_name_from_text(payload)
+    if account_name:
+        return account_name
+    return _extract_account_name_from_html(payload)
 
 
 def _extract_account_name_from_text(payload: str) -> str | None:
@@ -180,9 +415,113 @@ def _extract_account_name_from_text(payload: str) -> str | None:
         return None
     if "<" in candidate or "\n" in candidate or "\r" in candidate:
         return None
-    if not _ACCOUNT_NAME_TEXT_PATTERN.match(candidate):
+    return _normalize_account_name(candidate)
+
+
+def _extract_account_name_from_html(payload: str) -> str | None:
+    if not payload:
         return None
-    return candidate
+    for pattern in (_PROFILE_URL_PATTERN, _PROFILE_META_PATTERN, _PROFILE_TITLE_PATTERN):
+        match = pattern.search(payload)
+        if not match:
+            continue
+        candidate = _normalize_account_name(match.group(1))
+        if candidate:
+            return candidate
+    json_patterns = (
+        r'"accountName"\s*:\s*"([^\"]+)"',
+        r'"account_name"\s*:\s*"([^\"]+)"',
+        r'"username"\s*:\s*"([^\"]+)"',
+    )
+    for pattern in json_patterns:
+        match = re.search(pattern, payload)
+        if not match:
+            continue
+        candidate = _normalize_account_name(match.group(1))
+        if candidate:
+            return candidate
+    return None
+
+
+def _normalize_account_name(candidate: object) -> str | None:
+    if not isinstance(candidate, str):
+        return None
+    value = unquote(candidate).strip()
+    if not value:
+        return None
+    value = value.split("?", 1)[0].split("/", 1)[0].strip()
+    if not value:
+        return None
+    if not _ACCOUNT_NAME_TEXT_PATTERN.match(value):
+        return None
+    return value
+
+
+def _parse_json_object(payload: str) -> dict[str, Any] | None:
+    try:
+        decoded = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(decoded, dict):
+        return decoded
+    return None
+
+
+def _http_get_text(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: float,
+) -> tuple[str, int | None]:
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+            status = getattr(resp, "status", None) or resp.getcode()
+            return body, int(status)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            body = ""
+        return body, int(exc.code)
+    except (UnicodeDecodeError, urllib.error.URLError):
+        return "", None
+
+
+def _http_post_form(
+    url: str,
+    *,
+    form: dict[str, object],
+    headers: dict[str, str],
+    timeout: float,
+) -> tuple[str, int | None]:
+    encoded = urlencode(
+        {key: value for key, value in form.items() if value is not None}
+    ).encode("utf-8")
+    request_headers = {
+        **headers,
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    request = urllib.request.Request(
+        url,
+        headers=request_headers,
+        method="POST",
+        data=encoded,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+            status = getattr(resp, "status", None) or resp.getcode()
+            return body, int(status)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            body = ""
+        return body, int(exc.code)
+    except (UnicodeDecodeError, urllib.error.URLError):
+        return "", None
 
 
 @dataclass(frozen=True)
@@ -201,7 +540,7 @@ def begin_login(settings: Settings) -> LoginTransaction:
     code_challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     state = secrets.token_urlsafe(24)
     created = _now()
-    expires = created + timedelta(seconds=30)
+    expires = created + timedelta(minutes=10)
     tx = LoginTransaction(
         state=state,
         code_verifier=code_verifier,

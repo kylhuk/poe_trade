@@ -88,6 +88,8 @@ def list_strategy_packs() -> list[StrategyPack]:
 def get_candidate_sql_path(pack: StrategyPack) -> Path:
     if pack.candidate_sql_path.exists():
         return pack.candidate_sql_path
+    if pack.discover_sql_path.exists():
+        return pack.discover_sql_path
     return pack.backtest_sql_path
 
 

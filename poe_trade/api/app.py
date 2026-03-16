@@ -13,11 +13,14 @@ from poe_trade.db import ClickHouseClient
 
 from .auth import cors_headers, parse_bearer_token, validate_bearer_token
 from .auth_session import (
+    AccountResolutionError,
+    OAuthExchangeError,
     authorize_redirect,
     clear_credential_state,
     begin_login,
     clear_session,
     create_session,
+    exchange_oauth_code,
     get_session,
     resolve_account_name,
     save_credential_state,
@@ -640,9 +643,39 @@ class ApiApp:
         code = _first_query_param(params, "code", default="")
         if not code:
             raise ApiError(status=400, code="invalid_input", message="code is required")
-        if not validate_state(self.settings, state=state):
-            raise ApiError(status=400, code="invalid_state", message="invalid state")
-        session = create_session(self.settings, account_name="qa-exile")
+
+        if not self.settings.oauth_client_id:
+            if not validate_state(self.settings, state=state):
+                raise ApiError(status=400, code="invalid_state", message="invalid state")
+            session = create_session(self.settings, account_name="qa-exile")
+            location = f"{self.settings.poe_account_frontend_complete_uri}?status=success"
+            cookie = _session_set_cookie(
+                self.settings.auth_cookie_name,
+                str(session.get("session_id") or ""),
+                secure=self.settings.auth_cookie_secure,
+            )
+            return Response(
+                status=302,
+                headers={"Location": location, "Set-Cookie": cookie},
+                body=b"",
+            )
+
+        try:
+            exchange = exchange_oauth_code(self.settings, code=code, state=state)
+        except OAuthExchangeError as exc:
+            location = (
+                f"{self.settings.poe_account_frontend_complete_uri}"
+                f"?status=error&reason={str(exc.code)}"
+            )
+            return Response(status=302, headers={"Location": location}, body=b"")
+
+        _ = save_credential_state(
+            self.settings,
+            account_name=exchange.account_name,
+            poe_session_id="",
+            status="oauth_connected",
+        )
+        session = create_session(self.settings, account_name=exchange.account_name)
         location = f"{self.settings.poe_account_frontend_complete_uri}?status=success"
         cookie = _session_set_cookie(
             self.settings.auth_cookie_name,
@@ -698,12 +731,20 @@ class ApiApp:
             if not exc.headers:
                 exc.headers = dict(cors)
             raise
-        poe_session_id = body.get("poeSessionId")
+        poe_session_id = next(
+            (
+                value
+                for key in ("poeSessionId", "poeSESSID", "POESESSID", "poesessid")
+                for value in [body.get(key)]
+                if isinstance(value, str) and value.strip()
+            ),
+            None,
+        )
         if not isinstance(poe_session_id, str) or not poe_session_id.strip():
             raise ApiError(
                 status=400,
                 code="invalid_input",
-                message="invalid input",
+                message="poeSessionId is required",
                 headers=cors,
             )
         try:
@@ -711,11 +752,11 @@ class ApiApp:
                 self.settings,
                 poe_session_id=poe_session_id,
             )
-        except ValueError:
+        except AccountResolutionError as exc:
             raise ApiError(
-                status=400,
-                code="invalid_input",
-                message="invalid input",
+                status=exc.status,
+                code=exc.code,
+                message=str(exc),
                 headers=cors,
             ) from None
         _ = save_credential_state(

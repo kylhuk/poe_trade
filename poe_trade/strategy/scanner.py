@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 import json
+import logging
 import time
 from typing import cast
 from uuid import uuid4
@@ -21,6 +22,8 @@ from .registry import list_strategy_packs, load_candidate_sql
 
 
 _LEGACY_COMPAT_HASH_EXPRESSION = "toString(cityHash64(concat(ifNull(source.semantic_key, ''), '|', ifNull(source.item_or_market_key, ''))))"
+
+logger = logging.getLogger(__name__)
 
 _RECOMMENDATION_INSERT_COLUMNS = (
     "scanner_run_id",
@@ -104,61 +107,70 @@ def run_scan_once(
         return scanner_run_id
 
     for pack in enabled_packs:
-        source_rows = _fetch_candidate_source_rows(client, sql=load_candidate_sql(pack))
-        journal_active_keys: set[str] | None = None
-        if pack.requires_journal:
-            journal_active_keys = _fetch_journal_active_keys(
-                client,
-                strategy_id=pack.strategy_id,
-                league=league,
+        try:
+            source_rows = _fetch_candidate_source_rows(
+                client, sql=load_candidate_sql(pack)
             )
-        candidates = [
-            candidate_from_source_row(
-                pack.strategy_id,
-                source_row,
-                default_league=league,
+            journal_active_keys: set[str] | None = None
+            if pack.requires_journal:
+                journal_active_keys = _fetch_journal_active_keys(
+                    client,
+                    strategy_id=pack.strategy_id,
+                    league=league,
+                )
+            candidates = [
+                candidate_from_source_row(
+                    pack.strategy_id,
+                    source_row,
+                    default_league=league,
+                )
+                for source_row in source_rows
+            ]
+            source_by_candidate = {
+                id(candidate): source_row
+                for candidate, source_row in zip(candidates, source_rows, strict=False)
+            }
+            evaluation = evaluate_candidates(
+                candidates,
+                policy=policy_from_pack(pack),
+                requested_league=league,
+                journal_active_keys=journal_active_keys,
+                last_alerted_at_by_key=_fetch_last_alerted_at_by_key(
+                    client,
+                    strategy_id=pack.strategy_id,
+                    league=league,
+                ),
             )
-            for source_row in source_rows
-        ]
-        source_by_candidate = {
-            id(candidate): source_row
-            for candidate, source_row in zip(candidates, source_rows, strict=False)
-        }
-        evaluation = evaluate_candidates(
-            candidates,
-            policy=policy_from_pack(pack),
-            requested_league=league,
-            journal_active_keys=journal_active_keys,
-            last_alerted_at_by_key=_fetch_last_alerted_at_by_key(
-                client,
-                strategy_id=pack.strategy_id,
-                league=league,
-            ),
-        )
-        recommendation_rows = [
-            _recommendation_payload(
-                scanner_run_id=scanner_run_id,
-                pack=pack,
-                candidate=candidate,
-                source_row=source_by_candidate[id(candidate)],
+            recommendation_rows = [
+                _recommendation_payload(
+                    scanner_run_id=scanner_run_id,
+                    pack=pack,
+                    candidate=candidate,
+                    source_row=source_by_candidate[id(candidate)],
+                )
+                for candidate in evaluation.eligible
+            ]
+            if recommendation_rows:
+                _insert_json_rows(
+                    client,
+                    table="poe_trade.scanner_recommendations",
+                    rows=recommendation_rows,
+                    columns=_RECOMMENDATION_INSERT_COLUMNS,
+                    fallback_columns=_LEGACY_RECOMMENDATION_INSERT_COLUMNS,
+                )
+                _insert_json_rows(
+                    client,
+                    table="poe_trade.scanner_alert_log",
+                    rows=[_alert_payload(row) for row in recommendation_rows],
+                    columns=_ALERT_INSERT_COLUMNS,
+                    fallback_columns=_LEGACY_ALERT_INSERT_COLUMNS,
+                )
+        except Exception:
+            logger.exception(
+                "scanner strategy pack failed",
+                extra={"strategy_id": pack.strategy_id, "league": league},
             )
-            for candidate in evaluation.eligible
-        ]
-        if recommendation_rows:
-            _insert_json_rows(
-                client,
-                table="poe_trade.scanner_recommendations",
-                rows=recommendation_rows,
-                columns=_RECOMMENDATION_INSERT_COLUMNS,
-                fallback_columns=_LEGACY_RECOMMENDATION_INSERT_COLUMNS,
-            )
-            _insert_json_rows(
-                client,
-                table="poe_trade.scanner_alert_log",
-                rows=[_alert_payload(row) for row in recommendation_rows],
-                columns=_ALERT_INSERT_COLUMNS,
-                fallback_columns=_LEGACY_ALERT_INSERT_COLUMNS,
-            )
+            continue
 
     return scanner_run_id
 

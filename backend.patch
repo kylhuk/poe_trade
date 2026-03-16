@@ -1,0 +1,1395 @@
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -14,6 +14,9 @@
+ ]
+ dependencies = [
+   "python-dotenv>=1.0",
++  "joblib>=1.3",
++  "numpy>=1.26",
++  "scikit-learn>=1.4",
+ ]
+ 
+ [project.scripts]
+--- a/poe_trade/strategy/registry.py
++++ b/poe_trade/strategy/registry.py
+@@ -88,6 +88,8 @@
+ def get_candidate_sql_path(pack: StrategyPack) -> Path:
+     if pack.candidate_sql_path.exists():
+         return pack.candidate_sql_path
++    if pack.discover_sql_path.exists():
++        return pack.discover_sql_path
+     return pack.backtest_sql_path
+ 
+ 
+--- a/poe_trade/strategy/scanner.py
++++ b/poe_trade/strategy/scanner.py
+@@ -3,6 +3,7 @@
+ from collections.abc import Mapping, Sequence
+ from datetime import datetime, timezone
+ import json
++import logging
+ import time
+ from typing import cast
+ from uuid import uuid4
+@@ -22,6 +23,8 @@
+ 
+ _LEGACY_COMPAT_HASH_EXPRESSION = "toString(cityHash64(concat(ifNull(source.semantic_key, ''), '|', ifNull(source.item_or_market_key, ''))))"
+ 
++logger = logging.getLogger(__name__)
++
+ _RECOMMENDATION_INSERT_COLUMNS = (
+     "scanner_run_id",
+     "strategy_id",
+@@ -104,61 +107,70 @@
+         return scanner_run_id
+ 
+     for pack in enabled_packs:
+-        source_rows = _fetch_candidate_source_rows(client, sql=load_candidate_sql(pack))
+-        journal_active_keys: set[str] | None = None
+-        if pack.requires_journal:
+-            journal_active_keys = _fetch_journal_active_keys(
+-                client,
+-                strategy_id=pack.strategy_id,
+-                league=league,
+-            )
+-        candidates = [
+-            candidate_from_source_row(
+-                pack.strategy_id,
+-                source_row,
+-                default_league=league,
+-            )
+-            for source_row in source_rows
+-        ]
+-        source_by_candidate = {
+-            id(candidate): source_row
+-            for candidate, source_row in zip(candidates, source_rows, strict=False)
+-        }
+-        evaluation = evaluate_candidates(
+-            candidates,
+-            policy=policy_from_pack(pack),
+-            requested_league=league,
+-            journal_active_keys=journal_active_keys,
+-            last_alerted_at_by_key=_fetch_last_alerted_at_by_key(
+-                client,
+-                strategy_id=pack.strategy_id,
+-                league=league,
+-            ),
+-        )
+-        recommendation_rows = [
+-            _recommendation_payload(
+-                scanner_run_id=scanner_run_id,
+-                pack=pack,
+-                candidate=candidate,
+-                source_row=source_by_candidate[id(candidate)],
++        try:
++            source_rows = _fetch_candidate_source_rows(
++                client, sql=load_candidate_sql(pack)
+             )
+-            for candidate in evaluation.eligible
+-        ]
+-        if recommendation_rows:
+-            _insert_json_rows(
+-                client,
+-                table="poe_trade.scanner_recommendations",
+-                rows=recommendation_rows,
+-                columns=_RECOMMENDATION_INSERT_COLUMNS,
+-                fallback_columns=_LEGACY_RECOMMENDATION_INSERT_COLUMNS,
++            journal_active_keys: set[str] | None = None
++            if pack.requires_journal:
++                journal_active_keys = _fetch_journal_active_keys(
++                    client,
++                    strategy_id=pack.strategy_id,
++                    league=league,
++                )
++            candidates = [
++                candidate_from_source_row(
++                    pack.strategy_id,
++                    source_row,
++                    default_league=league,
++                )
++                for source_row in source_rows
++            ]
++            source_by_candidate = {
++                id(candidate): source_row
++                for candidate, source_row in zip(candidates, source_rows, strict=False)
++            }
++            evaluation = evaluate_candidates(
++                candidates,
++                policy=policy_from_pack(pack),
++                requested_league=league,
++                journal_active_keys=journal_active_keys,
++                last_alerted_at_by_key=_fetch_last_alerted_at_by_key(
++                    client,
++                    strategy_id=pack.strategy_id,
++                    league=league,
++                ),
+             )
+-            _insert_json_rows(
+-                client,
+-                table="poe_trade.scanner_alert_log",
+-                rows=[_alert_payload(row) for row in recommendation_rows],
+-                columns=_ALERT_INSERT_COLUMNS,
+-                fallback_columns=_LEGACY_ALERT_INSERT_COLUMNS,
++            recommendation_rows = [
++                _recommendation_payload(
++                    scanner_run_id=scanner_run_id,
++                    pack=pack,
++                    candidate=candidate,
++                    source_row=source_by_candidate[id(candidate)],
++                )
++                for candidate in evaluation.eligible
++            ]
++            if recommendation_rows:
++                _insert_json_rows(
++                    client,
++                    table="poe_trade.scanner_recommendations",
++                    rows=recommendation_rows,
++                    columns=_RECOMMENDATION_INSERT_COLUMNS,
++                    fallback_columns=_LEGACY_RECOMMENDATION_INSERT_COLUMNS,
++                )
++                _insert_json_rows(
++                    client,
++                    table="poe_trade.scanner_alert_log",
++                    rows=[_alert_payload(row) for row in recommendation_rows],
++                    columns=_ALERT_INSERT_COLUMNS,
++                    fallback_columns=_LEGACY_ALERT_INSERT_COLUMNS,
++                )
++        except Exception:
++            logger.exception(
++                "scanner strategy pack failed",
++                extra={"strategy_id": pack.strategy_id, "league": league},
+             )
++            continue
+ 
+     return scanner_run_id
+ 
+--- a/poe_trade/api/auth_session.py
++++ b/poe_trade/api/auth_session.py
+@@ -11,12 +11,46 @@
+ from datetime import UTC, datetime, timedelta
+ from pathlib import Path
+ from typing import Any
+-from urllib.parse import quote, urlencode
++from urllib.parse import quote, unquote, urlencode
+ 
+ from poe_trade.config.settings import Settings
+ 
+ 
+-_ACCOUNT_NAME_TEXT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{1,63}$")
++_ACCOUNT_NAME_TEXT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._#-]{1,63}$")
++_PROFILE_URL_PATTERN = re.compile(r"/account/view-profile/([^\"'/?<>=\s]+)")
++_PROFILE_META_PATTERN = re.compile(
++    r"content=[\"']Profile\s*-\s*([^\"']+)\s*-\s*Path of Exile[\"']",
++    flags=re.IGNORECASE,
++)
++_PROFILE_TITLE_PATTERN = re.compile(
++    r"<title>\s*([^<]+?)\s*(?:['’]s profile|[-–—]\s*Path of Exile|Profile)\s*</title>",
++    flags=re.IGNORECASE,
++)
++
++
++class AuthSessionError(Exception):
++    def __init__(self, message: str, *, code: str, status: int) -> None:
++        super().__init__(message)
++        self.code = code
++        self.status = status
++
++
++class AccountResolutionError(AuthSessionError, ValueError):
++    pass
++
++
++class OAuthExchangeError(AuthSessionError, RuntimeError):
++    pass
++
++
++@dataclass(frozen=True)
++class OAuthExchangeResult:
++    account_name: str
++    access_token: str
++    refresh_token: str
++    token_type: str
++    expires_in: int | None
++    scope: str
+ 
+ 
+ def _now() -> datetime:
+@@ -114,43 +148,217 @@
+ def resolve_account_name(settings: Settings, *, poe_session_id: str) -> str:
+     trimmed_session_id = poe_session_id.strip()
+     if not trimmed_session_id:
+-        raise ValueError("poeSessionId is required")
++        raise AccountResolutionError(
++            "poeSessionId is required",
++            code="missing_poe_session_id",
++            status=400,
++        )
+     request_headers = {
+-        "Accept": "application/json, text/plain;q=0.9",
++        "Accept": "application/json, text/html;q=0.9, text/plain;q=0.8",
+         "Cookie": f"POESESSID={trimmed_session_id}",
+         "User-Agent": settings.poe_user_agent,
+     }
+-    urls = _account_name_candidate_urls(settings)
+-    for url in urls:
+-        request = urllib.request.Request(url, headers=request_headers, method="GET")
+-        try:
+-            with urllib.request.urlopen(
+-                request, timeout=settings.poe_request_timeout
+-            ) as resp:
+-                body = resp.read().decode("utf-8", errors="strict")
+-        except (UnicodeDecodeError, urllib.error.URLError):
++
++    saw_upstream = False
++    saw_invalid_session = False
++
++    for url in _account_name_candidate_urls(settings):
++        body, status = _http_get_text(
++            url,
++            headers=request_headers,
++            timeout=settings.poe_request_timeout,
++        )
++        if status is None:
++            continue
++        saw_upstream = True
++        if status in {401, 403}:
++            saw_invalid_session = True
+             continue
++        account_name = _extract_account_name_from_response_body(body)
++        if account_name:
++            return account_name
++
++    for url in _account_name_html_urls(settings):
++        body, status = _http_get_text(
++            url,
++            headers=request_headers,
++            timeout=settings.poe_request_timeout,
++        )
++        if status is None:
++            continue
++        saw_upstream = True
++        if status in {401, 403}:
++            saw_invalid_session = True
++            continue
++        account_name = _extract_account_name_from_html(body)
++        if account_name:
++            return account_name
++
++    if saw_invalid_session:
++        raise AccountResolutionError(
++            "invalid POESESSID or account profile unavailable",
++            code="invalid_poe_session",
++            status=400,
++        )
++    if not saw_upstream:
++        raise AccountResolutionError(
++            "account resolution upstream unavailable",
++            code="account_resolution_unavailable",
++            status=502,
++        )
++    raise AccountResolutionError(
++        "unable to resolve account name from POESESSID",
++        code="account_resolution_failed",
++        status=400,
++    )
++
++
++def exchange_oauth_code(
++    settings: Settings,
++    *,
++    code: str,
++    state: str,
++) -> OAuthExchangeResult:
++    if not code.strip():
++        raise OAuthExchangeError(
++            "code is required", code="missing_code", status=400
++        )
++    if not validate_state(settings, state=state):
++        raise OAuthExchangeError(
++            "invalid state", code="invalid_state", status=400
++        )
++    tx_state = _load_json(_state_path(settings))
++    code_verifier = str(tx_state.get("code_verifier") or "").strip()
++    if not code_verifier:
++        raise OAuthExchangeError(
++            "missing code verifier",
++            code="missing_code_verifier",
++            status=400,
++        )
++    if not settings.oauth_client_id.strip():
++        raise OAuthExchangeError(
++            "missing oauth client id",
++            code="oauth_client_id_missing",
++            status=500,
++        )
++    if not settings.poe_account_redirect_uri.strip():
++        raise OAuthExchangeError(
++            "missing oauth redirect uri",
++            code="oauth_redirect_uri_missing",
++            status=500,
++        )
++
++    form = {
++        "client_id": settings.oauth_client_id,
++        "grant_type": "authorization_code",
++        "code": code.strip(),
++        "redirect_uri": settings.poe_account_redirect_uri,
++        "scope": settings.poe_account_oauth_scope,
++        "code_verifier": code_verifier,
++    }
++    if settings.oauth_client_secret.strip():
++        form["client_secret"] = settings.oauth_client_secret
++
++    body, status = _http_post_form(
++        settings.poe_account_oauth_token_url,
++        form=form,
++        headers={
++            "Accept": "application/json",
++            "User-Agent": settings.poe_user_agent,
++        },
++        timeout=settings.poe_request_timeout,
++    )
++    if status is None:
++        raise OAuthExchangeError(
++            "oauth token endpoint unavailable",
++            code="oauth_token_unavailable",
++            status=502,
++        )
++    payload = _parse_json_object(body)
++    if payload is None:
++        raise OAuthExchangeError(
++            "invalid oauth token response",
++            code="oauth_invalid_response",
++            status=502,
++        )
++    if status >= 400 or payload.get("error"):
++        message = str(
++            payload.get("error_description")
++            or payload.get("error")
++            or "oauth code exchange failed"
++        )
++        raise OAuthExchangeError(
++            message,
++            code="oauth_exchange_failed",
++            status=400 if status in {400, 401, 403} else 502,
++        )
++    access_token = str(payload.get("access_token") or "").strip()
++    refresh_token = str(payload.get("refresh_token") or "").strip()
++    token_type = str(payload.get("token_type") or "bearer").strip() or "bearer"
++    scope = str(payload.get("scope") or settings.poe_account_oauth_scope).strip()
++    account_name = _extract_account_name(payload)
++    if not account_name and access_token:
++        account_name = resolve_account_name_from_access_token(
++            settings, access_token=access_token
++        )
++    if not account_name:
++        raise OAuthExchangeError(
++            "oauth token response missing account name",
++            code="oauth_missing_account_name",
++            status=502,
++        )
++    expires_in = payload.get("expires_in")
++    expires_int: int | None
++    if expires_in is None:
++        expires_int = None
++    else:
+         try:
+-            payload = json.loads(body)
+-        except json.JSONDecodeError:
+-            account_name = _extract_account_name_from_text(body)
+-            if account_name:
+-                return account_name
++            expires_int = int(expires_in)
++        except (TypeError, ValueError):
++            expires_int = None
++    return OAuthExchangeResult(
++        account_name=account_name,
++        access_token=access_token,
++        refresh_token=refresh_token,
++        token_type=token_type,
++        expires_in=expires_int,
++        scope=scope,
++    )
++
++
++def resolve_account_name_from_access_token(
++    settings: Settings,
++    *,
++    access_token: str,
++) -> str:
++    token = access_token.strip()
++    if not token:
++        return ""
++    headers = {
++        "Accept": "application/json, text/plain;q=0.9",
++        "Authorization": f"Bearer {token}",
++        "User-Agent": settings.poe_user_agent,
++    }
++    for url in _account_name_candidate_urls(settings):
++        body, status = _http_get_text(
++            url, headers=headers, timeout=settings.poe_request_timeout
++        )
++        if status is None or status >= 400:
+             continue
+-        account_name = _extract_account_name(payload)
++        account_name = _extract_account_name_from_response_body(body)
+         if account_name:
+             return account_name
+-    raise ValueError("unable to resolve account name")
++    return ""
+ 
+ 
+ def _account_name_candidate_urls(settings: Settings) -> tuple[str, ...]:
+-    base = settings.poe_api_base_url.rstrip("/")
++    api_base = settings.poe_api_base_url.rstrip("/")
++    auth_base = settings.poe_auth_base_url.rstrip("/")
+     candidates = (
+-        f"{base}/account/profile",
+-        f"{base}/account-profile",
+-        f"{base}/account",
+-        "https://www.pathofexile.com/api/account-profile",
+-        "https://www.pathofexile.com/character-window/get-account-name",
++        f"{api_base}/account/profile",
++        f"{api_base}/account-profile",
++        f"{api_base}/account",
++        f"{auth_base}/api/account-profile",
+     )
+     deduped: list[str] = []
+     seen: set[str] = set()
+@@ -162,27 +370,158 @@
+     return tuple(deduped)
+ 
+ 
++def _account_name_html_urls(settings: Settings) -> tuple[str, ...]:
++    auth_base = settings.poe_auth_base_url.rstrip("/")
++    return (
++        f"{auth_base}/my-account",
++        f"{auth_base}/account/profile",
++    )
++
++
+ def _extract_account_name(payload: Any) -> str | None:
+     if isinstance(payload, dict):
+-        for key in ("accountName", "account_name", "name"):
++        for key in (
++            "accountName",
++            "account_name",
++            "name",
++            "username",
++            "display_name",
++        ):
+             candidate = payload.get(key)
+-            if isinstance(candidate, str) and candidate.strip():
+-                return candidate.strip()
++            normalized = _normalize_account_name(candidate)
++            if normalized:
++                return normalized
+         nested = payload.get("account")
+         if isinstance(nested, dict):
+             return _extract_account_name(nested)
+     return None
+ 
+ 
++def _extract_account_name_from_response_body(payload: str) -> str | None:
++    parsed = _parse_json_object(payload)
++    if parsed is not None:
++        account_name = _extract_account_name(parsed)
++        if account_name:
++            return account_name
++    account_name = _extract_account_name_from_text(payload)
++    if account_name:
++        return account_name
++    return _extract_account_name_from_html(payload)
++
++
+ def _extract_account_name_from_text(payload: str) -> str | None:
+     candidate = payload.strip()
+     if not candidate:
+         return None
+     if "<" in candidate or "\n" in candidate or "\r" in candidate:
+         return None
+-    if not _ACCOUNT_NAME_TEXT_PATTERN.match(candidate):
++    return _normalize_account_name(candidate)
++
++
++def _extract_account_name_from_html(payload: str) -> str | None:
++    if not payload:
++        return None
++    for pattern in (_PROFILE_URL_PATTERN, _PROFILE_META_PATTERN, _PROFILE_TITLE_PATTERN):
++        match = pattern.search(payload)
++        if not match:
++            continue
++        candidate = _normalize_account_name(match.group(1))
++        if candidate:
++            return candidate
++    json_patterns = (
++        r'"accountName"\s*:\s*"([^\"]+)"',
++        r'"account_name"\s*:\s*"([^\"]+)"',
++        r'"username"\s*:\s*"([^\"]+)"',
++    )
++    for pattern in json_patterns:
++        match = re.search(pattern, payload)
++        if not match:
++            continue
++        candidate = _normalize_account_name(match.group(1))
++        if candidate:
++            return candidate
++    return None
++
++
++def _normalize_account_name(candidate: object) -> str | None:
++    if not isinstance(candidate, str):
++        return None
++    value = unquote(candidate).strip()
++    if not value:
++        return None
++    value = value.split("?", 1)[0].split("/", 1)[0].strip()
++    if not value:
++        return None
++    if not _ACCOUNT_NAME_TEXT_PATTERN.match(value):
+         return None
+-    return candidate
++    return value
++
++
++def _parse_json_object(payload: str) -> dict[str, Any] | None:
++    try:
++        decoded = json.loads(payload)
++    except json.JSONDecodeError:
++        return None
++    if isinstance(decoded, dict):
++        return decoded
++    return None
++
++
++def _http_get_text(
++    url: str,
++    *,
++    headers: dict[str, str],
++    timeout: float,
++) -> tuple[str, int | None]:
++    request = urllib.request.Request(url, headers=headers, method="GET")
++    try:
++        with urllib.request.urlopen(request, timeout=timeout) as resp:
++            body = resp.read().decode("utf-8", errors="ignore")
++            status = getattr(resp, "status", None) or resp.getcode()
++            return body, int(status)
++    except urllib.error.HTTPError as exc:
++        try:
++            body = exc.read().decode("utf-8", errors="ignore")
++        except Exception:
++            body = ""
++        return body, int(exc.code)
++    except (UnicodeDecodeError, urllib.error.URLError):
++        return "", None
++
++
++def _http_post_form(
++    url: str,
++    *,
++    form: dict[str, object],
++    headers: dict[str, str],
++    timeout: float,
++) -> tuple[str, int | None]:
++    encoded = urlencode(
++        {key: value for key, value in form.items() if value is not None}
++    ).encode("utf-8")
++    request_headers = {
++        **headers,
++        "Content-Type": "application/x-www-form-urlencoded",
++    }
++    request = urllib.request.Request(
++        url,
++        headers=request_headers,
++        method="POST",
++        data=encoded,
++    )
++    try:
++        with urllib.request.urlopen(request, timeout=timeout) as resp:
++            body = resp.read().decode("utf-8", errors="ignore")
++            status = getattr(resp, "status", None) or resp.getcode()
++            return body, int(status)
++    except urllib.error.HTTPError as exc:
++        try:
++            body = exc.read().decode("utf-8", errors="ignore")
++        except Exception:
++            body = ""
++        return body, int(exc.code)
++    except (UnicodeDecodeError, urllib.error.URLError):
++        return "", None
+ 
+ 
+ @dataclass(frozen=True)
+@@ -201,7 +540,7 @@
+     code_challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+     state = secrets.token_urlsafe(24)
+     created = _now()
+-    expires = created + timedelta(seconds=30)
++    expires = created + timedelta(minutes=10)
+     tx = LoginTransaction(
+         state=state,
+         code_verifier=code_verifier,
+--- a/poe_trade/api/app.py
++++ b/poe_trade/api/app.py
+@@ -13,11 +13,14 @@
+ 
+ from .auth import cors_headers, parse_bearer_token, validate_bearer_token
+ from .auth_session import (
++    AccountResolutionError,
++    OAuthExchangeError,
+     authorize_redirect,
+     clear_credential_state,
+     begin_login,
+     clear_session,
+     create_session,
++    exchange_oauth_code,
+     get_session,
+     resolve_account_name,
+     save_credential_state,
+@@ -640,9 +643,39 @@
+         code = _first_query_param(params, "code", default="")
+         if not code:
+             raise ApiError(status=400, code="invalid_input", message="code is required")
+-        if not validate_state(self.settings, state=state):
+-            raise ApiError(status=400, code="invalid_state", message="invalid state")
+-        session = create_session(self.settings, account_name="qa-exile")
++
++        if not self.settings.oauth_client_id:
++            if not validate_state(self.settings, state=state):
++                raise ApiError(status=400, code="invalid_state", message="invalid state")
++            session = create_session(self.settings, account_name="qa-exile")
++            location = f"{self.settings.poe_account_frontend_complete_uri}?status=success"
++            cookie = _session_set_cookie(
++                self.settings.auth_cookie_name,
++                str(session.get("session_id") or ""),
++                secure=self.settings.auth_cookie_secure,
++            )
++            return Response(
++                status=302,
++                headers={"Location": location, "Set-Cookie": cookie},
++                body=b"",
++            )
++
++        try:
++            exchange = exchange_oauth_code(self.settings, code=code, state=state)
++        except OAuthExchangeError as exc:
++            location = (
++                f"{self.settings.poe_account_frontend_complete_uri}"
++                f"?status=error&reason={str(exc.code)}"
++            )
++            return Response(status=302, headers={"Location": location}, body=b"")
++
++        _ = save_credential_state(
++            self.settings,
++            account_name=exchange.account_name,
++            poe_session_id="",
++            status="oauth_connected",
++        )
++        session = create_session(self.settings, account_name=exchange.account_name)
+         location = f"{self.settings.poe_account_frontend_complete_uri}?status=success"
+         cookie = _session_set_cookie(
+             self.settings.auth_cookie_name,
+@@ -698,12 +731,20 @@
+             if not exc.headers:
+                 exc.headers = dict(cors)
+             raise
+-        poe_session_id = body.get("poeSessionId")
++        poe_session_id = next(
++            (
++                value
++                for key in ("poeSessionId", "poeSESSID", "POESESSID", "poesessid")
++                for value in [body.get(key)]
++                if isinstance(value, str) and value.strip()
++            ),
++            None,
++        )
+         if not isinstance(poe_session_id, str) or not poe_session_id.strip():
+             raise ApiError(
+                 status=400,
+                 code="invalid_input",
+-                message="invalid input",
++                message="poeSessionId is required",
+                 headers=cors,
+             )
+         try:
+@@ -711,11 +752,11 @@
+                 self.settings,
+                 poe_session_id=poe_session_id,
+             )
+-        except ValueError:
++        except AccountResolutionError as exc:
+             raise ApiError(
+-                status=400,
+-                code="invalid_input",
+-                message="invalid input",
++                status=exc.status,
++                code=exc.code,
++                message=str(exc),
+                 headers=cors,
+             ) from None
+         _ = save_credential_state(
+--- a/poe_trade/ml/workflows.py
++++ b/poe_trade/ml/workflows.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++import math
+ import os
+ import time
+ import uuid
+@@ -9,6 +10,10 @@
+ from pathlib import Path
+ from typing import Any
+ 
++import joblib
++from sklearn.ensemble import GradientBoostingRegressor
++from sklearn.feature_extraction import DictVectorizer
++
+ from poe_trade.db import ClickHouseClient
+ from poe_trade.db.clickhouse import ClickHouseClientError
+ from poe_trade.ingestion.poeninja_snapshot import PoeNinjaClient
+@@ -24,6 +29,20 @@
+     "fallback_abstain",
+ )
+ 
++MODEL_FEATURE_FIELDS = (
++    "category",
++    "base_type",
++    "rarity",
++    "ilvl",
++    "stack_size",
++    "corrupted",
++    "fractured",
++    "synthesised",
++    "mod_token_count",
++)
++
++_MODEL_BUNDLE_CACHE: dict[str, dict[str, Any]] = {}
++
+ 
+ @dataclass(frozen=True)
+ class TuningControls:
+@@ -582,26 +601,38 @@
+     _ensure_route(route)
+     model_path = Path(model_dir)
+     model_path.mkdir(parents=True, exist_ok=True)
+-    family_counts = _query_rows(
+-        client,
+-        " ".join(
+-            [
+-                "SELECT category AS family, count() AS rows",
+-                f"FROM {dataset_table}",
+-                f"WHERE league = {_quote(league)}",
+-                "GROUP BY family",
+-                "FORMAT JSONEachRow",
+-            ]
+-        ),
+-    )
+-    artifact_file = _route_artifact_path(
+-        model_dir=model_dir, route=route, league=league
++
++    query = " ".join(
++        [
++            "SELECT",
++            "category,",
++            "base_type,",
++            "ifNull(rarity, '') AS rarity,",
++            "toFloat64(ifNull(ilvl, 0)) AS ilvl,",
++            "toFloat64(ifNull(stack_size, 1)) AS stack_size,",
++            "toFloat64(ifNull(corrupted, 0)) AS corrupted,",
++            "toFloat64(ifNull(fractured, 0)) AS fractured,",
++            "toFloat64(ifNull(synthesised, 0)) AS synthesised,",
++            "toFloat64(ifNull(mod_token_count, 0)) AS mod_token_count,",
++            "toFloat64(normalized_price_chaos) AS normalized_price_chaos,",
++            "toFloat64(ifNull(sale_probability_label, 0.0)) AS sale_probability_label",
++            f"FROM {dataset_table}",
++            f"WHERE league = {_quote(league)}",
++            "AND normalized_price_chaos IS NOT NULL",
++            f"AND {_route_training_predicate(route)}",
++            "FORMAT JSONEachRow",
++        ]
+     )
++    rows = _query_rows(client, query)
++    train_rows = [row for row in rows if _to_float(row.get('normalized_price_chaos'), 0.0) > 0.0]
++
++    artifact_file = _route_artifact_path(model_dir=model_dir, route=route, league=league)
++    model_bundle_path = _route_model_bundle_path(model_dir=model_dir, route=route, league=league)
+     previous_artifact = _load_json_file(artifact_file)
+     previous_round = _to_int(previous_artifact.get("fit_round"), 0)
+     fit_round = max(1, previous_round + 1)
+ 
+-    artifact = {
++    artifact: dict[str, Any] = {
+         "route": route,
+         "league": league,
+         "dataset_table": dataset_table,
+@@ -609,17 +640,103 @@
+         "trained_at": _now_ts(),
+         "fit_round": fit_round,
+         "warm_start_from": str(artifact_file) if previous_artifact else None,
+-        "family_counts": family_counts,
+         "objective": _route_objective(route),
+-        "catboost_defaults": {
+-            "has_time": True,
+-            "loss_function": "MultiQuantile:alpha=0.1,0.5,0.9",
+-        },
++        "model_backend": "heuristic_fallback",
++        "features": list(MODEL_FEATURE_FIELDS),
++        "train_row_count": len(train_rows),
++        "family_counts": _query_rows(
++            client,
++            " ".join(
++                [
++                    "SELECT category AS family, count() AS rows",
++                    f"FROM {dataset_table}",
++                    f"WHERE league = {_quote(league)}",
++                    "GROUP BY family",
++                    "FORMAT JSONEachRow",
++                ]
++            ),
++        ),
++        "sale_model_available": False,
++        "model_bundle_path": None,
+     }
++
++    if len(train_rows) >= 25:
++        feature_rows = [_feature_dict_from_row(row) for row in train_rows]
++        vectorizer = DictVectorizer(sparse=True)
++        X = vectorizer.fit_transform(feature_rows)
++        y_price = [_to_float(row.get("normalized_price_chaos"), 0.0) for row in train_rows]
++        y_sale = [min(1.0, max(0.0, _to_float(row.get("sale_probability_label"), 0.0))) for row in train_rows]
++
++        model_p10 = GradientBoostingRegressor(
++            loss="quantile",
++            alpha=0.10,
++            n_estimators=120,
++            learning_rate=0.05,
++            max_depth=3,
++            min_samples_leaf=5,
++            random_state=42,
++        )
++        model_p50 = GradientBoostingRegressor(
++            loss="quantile",
++            alpha=0.50,
++            n_estimators=120,
++            learning_rate=0.05,
++            max_depth=3,
++            min_samples_leaf=5,
++            random_state=43,
++        )
++        model_p90 = GradientBoostingRegressor(
++            loss="quantile",
++            alpha=0.90,
++            n_estimators=120,
++            learning_rate=0.05,
++            max_depth=3,
++            min_samples_leaf=5,
++            random_state=44,
++        )
++        model_p10.fit(X, y_price)
++        model_p50.fit(X, y_price)
++        model_p90.fit(X, y_price)
++
++        sale_model = None
++        if len({round(value, 4) for value in y_sale}) > 1:
++            sale_model = GradientBoostingRegressor(
++                loss="squared_error",
++                n_estimators=80,
++                learning_rate=0.05,
++                max_depth=2,
++                min_samples_leaf=5,
++                random_state=45,
++            )
++            sale_model.fit(X, y_sale)
++
++        bundle = {
++            "vectorizer": vectorizer,
++            "price_models": {"p10": model_p10, "p50": model_p50, "p90": model_p90},
++            "sale_model": sale_model,
++            "feature_fields": list(MODEL_FEATURE_FIELDS),
++            "trained_at": artifact["trained_at"],
++        }
++        joblib.dump(bundle, model_bundle_path)
++        _MODEL_BUNDLE_CACHE[str(model_bundle_path)] = bundle
++        artifact["model_backend"] = "sklearn_gradient_boosting"
++        artifact["model_bundle_path"] = str(model_bundle_path)
++        artifact["sale_model_available"] = sale_model is not None
++        artifact["support_reference_p50"] = _median(y_price)
++        artifact["support_reference_row_count"] = len(train_rows)
++    else:
++        artifact["training_status"] = "insufficient_rows"
++
+     artifact_file.write_text(
+         json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+     )
+-    return {"route": route, "league": league, "artifact": str(artifact_file)}
++    return {
++        "route": route,
++        "league": league,
++        "artifact": str(artifact_file),
++        "rows_trained": len(train_rows),
++        "model_backend": artifact.get("model_backend"),
++    }
+ 
+ 
+ def evaluate_route(
+@@ -1308,25 +1425,50 @@
+     parsed = _parse_clipboard_item(clipboard_text)
+     route_bundle = _route_for_item(parsed)
+     route = route_bundle["route"]
+-    support = route_bundle["support_count_recent"]
++    support = _support_count_recent(
++        client,
++        league=league,
++        category=parsed["category"],
++        base_type=parsed["base_type"],
++    )
+     base_price = _reference_price(
+         client,
+         league=league,
+         category=parsed["category"],
+         base_type=parsed["base_type"],
+     )
+-    if route == "fallback_abstain":
+-        confidence = 0.25
+-    elif route == "sparse_retrieval":
+-        confidence = 0.45
+-    elif route == "structured_boosted":
+-        confidence = 0.62
++
++    artifact = _load_active_route_artifact(client, league=league, route=route)
++    model_prediction = _predict_with_artifact(
++        artifact=artifact,
++        parsed_item=parsed,
++    )
++
++    if model_prediction is None:
++        if route == "fallback_abstain":
++            confidence = 0.25
++        elif route == "sparse_retrieval":
++            confidence = 0.45
++        elif route == "structured_boosted":
++            confidence = 0.62
++        else:
++            confidence = 0.7
++        price_p50 = base_price
++        price_p10 = max(0.1, price_p50 * 0.8)
++        price_p90 = price_p50 * 1.2
++        sale_probability = 0.6 if route != "fallback_abstain" else 0.3
++        fallback_reason = "low_support" if route == "fallback_abstain" else ""
+     else:
+-        confidence = 0.7
+-    price_p50 = base_price
+-    price_p10 = max(0.1, price_p50 * 0.8)
+-    price_p90 = price_p50 * 1.2
+-    sale_probability = 0.6 if route != "fallback_abstain" else 0.3
++        price_p10 = max(0.1, float(model_prediction["price_p10"]))
++        price_p50 = max(price_p10, float(model_prediction["price_p50"]))
++        price_p90 = max(price_p50, float(model_prediction["price_p90"]))
++        sale_probability = min(1.0, max(0.0, float(model_prediction["sale_probability"])))
++        support_factor = min(1.0, math.log1p(max(support, 0)) / math.log1p(250.0))
++        confidence = min(0.95, 0.35 + 0.35 * support_factor + 0.25 * min(1.0, float(artifact.get("train_row_count") or 0) / 500.0))
++        if route == "fallback_abstain":
++            confidence = min(confidence, 0.35)
++        fallback_reason = ""
++
+     recommendation_eligible = sale_probability >= 0.5
+     return {
+         "league": league,
+@@ -1342,7 +1484,7 @@
+         "price_recommendation_eligible": recommendation_eligible,
+         "confidence": round(confidence, 4),
+         "confidence_percent": round(confidence * 100.0, 2),
+-        "fallback_reason": "low_support" if route == "fallback_abstain" else "",
++        "fallback_reason": fallback_reason,
+     }
+ 
+ 
+@@ -1903,16 +2045,18 @@
+ 
+ 
+ def _should_promote(comparison: dict[str, Any]) -> bool:
++    protected = comparison.get("protected_cohort_regression") or {}
++    if bool(protected.get("regression")):
++        return False
+     if not bool(comparison.get("coverage_floor_ok")):
+         return False
++    if str(comparison.get("incumbent_run_id") or "") in {"", "none"}:
++        return True
+     if (
+         _to_float(comparison.get("mdape_improvement"), 0.0)
+         < MIRAGE_EVAL_CONTRACT.promotion.min_mdape_improvement
+     ):
+         return False
+-    protected = comparison.get("protected_cohort_regression") or {}
+-    if bool(protected.get("regression")):
+-        return False
+     return True
+ 
+ 
+@@ -2459,6 +2603,11 @@
+     rarity = ""
+     item_class = ""
+     base_type = ""
++    ilvl = 0
++    stack_size = 1
++    corrupted = 0
++    fractured = 0
++    synthesised = 0
+     for idx, line in enumerate(lines):
+         if line.startswith("Rarity:"):
+             rarity = line.replace("Rarity:", "").strip()
+@@ -2466,6 +2615,23 @@
+                 base_type = lines[idx + 1]
+         if line.startswith("Item Class:"):
+             item_class = line.replace("Item Class:", "").strip()
++        if line.startswith("Item Level:"):
++            try:
++                ilvl = int(line.replace("Item Level:", "").strip())
++            except ValueError:
++                ilvl = 0
++        if line.startswith("Stack Size:"):
++            raw = line.replace("Stack Size:", "").strip().split("/", 1)[0].strip()
++            try:
++                stack_size = max(1, int(raw))
++            except ValueError:
++                stack_size = 1
++        if line.lower() == "corrupted":
++            corrupted = 1
++        if "fractured" in line.lower():
++            fractured = 1
++        if "synthesised" in line.lower() or "synthesized" in line.lower():
++            synthesised = 1
+     if not base_type:
+         base_type = lines[0]
+     category = "other"
+@@ -2482,12 +2648,19 @@
+         category = "cluster_jewel"
+     elif "flask" in lowered:
+         category = "flask"
++    mod_count = max(len(lines) - 5, 0)
+     return {
+         "rarity": rarity,
+         "item_class": item_class,
+         "base_type": base_type,
+         "category": category,
+-        "mod_count": max(len(lines) - 5, 0),
++        "mod_count": mod_count,
++        "mod_token_count": mod_count,
++        "ilvl": ilvl,
++        "stack_size": stack_size,
++        "corrupted": corrupted,
++        "fractured": fractured,
++        "synthesised": synthesised,
+     }
+ 
+ 
+@@ -2572,6 +2745,169 @@
+     return dt.strftime("%Y-%m-%d %H:%M:%S")
+ 
+ 
++def _route_training_predicate(route: str) -> str:
++    if route == "fungible_reference":
++        return "category IN ('essence', 'fossil', 'scarab', 'map', 'logbook')"
++    if route == "structured_boosted":
++        return "rarity = 'Unique'"
++    if route == "sparse_retrieval":
++        return "rarity = 'Rare' OR category = 'cluster_jewel'"
++    return "category NOT IN ('essence', 'fossil', 'scarab', 'map', 'logbook') AND ifNull(rarity, '') NOT IN ('Unique', 'Rare') AND category != 'cluster_jewel'"
++
++
++def _feature_dict_from_row(row: dict[str, Any]) -> dict[str, Any]:
++    return {
++        "category": str(row.get("category") or "other"),
++        "base_type": str(row.get("base_type") or "unknown"),
++        "rarity": str(row.get("rarity") or ""),
++        "ilvl": _to_float(row.get("ilvl"), 0.0),
++        "stack_size": max(1.0, _to_float(row.get("stack_size"), 1.0)),
++        "corrupted": _to_float(row.get("corrupted"), 0.0),
++        "fractured": _to_float(row.get("fractured"), 0.0),
++        "synthesised": _to_float(row.get("synthesised"), 0.0),
++        "mod_token_count": _to_float(row.get("mod_token_count"), 0.0),
++    }
++
++
++def _feature_dict_from_parsed_item(item: dict[str, Any]) -> dict[str, Any]:
++    return {
++        "category": str(item.get("category") or "other"),
++        "base_type": str(item.get("base_type") or "unknown"),
++        "rarity": str(item.get("rarity") or ""),
++        "ilvl": _to_float(item.get("ilvl"), 0.0),
++        "stack_size": max(1.0, _to_float(item.get("stack_size"), 1.0)),
++        "corrupted": _to_float(item.get("corrupted"), 0.0),
++        "fractured": _to_float(item.get("fractured"), 0.0),
++        "synthesised": _to_float(item.get("synthesised"), 0.0),
++        "mod_token_count": _to_float(item.get("mod_token_count"), _to_float(item.get("mod_count"), 0.0)),
++    }
++
++
++def _route_model_bundle_path(*, model_dir: str, route: str, league: str) -> Path:
++    return Path(model_dir) / f"{route}-{league}.joblib"
++
++
++def _load_active_route_artifact(
++    client: ClickHouseClient, *, league: str, route: str
++) -> dict[str, Any]:
++    model_dir = _active_model_dir_for_route(client, league=league, route=route)
++    if not model_dir:
++        return {}
++    return _load_json_file(_route_artifact_path(model_dir=model_dir, route=route, league=league))
++
++
++def _active_model_dir_for_route(
++    client: ClickHouseClient, *, league: str, route: str
++) -> str:
++    rows = _query_rows(
++        client,
++        " ".join(
++            [
++                "SELECT model_dir",
++                "FROM poe_trade.ml_model_registry_v1",
++                f"WHERE league = {_quote(league)} AND route = {_quote(route)} AND promoted = 1",
++                "ORDER BY promoted_at DESC",
++                "LIMIT 1",
++                "FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    if rows:
++        return str(rows[0].get("model_dir") or "")
++    default_dir = Path("artifacts/ml") / f"{league.lower()}_v1"
++    if default_dir.exists():
++        return str(default_dir)
++    return ""
++
++
++def _load_model_bundle(bundle_path: str) -> dict[str, Any] | None:
++    if not bundle_path:
++        return None
++    cached = _MODEL_BUNDLE_CACHE.get(bundle_path)
++    if cached is not None:
++        return cached
++    path = Path(bundle_path)
++    if not path.exists():
++        return None
++    loaded = joblib.load(path)
++    if not isinstance(loaded, dict):
++        return None
++    _MODEL_BUNDLE_CACHE[bundle_path] = loaded
++    return loaded
++
++
++def _predict_with_artifact(
++    *, artifact: dict[str, Any], parsed_item: dict[str, Any]
++) -> dict[str, float] | None:
++    bundle_path = str(artifact.get("model_bundle_path") or "")
++    if not bundle_path:
++        return None
++    bundle = _load_model_bundle(bundle_path)
++    if bundle is None:
++        return None
++    vectorizer = bundle.get("vectorizer")
++    price_models = bundle.get("price_models") or {}
++    if vectorizer is None or not isinstance(price_models, dict):
++        return None
++    features = _feature_dict_from_parsed_item(parsed_item)
++    X = vectorizer.transform([features])
++    p10_model = price_models.get("p10")
++    p50_model = price_models.get("p50")
++    p90_model = price_models.get("p90")
++    if p10_model is None or p50_model is None or p90_model is None:
++        return None
++    p10 = float(p10_model.predict(X)[0])
++    p50 = float(p50_model.predict(X)[0])
++    p90 = float(p90_model.predict(X)[0])
++    ordered = sorted([max(0.1, p10), max(0.1, p50), max(0.1, p90)])
++    sale_model = bundle.get("sale_model")
++    if sale_model is None:
++        sale_probability = 0.6
++    else:
++        sale_probability = min(1.0, max(0.0, float(sale_model.predict(X)[0])))
++    return {
++        "price_p10": ordered[0],
++        "price_p50": ordered[1],
++        "price_p90": ordered[2],
++        "sale_probability": sale_probability,
++    }
++
++
++def _support_count_recent(
++    client: ClickHouseClient,
++    *,
++    league: str,
++    category: str,
++    base_type: str,
++) -> int:
++    rows = _query_rows(
++        client,
++        " ".join(
++            [
++                "SELECT count() AS sample_count",
++                "FROM poe_trade.ml_price_dataset_v1",
++                f"WHERE league = {_quote(league)}",
++                f"AND category = {_quote(category)}",
++                f"AND base_type = {_quote(base_type)}",
++                "FORMAT JSONEachRow",
++            ]
++        ),
++    )
++    if not rows:
++        return 0
++    return _to_int(rows[0].get("sample_count"), 0)
++
++
++def _median(values: list[float]) -> float:
++    if not values:
++        return 0.0
++    ordered = sorted(values)
++    mid = len(ordered) // 2
++    if len(ordered) % 2:
++        return float(ordered[mid])
++    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
++
++
+ def _route_artifact_path(*, model_dir: str, route: str, league: str) -> Path:
+     return Path(model_dir) / f"{route}-{league}.json"
+ 
+--- a/poe_trade/sql/strategy/bulk_essence/discover.sql
++++ b/poe_trade/sql/strategy/bulk_essence/discover.sql
+@@ -3,12 +3,22 @@
+     coalesce(realm, '') AS realm,
+     coalesce(league, '') AS league,
+     concat(category, ':bulk') AS item_or_market_key,
++    concat(category, ':bulk') AS semantic_key,
++    'Bulk Essence Premium' AS item_name,
++    concat('category=', category, ' bulk_threshold=', toString(bulk_threshold)) AS search_hint,
+     (coalesce(median_small_price_amount, 0.0) - coalesce(median_bulk_price_amount, 0.0)) * toFloat64(bulk_threshold) AS expected_profit_chaos,
+-    if(coalesce(median_bulk_price_amount, 0.0) > 0.0, (coalesce(median_small_price_amount, 0.0) - coalesce(median_bulk_price_amount, 0.0)) / coalesce(median_bulk_price_amount, 0.0), 0.0) AS expected_roi,
++    if(
++        coalesce(median_bulk_price_amount, 0.0) > 0.0,
++        (coalesce(median_small_price_amount, 0.0) - coalesce(median_bulk_price_amount, 0.0)) / coalesce(median_bulk_price_amount, 0.0),
++        0.0
++    ) AS expected_roi,
+     least(1.0, toFloat64(bulk_listing_count) / 60.0) AS confidence,
++    least(1.0, greatest(toFloat64(bulk_listing_count), toFloat64(small_listing_count)) / 120.0) AS liquidity_score,
+     bulk_listing_count AS sample_count,
++    coalesce(median_bulk_price_amount, 0.0) * toFloat64(bulk_threshold) AS max_buy,
+     'Bulk essence spread between bulk and small listings' AS why_it_fired,
+     'Buy bulk essence lots while spread remains above median bulk price' AS buy_plan,
++    'Split bulk lots into smaller resale stacks or relist into the exchange premium band' AS transform_plan,
+     'Exit once small listings trade under the bulk threshold or ROI drops' AS exit_plan,
+     '2h' AS expected_hold_time,
+     category,
+--- a/poe_trade/sql/strategy/bulk_fossils/discover.sql
++++ b/poe_trade/sql/strategy/bulk_fossils/discover.sql
+@@ -3,12 +3,22 @@
+     coalesce(realm, '') AS realm,
+     coalesce(league, '') AS league,
+     concat(category, ':bulk') AS item_or_market_key,
++    concat(category, ':bulk') AS semantic_key,
++    'Bulk Fossil Premium' AS item_name,
++    concat('category=', category, ' bulk_threshold=', toString(bulk_threshold)) AS search_hint,
+     (coalesce(median_small_price_amount, 0.0) - coalesce(median_bulk_price_amount, 0.0)) * toFloat64(bulk_threshold) AS expected_profit_chaos,
+-    if(coalesce(median_bulk_price_amount, 0.0) > 0.0, (coalesce(median_small_price_amount, 0.0) - coalesce(median_bulk_price_amount, 0.0)) / coalesce(median_bulk_price_amount, 0.0), 0.0) AS expected_roi,
++    if(
++        coalesce(median_bulk_price_amount, 0.0) > 0.0,
++        (coalesce(median_small_price_amount, 0.0) - coalesce(median_bulk_price_amount, 0.0)) / coalesce(median_bulk_price_amount, 0.0),
++        0.0
++    ) AS expected_roi,
+     least(1.0, toFloat64(bulk_listing_count) / 60.0) AS confidence,
++    least(1.0, greatest(toFloat64(bulk_listing_count), toFloat64(small_listing_count)) / 120.0) AS liquidity_score,
+     bulk_listing_count AS sample_count,
++    coalesce(median_bulk_price_amount, 0.0) * toFloat64(bulk_threshold) AS max_buy,
+     'Bulk fossil spread between bulk and small listings' AS why_it_fired,
+     'Acquire bulk fossils as long as small price carries a premium' AS buy_plan,
++    'Break premium fossil bundles into smaller resale lots when liquidity supports it' AS transform_plan,
+     'Close trade when small listings compress or bulk price retreats' AS exit_plan,
+     '1h' AS expected_hold_time,
+     category,
+--- a/poe_trade/sql/strategy/cluster_basic/discover.sql
++++ b/poe_trade/sql/strategy/cluster_basic/discover.sql
+@@ -1,17 +1,22 @@
+ SELECT
+     toDateTime(time_bucket) AS time_bucket,
++    coalesce(realm, '') AS realm,
+     coalesce(league, '') AS league,
+     concat(category, ':', base_type, ':', coalesce(price_currency, 'none')) AS item_or_market_key,
++    concat(category, ':', base_type, ':', coalesce(price_currency, 'none')) AS semantic_key,
++    coalesce(base_type, 'Unknown Cluster Jewel') AS item_name,
++    concat(base_type, ' ', coalesce(price_currency, 'chaos')) AS search_hint,
+     coalesce(median_price_amount, 0.0) * 0.14 AS expected_profit_chaos,
+     coalesce(median_price_amount, 0.0) / 11.0 AS expected_roi,
+     least(1.0, toFloat64(listing_count) / 100.0) AS confidence,
++    least(1.0, toFloat64(listing_count) / 150.0) AS liquidity_score,
+     listing_count AS sample_count,
++    coalesce(median_price_amount, 0.0) AS max_buy,
+     'Cluster jewel listings retain repricing room at current depth and spread' AS why_it_fired,
+     'Buy cluster jewels below median and anchor bids near top liquidity bands' AS buy_plan,
+     'Prioritize bases with repeat listings and reroll only when margin supports it' AS transform_plan,
+     'Exit as soon as cluster spread normalizes or listing depth rolls over' AS exit_plan,
+     '2h' AS expected_hold_time,
+-    realm,
+     category,
+     base_type,
+     price_currency,
+--- a/poe_trade/sql/strategy/flask_basic/discover.sql
++++ b/poe_trade/sql/strategy/flask_basic/discover.sql
+@@ -1,17 +1,22 @@
+ SELECT
+     toDateTime(time_bucket) AS time_bucket,
++    coalesce(realm, '') AS realm,
+     coalesce(league, '') AS league,
+     concat(category, ':', base_type, ':', coalesce(price_currency, 'none')) AS item_or_market_key,
++    concat(category, ':', base_type, ':', coalesce(price_currency, 'none')) AS semantic_key,
++    coalesce(base_type, 'Unknown Flask') AS item_name,
++    concat(base_type, ' ', coalesce(price_currency, 'chaos')) AS search_hint,
+     coalesce(median_price_amount, 0.0) * 0.12 AS expected_profit_chaos,
+     coalesce(median_price_amount, 0.0) / 12.0 AS expected_roi,
+     least(1.0, toFloat64(listing_count) / 90.0) AS confidence,
++    least(1.0, toFloat64(listing_count) / 120.0) AS liquidity_score,
+     listing_count AS sample_count,
++    coalesce(median_price_amount, 0.0) AS max_buy,
+     'Flask listings support baseline craft margin at current turnover' AS why_it_fired,
+     'Acquire flask bases under median before applying high-value crafts' AS buy_plan,
+     'Craft and quality-upgrade batches while listing support remains strong' AS transform_plan,
+     'Exit when crafted flask premium narrows or listing depth weakens' AS exit_plan,
+     '2h' AS expected_hold_time,
+-    realm,
+     category,
+     base_type,
+     price_currency,
+--- a/poe_trade/sql/strategy/fragment_sets/discover.sql
++++ b/poe_trade/sql/strategy/fragment_sets/discover.sql
+@@ -1,18 +1,25 @@
+ SELECT
+     toDateTime(time_bucket) AS time_bucket,
+-    realm,
++    coalesce(realm, '') AS realm,
+     coalesce(league, '') AS league,
+     concat(category, ':set') AS item_or_market_key,
+-    category,
+-    distinct_base_types,
+-    listing_count,
+-    listing_count AS sample_count,
++    concat(category, ':set') AS semantic_key,
++    'Fragment Set Assembly' AS item_name,
++    concat('category=', category, ' distinct_base_types=', toString(distinct_base_types)) AS search_hint,
+     toFloat64(listing_count) * 0.05 AS expected_profit_chaos,
+     if(distinct_base_types > 0, toFloat64(listing_count) / toFloat64(distinct_base_types), 0.0) AS expected_roi,
+     least(1.0, toFloat64(distinct_base_types) / 30.0) AS confidence,
++    least(1.0, toFloat64(listing_count) / 100.0) AS liquidity_score,
++    listing_count AS sample_count,
++    NULL AS max_buy,
+     'Fragment set supply remains limited relative to listing depth' AS why_it_fired,
+     'Build fragment inventories while base type breadth stays below 30' AS buy_plan,
++    'Complete fragmented set families before market breadth normalizes' AS transform_plan,
+     'Exit when distinct base coverage expands or listing depth normalizes' AS exit_plan,
++    '4h' AS expected_hold_time,
++    category,
++    distinct_base_types,
++    listing_count,
+     updated_at
+ FROM poe_trade.gold_set_ref_hour
+ WHERE category = 'other';
+
