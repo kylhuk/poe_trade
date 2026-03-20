@@ -329,6 +329,151 @@ def test_predict_one_uses_trained_fallback_model_without_abstaining(
     assert payload["price_recommendation_eligible"] is True
 
 
+def test_predict_one_low_confidence_blends_with_reference_price(monkeypatch) -> None:
+    monkeypatch.setattr(
+        workflows,
+        "_parse_clipboard_item",
+        lambda _text: {
+            "category": "other",
+            "base_type": "Brittle Rare",
+            "rarity": "Rare",
+        },
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_route_for_item",
+        lambda _item: {
+            "route": "sparse_retrieval",
+            "route_reason": "sparse_high_dimensional",
+            "support_count_recent": 1,
+        },
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_serving_profile_lookup",
+        lambda *_args, **_kwargs: {
+            "hit": True,
+            "support_count_recent": 1,
+            "reference_price": 20.0,
+            "reason": "profile_hit",
+        },
+    )
+    monkeypatch.setattr(workflows, "_safe_incumbent_model_version", lambda *_a, **_k: "")
+    monkeypatch.setattr(
+        workflows,
+        "_load_active_route_artifact",
+        lambda *_args, **_kwargs: {
+            "train_row_count": 1,
+            "model_bundle_path": "bundle.joblib",
+            "active_model_version": "cand-v1",
+        },
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_predict_with_artifact",
+        lambda **_kwargs: {
+            "price_p10": 120.0,
+            "price_p50": 200.0,
+            "price_p90": 260.0,
+            "sale_probability": 0.9,
+        },
+    )
+
+    payload = workflows.predict_one(
+        ClickHouseClient(endpoint="http://ch"),
+        league="Mirage",
+        clipboard_text="dummy",
+    )
+
+    assert payload["fallback_reason"] == "low_confidence_reference_blend"
+    assert payload["price_p50"] < 200.0
+    assert payload["price_p50"] > 20.0
+
+
+def test_predict_one_low_confidence_prefers_incumbent_when_available(monkeypatch) -> None:
+    monkeypatch.setattr(
+        workflows,
+        "_parse_clipboard_item",
+        lambda _text: {
+            "category": "other",
+            "base_type": "Brittle Rare",
+            "rarity": "Rare",
+        },
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_route_for_item",
+        lambda _item: {
+            "route": "sparse_retrieval",
+            "route_reason": "sparse_high_dimensional",
+            "support_count_recent": 1,
+        },
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_serving_profile_lookup",
+        lambda *_args, **_kwargs: {
+            "hit": True,
+            "support_count_recent": 1,
+            "reference_price": 20.0,
+            "reason": "profile_hit",
+        },
+    )
+    monkeypatch.setattr(
+        workflows,
+        "_safe_incumbent_model_version",
+        lambda *_a, **_k: "inc-v1",
+    )
+
+    def _fake_load_active_route_artifact(*_args, **kwargs):
+        model_version = kwargs.get("model_version")
+        if model_version == "inc-v1":
+            return {
+                "train_row_count": 800,
+                "model_bundle_path": "bundle-inc.joblib",
+                "active_model_version": "inc-v1",
+            }
+        return {
+            "train_row_count": 1,
+            "model_bundle_path": "bundle-cand.joblib",
+            "active_model_version": "cand-v2",
+        }
+
+    monkeypatch.setattr(
+        workflows,
+        "_load_active_route_artifact",
+        _fake_load_active_route_artifact,
+    )
+
+    def _fake_predict_with_artifact(*, artifact: dict[str, Any], parsed_item: dict[str, Any]):
+        del parsed_item
+        if artifact.get("active_model_version") == "inc-v1":
+            return {
+                "price_p10": 45.0,
+                "price_p50": 60.0,
+                "price_p90": 85.0,
+                "sale_probability": 0.55,
+            }
+        return {
+            "price_p10": 120.0,
+            "price_p50": 200.0,
+            "price_p90": 260.0,
+            "sale_probability": 0.9,
+        }
+
+    monkeypatch.setattr(workflows, "_predict_with_artifact", _fake_predict_with_artifact)
+
+    payload = workflows.predict_one(
+        ClickHouseClient(endpoint="http://ch"),
+        league="Mirage",
+        clipboard_text="dummy",
+    )
+
+    assert payload["fallback_reason"] == "low_confidence_incumbent_blend"
+    assert payload["price_p50"] < 200.0
+    assert payload["price_p50"] > 40.0
+
+
 def test_status_exposes_run_manifest_fields(monkeypatch) -> None:
     def _fake_query(_client: ClickHouseClient, query: str):
         if "FROM poe_trade.ml_train_runs" in query:
@@ -527,12 +672,14 @@ def test_protected_cohort_zero_regression_threshold_is_strict(monkeypatch) -> No
     assert protected["reason_code"] == "hold_protected_cohort_regression"
 
 
-def test_protected_cohort_canonicalizes_split_family_keys(monkeypatch) -> None:
+def test_protected_cohort_keeps_split_family_keys_for_structured_routes(
+    monkeypatch,
+) -> None:
     def _fake_query(_client: ClickHouseClient, query: str):
         if "run_id = 'cand-ring'" in query:
             return [
                 {
-                    "route": "structured_boosted",
+                    "route": "structured_boosted_other",
                     "family": "ring",
                     "support_bucket": "high",
                     "mdape": 0.20,
@@ -542,7 +689,7 @@ def test_protected_cohort_canonicalizes_split_family_keys(monkeypatch) -> None:
         if "run_id = 'inc-other'" in query:
             return [
                 {
-                    "route": "structured_boosted",
+                    "route": "structured_boosted_other",
                     "family": "other",
                     "support_bucket": "high",
                     "mdape": 0.10,
@@ -560,10 +707,10 @@ def test_protected_cohort_canonicalizes_split_family_keys(monkeypatch) -> None:
         incumbent_run_id="inc-other",
     )
 
-    assert protected["regression"] is True
-    assert protected["cohort"] == "structured_boosted|other|high"
-    assert protected["cohort_detail"]["candidate_mdape"] == 0.20
-    assert protected["cohort_detail"]["incumbent_mdape"] == 0.10
+    assert protected["regression"] is False
+    assert protected["max_mdape_regression"] == 0.0
+    assert protected["cohort"] == "none"
+    assert protected["cohort_detail"] is None
 
 
 def test_fetch_status_exposes_protected_cohort_policy_values(monkeypatch) -> None:

@@ -73,12 +73,29 @@ PROMOTION_FRESHNESS_WATERMARK_KEYS = (
 BASE_FEATURE_FIELDS = (
     "category",
     "base_type",
+    "family_scope",
+    "family_scope_is_other",
     "rarity",
     "ilvl",
     "stack_size",
     "corrupted",
     "fractured",
     "synthesised",
+    "unique_state_pair_count",
+    "unique_state_all_three_flag",
+    "unique_state_corrupted_fractured",
+    "unique_state_corrupted_synthesised",
+    "unique_state_fractured_synthesised",
+    "map_family_flag",
+    "map_blighted_flag",
+    "map_blight_ravaged_flag",
+    "map_elder_guardian_flag",
+    "map_shaper_guardian_flag",
+    "map_t17_flag",
+    "text_has_delirium_flag",
+    "text_has_influence_flag",
+    "text_has_parentheses_flag",
+    "text_has_hyphen_flag",
     "mod_token_count",
     "base_type_price_tier",
     "category_price_tier",
@@ -692,7 +709,7 @@ def _get_model_feature_fields() -> tuple[str, ...]:
 
 MODEL_FEATURE_FIELDS: list[str] = list(BASE_FEATURE_FIELDS)
 
-FEATURE_SCHEMA_VERSION = "v1"
+FEATURE_SCHEMA_VERSION = "v2"
 
 
 class FeatureSchemaMismatchError(ValueError):
@@ -1376,6 +1393,45 @@ def _structured_boosted_other_family_scope_sql(prefix: str = "") -> str:
     )
 
 
+def _route_family_scope(route: str, row: dict[str, Any]) -> str:
+    normalized_route = str(route or "").strip().lower()
+    category = row.get("category")
+    if normalized_route == "fungible_reference":
+        return _fungible_reference_family_scope(category)
+    if normalized_route in {"structured_boosted", "structured_boosted_other"}:
+        scoped = _structured_boosted_other_family_scope_from_fields(
+            category,
+            base_type=row.get("base_type"),
+            item_type_line=row.get("item_type_line"),
+        )
+        if scoped != "other":
+            return scoped
+        return _canonical_model_category(category)
+    return _canonical_model_category(category)
+
+
+def _route_family_scope_sql(route: str, *, prefix: str = "") -> str:
+    qualifier = f"{prefix}." if prefix else ""
+    category = f"lowerUTF8(trimBoth(ifNull({qualifier}category, '')))"
+    normalized_route = str(route or "").strip().lower()
+    if normalized_route == "fungible_reference":
+        return (
+            "multiIf("
+            f"{category} = 'fossil', 'fossil', "
+            f"{category} = 'scarab', 'scarab', "
+            f"{category} = 'logbook', 'logbook', "
+            "'other')"
+        )
+    if normalized_route in {"structured_boosted", "structured_boosted_other"}:
+        return _structured_boosted_other_family_scope_sql(prefix)
+    return (
+        "multiIf("
+        f"{category} IN ('jewel', 'ring', 'amulet', 'belt'), 'other', "
+        f"{category} = '', 'other', "
+        f"{category})"
+    )
+
+
 def _derive_category(
     category: object,
     *,
@@ -1922,9 +1978,9 @@ def route_preview(
             "d.as_of_ts, d.league, d.item_id, d.category, d.base_type, d.rarity,",
             "count() OVER (PARTITION BY d.league, d.category, d.base_type) AS support_count_recent,",
             "multiIf(count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 250, 'high', count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'medium', 'low') AS support_bucket,",
-            f"multiIf(d.category IN ({_fungible_reference_excluded_categories_sql()}), 'fallback_abstain', d.category IN ({_fungible_reference_categories_sql()}), 'fungible_reference', d.rarity IN ('Unique') AND {_structured_boosted_other_family_scope_sql('d')} != 'other' AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'structured_boosted_other', d.rarity IN ('Unique') AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'structured_boosted', d.category = 'cluster_jewel', 'cluster_jewel_retrieval', d.rarity IN ('Rare'), 'sparse_retrieval', 'fallback_abstain') AS route,",
-            f"multiIf(d.category IN ({_fungible_reference_excluded_categories_sql()}), 'noisy_essence_family', d.category = 'fossil', 'stackable_fossil_family', d.category = 'scarab', 'stackable_scarab_family', d.category = 'logbook', 'stackable_logbook_family', d.category IN ({_fungible_reference_categories_sql()}), 'stackable_other_family', d.rarity IN ('Unique') AND {_structured_boosted_other_family_scope_sql('d')} != 'other' AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'specialized_other_unique_family', d.rarity IN ('Unique') AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'sufficient_structured_support', d.category = 'cluster_jewel', 'cluster_jewel_specialized', d.rarity IN ('Rare'), 'sparse_high_dimensional', 'fallback_due_to_support') AS route_reason,",
-            "multiIf(d.category = 'cluster_jewel', 'cluster_jewel_retrieval', d.rarity IN ('Rare'), 'sparse_retrieval', 'fallback_abstain') AS fallback_parent_route",
+            f"multiIf(d.category IN ({_fungible_reference_excluded_categories_sql()}), 'fallback_abstain', d.category IN ({_fungible_reference_categories_sql()}), 'fungible_reference', d.rarity IN ('Unique') AND {_structured_boosted_other_family_scope_sql('d')} != 'other' AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'structured_boosted_other', d.rarity IN ('Unique') AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'structured_boosted', d.category = 'cluster_jewel', 'cluster_jewel_retrieval', d.category = 'map', 'fallback_abstain', d.rarity IN ('Rare'), 'sparse_retrieval', 'fallback_abstain') AS route,",
+            f"multiIf(d.category IN ({_fungible_reference_excluded_categories_sql()}), 'noisy_essence_family', d.category = 'fossil', 'stackable_fossil_family', d.category = 'scarab', 'stackable_scarab_family', d.category = 'logbook', 'stackable_logbook_family', d.category IN ({_fungible_reference_categories_sql()}), 'stackable_other_family', d.rarity IN ('Unique') AND {_structured_boosted_other_family_scope_sql('d')} != 'other' AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'specialized_other_unique_family', d.rarity IN ('Unique') AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'sufficient_structured_support', d.category = 'cluster_jewel', 'cluster_jewel_specialized', d.category = 'map', 'map_sparse_guardrail', d.rarity IN ('Rare'), 'sparse_high_dimensional', 'fallback_due_to_support') AS route_reason,",
+            "multiIf(d.category = 'cluster_jewel', 'cluster_jewel_retrieval', d.category = 'map', 'fallback_abstain', d.rarity IN ('Rare'), 'sparse_retrieval', 'fallback_abstain') AS fallback_parent_route",
             f"FROM {dataset_table} AS d",
             f"WHERE d.league = {_quote(league)}",
             ")",
@@ -2531,6 +2587,146 @@ def _bucket_mod_token_count(value: object) -> float:
     return float(min(numeric, 16))
 
 
+_MAP_T17_PATTERN = re.compile(r"\bt\s*17\b", flags=re.IGNORECASE)
+_MAP_BLIGHTED_PATTERN = re.compile(r"\bblighted\b", flags=re.IGNORECASE)
+_MAP_BLIGHT_RAVAGED_PATTERN = re.compile(
+    r"\bblight(?:\s+|-)?ravaged\b",
+    flags=re.IGNORECASE,
+)
+_MAP_ELDER_GUARDIAN_PATTERN = re.compile(
+    r"\b(?:constrictor|eradicator|enslaver|purifier)\b",
+    flags=re.IGNORECASE,
+)
+_MAP_SHAPER_GUARDIAN_PATTERN = re.compile(
+    r"\b(?:hydra|chimera|minotaur|phoenix)\b",
+    flags=re.IGNORECASE,
+)
+_TEXT_DELIRIUM_PATTERN = re.compile(r"\bdelir(?:ium|ious)\b", flags=re.IGNORECASE)
+_TEXT_INFLUENCE_PATTERN = re.compile(
+    r"\b(?:shaper|elder|crusader|redeemer|hunter|warlord)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _combined_item_text(
+    *,
+    base_type: object,
+    item_type_line: object,
+    item_name: object,
+) -> str:
+    return " ".join(
+        part.strip()
+        for part in (
+            str(base_type or ""),
+            str(item_type_line or ""),
+            str(item_name or ""),
+        )
+        if str(part or "").strip()
+    )
+
+
+def _regex_flag(pattern: re.Pattern[str], text: str) -> float:
+    return 1.0 if pattern.search(text) else 0.0
+
+
+def _map_text_features(*, category: str, combined_text: str) -> dict[str, float]:
+    normalized_category = str(category or "").strip().lower()
+    map_family_flag = 1.0 if normalized_category == "map" else 0.0
+    map_like_flag = (
+        1.0
+        if (
+            map_family_flag > 0.0
+            or re.search(r"\bmap\b", combined_text, flags=re.IGNORECASE)
+        )
+        else 0.0
+    )
+    blighted_flag = _regex_flag(_MAP_BLIGHTED_PATTERN, combined_text)
+    blight_ravaged_flag = _regex_flag(_MAP_BLIGHT_RAVAGED_PATTERN, combined_text)
+    return {
+        "map_family_flag": map_family_flag,
+        "map_blighted_flag": map_like_flag * max(blighted_flag, blight_ravaged_flag),
+        "map_blight_ravaged_flag": map_like_flag * blight_ravaged_flag,
+        "map_elder_guardian_flag": map_like_flag
+        * _regex_flag(_MAP_ELDER_GUARDIAN_PATTERN, combined_text),
+        "map_shaper_guardian_flag": map_like_flag
+        * _regex_flag(_MAP_SHAPER_GUARDIAN_PATTERN, combined_text),
+        "map_t17_flag": map_like_flag * _regex_flag(_MAP_T17_PATTERN, combined_text),
+    }
+
+
+def _unique_state_interaction_features(
+    *,
+    corrupted: float,
+    fractured: float,
+    synthesised: float,
+) -> dict[str, float]:
+    corr = 1.0 if corrupted > 0.0 else 0.0
+    frac = 1.0 if fractured > 0.0 else 0.0
+    synth = 1.0 if synthesised > 0.0 else 0.0
+    pair_count = (corr * frac) + (corr * synth) + (frac * synth)
+    return {
+        "unique_state_pair_count": pair_count,
+        "unique_state_all_three_flag": 1.0 if (corr > 0.0 and frac > 0.0 and synth > 0.0) else 0.0,
+        "unique_state_corrupted_fractured": corr * frac,
+        "unique_state_corrupted_synthesised": corr * synth,
+        "unique_state_fractured_synthesised": frac * synth,
+    }
+
+
+def _text_pattern_features(combined_text: str) -> dict[str, float]:
+    return {
+        "text_has_delirium_flag": _regex_flag(_TEXT_DELIRIUM_PATTERN, combined_text),
+        "text_has_influence_flag": _regex_flag(_TEXT_INFLUENCE_PATTERN, combined_text),
+        "text_has_parentheses_flag": 1.0 if ("(" in combined_text or ")" in combined_text) else 0.0,
+        "text_has_hyphen_flag": 1.0 if "-" in combined_text else 0.0,
+    }
+
+
+def _derived_route_features(
+    *,
+    category: object,
+    base_type: object,
+    item_type_line: object,
+    item_name: object,
+    corrupted: float,
+    fractured: float,
+    synthesised: float,
+    route: str,
+) -> dict[str, Any]:
+    family_scope = _route_family_scope(
+        route,
+        {
+            "category": category,
+            "base_type": base_type,
+            "item_type_line": item_type_line,
+        },
+    )
+    combined_text = _combined_item_text(
+        base_type=base_type,
+        item_type_line=item_type_line,
+        item_name=item_name,
+    )
+    derived: dict[str, Any] = {
+        "family_scope": family_scope,
+        "family_scope_is_other": 1.0 if family_scope == "other" else 0.0,
+    }
+    derived.update(
+        _unique_state_interaction_features(
+            corrupted=corrupted,
+            fractured=fractured,
+            synthesised=synthesised,
+        )
+    )
+    derived.update(
+        _map_text_features(
+            category=str(category or ""),
+            combined_text=combined_text,
+        )
+    )
+    derived.update(_text_pattern_features(combined_text))
+    return derived
+
+
 def _compute_price_tiers(
     aggregate_rows: list[dict[str, Any]],
 ) -> dict[str, dict[str, float]]:
@@ -2586,6 +2782,7 @@ def _route_feature_select_sql(prefix: str = "") -> list[str]:
     return [
         f"{qualifier}category AS category,",
         f"{qualifier}base_type AS base_type,",
+        f"ifNull({qualifier}item_type_line, {qualifier}base_type) AS item_type_line,",
         f"ifNull({qualifier}rarity, '') AS rarity,",
         f"toFloat64(intDiv(toUInt16(ifNull({qualifier}ilvl, 0)), 5) * 5) AS ilvl,",
         f"toFloat64(multiIf(ifNull({qualifier}stack_size, 1) < 1, 1, ifNull({qualifier}stack_size, 1) > 20, 20, ifNull({qualifier}stack_size, 1))) AS stack_size,",
@@ -2619,6 +2816,7 @@ def _training_aggregate_rows(
         [
             "SELECT",
             *_route_feature_select_sql(),
+            f"{_route_family_scope_sql(route)} AS family,",
             "max(as_of_ts) AS max_as_of_ts,",
             "quantileTDigest(0.1)(normalized_price_chaos) AS target_p10,",
             "quantileTDigest(0.5)(normalized_price_chaos) AS target_p50,",
@@ -2627,7 +2825,7 @@ def _training_aggregate_rows(
             "count() AS sample_count",
             f"FROM {dataset_table}",
             f"WHERE {where_clause}",
-            "GROUP BY category, base_type, rarity, ilvl, stack_size, corrupted, fractured, synthesised, mod_token_count, mod_features_json",
+            "GROUP BY category, base_type, item_type_line, rarity, ilvl, stack_size, corrupted, fractured, synthesised, mod_token_count, mod_features_json, family",
             "FORMAT JSONEachRow",
         ]
     )
@@ -2639,7 +2837,7 @@ def _family_counts_from_aggregate_rows(
 ) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     for row in aggregate_rows:
-        family = str(row.get("category") or "")
+        family = str(row.get("family") or row.get("category") or "")
         if not family:
             continue
         counts[family] = counts.get(family, 0) + max(
@@ -2701,7 +2899,7 @@ def _evaluation_rows(
             *_route_feature_select_sql(),
             "toFloat64(normalized_price_chaos) AS normalized_price_chaos,",
             "toFloat64(ifNull(sale_probability_label, 0.0)) AS sale_probability_label,",
-            "category AS family,",
+            f"{_route_family_scope_sql(route)} AS family,",
             "formatDateTime(as_of_ts, '%Y-%m-%d %H:%i:%S.%f', 'UTC') AS as_of_ts",
             f"FROM {dataset_table}",
             f"WHERE league = {_quote(league)}",
@@ -2824,21 +3022,21 @@ def _fit_single_route_bundle_from_usable_rows(
             "max_features": "sqrt",
         },
         "structured_boosted_other": {
-            "n_estimators": 140,
-            "learning_rate": 0.03,
+            "n_estimators": 180,
+            "learning_rate": 0.025,
             "max_depth": 2,
-            "min_samples_leaf": 6,
-            "min_samples_split": 12,
-            "subsample": 0.9,
+            "min_samples_leaf": 8,
+            "min_samples_split": 16,
+            "subsample": 0.85,
             "max_features": "sqrt",
         },
         "sparse_retrieval": {
-            "n_estimators": 120,
-            "learning_rate": 0.04,
+            "n_estimators": 90,
+            "learning_rate": 0.03,
             "max_depth": 2,
-            "min_samples_leaf": 6,
-            "min_samples_split": 12,
-            "subsample": 0.9,
+            "min_samples_leaf": 8,
+            "min_samples_split": 16,
+            "subsample": 0.85,
             "max_features": "sqrt",
         },
         "cluster_jewel_retrieval": {
@@ -2875,21 +3073,21 @@ def _fit_single_route_bundle_from_usable_rows(
             "max_features": "sqrt",
         },
         "structured_boosted_other": {
-            "n_estimators": 90,
-            "learning_rate": 0.04,
+            "n_estimators": 110,
+            "learning_rate": 0.035,
             "max_depth": 2,
-            "min_samples_leaf": 6,
-            "min_samples_split": 12,
+            "min_samples_leaf": 8,
+            "min_samples_split": 16,
             "subsample": 0.9,
             "max_features": "sqrt",
         },
         "sparse_retrieval": {
-            "n_estimators": 80,
-            "learning_rate": 0.05,
+            "n_estimators": 70,
+            "learning_rate": 0.04,
             "max_depth": 2,
-            "min_samples_leaf": 6,
-            "min_samples_split": 12,
-            "subsample": 0.95,
+            "min_samples_leaf": 8,
+            "min_samples_split": 16,
+            "subsample": 0.9,
             "max_features": "sqrt",
         },
         "cluster_jewel_retrieval": {
@@ -2977,10 +3175,13 @@ def _fit_route_bundle_from_aggregates(
             scope: [] for scope in sorted(_STRUCTURED_BOOSTED_OTHER_FAMILY_SCOPE_SET)
         }
         for row in usable_rows:
-            scope = _structured_boosted_other_family_scope_from_fields(
-                row.get("category"),
-                base_type=row.get("base_type"),
-            )
+            scope = str(row.get("family") or "").strip().lower()
+            if scope not in _STRUCTURED_BOOSTED_OTHER_FAMILY_SCOPE_SET:
+                scope = _structured_boosted_other_family_scope_from_fields(
+                    row.get("category"),
+                    base_type=row.get("base_type"),
+                    item_type_line=row.get("item_type_line"),
+                )
             if scope in scoped_rows:
                 scoped_rows[scope].append(row)
 
@@ -3055,7 +3256,9 @@ def _fit_route_bundle_from_aggregates(
         scope: [] for scope in sorted(_FUNGIBLE_REFERENCE_FAMILY_SCOPE_SET)
     }
     for row in usable_rows:
-        scope = _fungible_reference_family_scope(row.get("category"))
+        scope = str(row.get("family") or "").strip().lower()
+        if scope not in _FUNGIBLE_REFERENCE_FAMILY_SCOPE_SET:
+            scope = _fungible_reference_family_scope(row.get("category"))
         if scope in scoped_rows:
             scoped_rows[scope].append(row)
 
@@ -3125,6 +3328,7 @@ def _prediction_records_from_rows(
     *,
     bundle: dict[str, Any] | None,
     reference_price: float,
+    route: str = "",
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     fallback_price = max(0.1, reference_price or 0.1)
@@ -3153,9 +3357,7 @@ def _prediction_records_from_rows(
             used_model = True
         records.append(
             {
-                "family": _canonical_model_category(
-                    row.get("family") or row.get("category") or "unknown"
-                ),
+                "family": _route_family_scope(route, row),
                 "actual": actual,
                 "price_p10": price_p10,
                 "price_p50": price_p50,
@@ -3249,6 +3451,91 @@ def _model_confidence(route: str, *, support: int, train_row_count: int) -> floa
     training_factor = min(1.0, max(train_row_count, 0) / 1000.0)
     raw_confidence = 0.30 + 0.30 * support_factor + 0.25 * training_factor
     return min(_route_confidence_cap(route), raw_confidence)
+
+
+def _low_confidence_threshold(route: str) -> float:
+    if route == "fungible_reference":
+        return 0.45
+    if route == "structured_boosted":
+        return 0.50
+    if route == "structured_boosted_other":
+        return 0.54
+    if route in {"sparse_retrieval", "cluster_jewel_retrieval"}:
+        return 0.58
+    return 0.40
+
+
+def _prediction_tuple(
+    prediction: dict[str, Any], *, fallback_price: float
+) -> tuple[float, float, float, float]:
+    price_p10 = max(0.1, _to_float(prediction.get("price_p10"), fallback_price * 0.8))
+    price_p50 = max(price_p10, _to_float(prediction.get("price_p50"), fallback_price))
+    price_p90 = max(price_p50, _to_float(prediction.get("price_p90"), fallback_price * 1.2))
+    sale_probability = min(
+        1.0,
+        max(0.0, _to_float(prediction.get("sale_probability"), 0.6)),
+    )
+    return price_p10, price_p50, price_p90, sale_probability
+
+
+def _apply_low_confidence_fallback(
+    *,
+    route: str,
+    confidence: float,
+    reference_price: float,
+    model_prediction: dict[str, Any],
+    incumbent_prediction: dict[str, Any] | None,
+) -> dict[str, Any]:
+    reference_p50 = max(0.1, reference_price)
+    reference_p10 = max(0.1, reference_p50 * 0.8)
+    reference_p90 = max(reference_p50, reference_p50 * 1.2)
+    candidate_p10, candidate_p50, candidate_p90, candidate_sale = _prediction_tuple(
+        model_prediction,
+        fallback_price=reference_p50,
+    )
+    blended_p10 = candidate_p10
+    blended_p50 = candidate_p50
+    blended_p90 = candidate_p90
+    blended_sale = candidate_sale
+    fallback_reason = "low_confidence_reference_blend"
+    if incumbent_prediction is not None:
+        incumbent_p10, incumbent_p50, incumbent_p90, incumbent_sale = _prediction_tuple(
+            incumbent_prediction,
+            fallback_price=reference_p50,
+        )
+        blended_p10 = (candidate_p10 + incumbent_p10) / 2.0
+        blended_p50 = (candidate_p50 + incumbent_p50) / 2.0
+        blended_p90 = (candidate_p90 + incumbent_p90) / 2.0
+        blended_sale = (candidate_sale + incumbent_sale) / 2.0
+        fallback_reason = "low_confidence_incumbent_blend"
+    threshold = max(0.01, _low_confidence_threshold(route))
+    trust_weight = min(1.0, max(0.0, confidence / threshold))
+    final_p10 = trust_weight * blended_p10 + (1.0 - trust_weight) * reference_p10
+    final_p50 = trust_weight * blended_p50 + (1.0 - trust_weight) * reference_p50
+    final_p90 = trust_weight * blended_p90 + (1.0 - trust_weight) * reference_p90
+    ordered = sorted([max(0.1, final_p10), max(0.1, final_p50), max(0.1, final_p90)])
+    final_sale = min(
+        1.0,
+        max(0.0, trust_weight * blended_sale + (1.0 - trust_weight) * 0.5),
+    )
+    return {
+        "price_p10": ordered[0],
+        "price_p50": ordered[1],
+        "price_p90": ordered[2],
+        "sale_probability": final_sale,
+        "fallback_reason": fallback_reason,
+    }
+
+
+def _safe_incumbent_model_version(client: ClickHouseClient, *, league: str) -> str:
+    try:
+        controls = rollout_controls(client, league=league)
+    except Exception:
+        return ""
+    incumbent = str(controls.get("incumbent_model_version") or "").strip()
+    if incumbent in {"", "none"}:
+        return ""
+    return incumbent
 
 
 def train_route(
@@ -3380,6 +3667,7 @@ def evaluate_route(
         bundle=bundle,
         reference_price=_to_float(bundle_stats.get("support_reference_p50"), 0.0)
         or 1.0,
+        route=route,
     )
     overall_metrics = _metrics_from_prediction_records(records)
 
@@ -3577,6 +3865,7 @@ def evaluate_stack(
     for route in (
         "fungible_reference",
         "structured_boosted",
+        "structured_boosted_other",
         "sparse_retrieval",
         "cluster_jewel_retrieval",
         "fallback_abstain",
@@ -4242,6 +4531,12 @@ def predict_one(
             base_type=parsed["base_type"],
         )
 
+    incumbent_model_version = (
+        ""
+        if model_version is not None
+        else _safe_incumbent_model_version(client, league=league)
+    )
+
     artifact = _load_active_route_artifact(
         client,
         league=league,
@@ -4264,15 +4559,42 @@ def predict_one(
         price_p10 = max(0.1, float(model_prediction["price_p10"]))
         price_p50 = max(price_p10, float(model_prediction["price_p50"]))
         price_p90 = max(price_p50, float(model_prediction["price_p90"]))
-        sale_probability = min(
-            1.0, max(0.0, float(model_prediction["sale_probability"]))
-        )
+        sale_probability = min(1.0, max(0.0, float(model_prediction["sale_probability"])))
         confidence = _model_confidence(
             route,
             support=support,
             train_row_count=_to_int(artifact.get("train_row_count"), 0),
         )
         fallback_reason = ""
+        if confidence < _low_confidence_threshold(route):
+            incumbent_prediction = None
+            active_version = str(artifact.get("active_model_version") or "").strip()
+            if incumbent_model_version and incumbent_model_version != active_version:
+                incumbent_artifact = _load_active_route_artifact(
+                    client,
+                    league=league,
+                    route=route,
+                    model_version=incumbent_model_version,
+                )
+                incumbent_prediction = _predict_with_artifact(
+                    artifact=incumbent_artifact,
+                    parsed_item=parsed,
+                )
+            adjusted = _apply_low_confidence_fallback(
+                route=route,
+                confidence=confidence,
+                reference_price=base_price,
+                model_prediction=model_prediction,
+                incumbent_prediction=incumbent_prediction,
+            )
+            price_p10 = _to_float(adjusted.get("price_p10"), price_p10)
+            price_p50 = _to_float(adjusted.get("price_p50"), price_p50)
+            price_p90 = _to_float(adjusted.get("price_p90"), price_p90)
+            sale_probability = _to_float(
+                adjusted.get("sale_probability"),
+                sale_probability,
+            )
+            fallback_reason = str(adjusted.get("fallback_reason") or "")
 
     recommendation_eligible = sale_probability >= 0.5
     return {
@@ -4352,6 +4674,8 @@ def predict_batch(
     rows = _query_rows(client, query)
     now = _now_ts()
     predictions: list[dict[str, Any]] = []
+    incumbent_model_version = _safe_incumbent_model_version(client, league=league)
+    incumbent_artifacts: dict[str, dict[str, Any]] = {}
     for row in rows:
         parsed = {
             "category": str(row.get("category") or "other"),
@@ -4389,6 +4713,38 @@ def predict_batch(
                 train_row_count=_to_int(artifact.get("train_row_count"), 0),
             )
             fallback_reason = ""
+            if confidence < _low_confidence_threshold(route):
+                incumbent_prediction = None
+                active_version = str(artifact.get("active_model_version") or "").strip()
+                if incumbent_model_version and incumbent_model_version != active_version:
+                    incumbent_artifact = incumbent_artifacts.get(route)
+                    if incumbent_artifact is None:
+                        incumbent_artifact = _load_active_route_artifact(
+                            client,
+                            league=league,
+                            route=route,
+                            model_version=incumbent_model_version,
+                        )
+                        incumbent_artifacts[route] = incumbent_artifact
+                    incumbent_prediction = _predict_with_artifact(
+                        artifact=incumbent_artifact,
+                        parsed_item=parsed,
+                    )
+                adjusted = _apply_low_confidence_fallback(
+                    route=route,
+                    confidence=confidence,
+                    reference_price=base_price,
+                    model_prediction=model_prediction,
+                    incumbent_prediction=incumbent_prediction,
+                )
+                price_p10 = _to_float(adjusted.get("price_p10"), price_p10)
+                price_p50 = _to_float(adjusted.get("price_p50"), price_p50)
+                price_p90 = _to_float(adjusted.get("price_p90"), price_p90)
+                sale_probability = _to_float(
+                    adjusted.get("sale_probability"),
+                    sale_probability,
+                )
+                fallback_reason = str(adjusted.get("fallback_reason") or "")
         pred = PredictionRow(
             prediction_id=str(uuid.uuid4()),
             prediction_as_of_ts=now,
@@ -5579,10 +5935,14 @@ def _protected_cohort_check(
     )
     incumbent_map: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in incumbent_rows:
-        family = _canonical_model_category(str(row.get("family") or ""))
+        incumbent_route = str(row.get("route") or "")
+        family = _route_family_scope(
+            incumbent_route,
+            {"category": row.get("family")},
+        )
         incumbent_map[
             (
-                str(row.get("route") or ""),
+                incumbent_route,
                 family,
                 str(row.get("support_bucket") or ""),
             )
@@ -5596,9 +5956,13 @@ def _protected_cohort_check(
     evaluated_cohort_count = 0
     minimum_support = _to_int(policy.get("minimum_support_count"), 0)
     for row in candidate_rows:
-        family = _canonical_model_category(str(row.get("family") or ""))
+        candidate_route = str(row.get("route") or "")
+        family = _route_family_scope(
+            candidate_route,
+            {"category": row.get("family")},
+        )
         key = (
-            str(row.get("route") or ""),
+            candidate_route,
             family,
             str(row.get("support_bucket") or ""),
         )
@@ -6554,6 +6918,7 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
         "rarity": rarity,
         "item_class": item_class,
         "item_name": item_name,
+        "item_type_line": base_type,
         "base_type": base_type,
         "category": category,
         "mod_count": mod_count,
@@ -6606,6 +6971,12 @@ def _route_for_item(item: dict[str, Any]) -> dict[str, Any]:
             "route": "cluster_jewel_retrieval",
             "route_reason": "cluster_jewel_specialized",
             "support_count_recent": 20,
+        }
+    if category == "map":
+        return {
+            "route": "fallback_abstain",
+            "route_reason": "map_sparse_guardrail",
+            "support_count_recent": 15,
         }
     if rarity == "Rare":
         return {
@@ -6812,7 +7183,7 @@ def _route_training_predicate(route: str) -> str:
     if route == "sparse_retrieval":
         return (
             "rarity = 'Rare' AND "
-            f"category NOT IN ({fungible_categories_sql}, 'cluster_jewel')"
+            f"category NOT IN ({fungible_categories_sql}, 'cluster_jewel', 'map')"
         )
     return (
         f"category NOT IN ({fungible_categories_sql}) "
@@ -6827,17 +7198,32 @@ def _feature_dict_from_row(
     *,
     route: str = "",
 ) -> dict[str, Any]:
+    corrupted = _to_float(row.get("corrupted"), 0.0)
+    fractured = _to_float(row.get("fractured"), 0.0)
+    synthesised = _to_float(row.get("synthesised"), 0.0)
     result = {
         "category": _model_category_for_route(row.get("category"), route=route),
         "base_type": str(row.get("base_type") or "unknown"),
         "rarity": str(row.get("rarity") or ""),
         "ilvl": _bucket_ilvl(row.get("ilvl")),
         "stack_size": _bucket_stack_size(row.get("stack_size")),
-        "corrupted": _to_float(row.get("corrupted"), 0.0),
-        "fractured": _to_float(row.get("fractured"), 0.0),
-        "synthesised": _to_float(row.get("synthesised"), 0.0),
+        "corrupted": corrupted,
+        "fractured": fractured,
+        "synthesised": synthesised,
         "mod_token_count": _bucket_mod_token_count(row.get("mod_token_count")),
     }
+    result.update(
+        _derived_route_features(
+            category=row.get("category"),
+            base_type=row.get("base_type"),
+            item_type_line=row.get("item_type_line", row.get("base_type")),
+            item_name=row.get("item_name"),
+            corrupted=corrupted,
+            fractured=fractured,
+            synthesised=synthesised,
+            route=route,
+        )
+    )
     mod_features = _parse_mod_features_json(row.get("mod_features_json", "{}"))
     discovered = set(_discovered_mod_features)
     # mod_features_json keys are already in format: {ModName}_tier / {ModName}_roll
@@ -6866,19 +7252,34 @@ def _feature_dict_from_parsed_item(
     *,
     route: str = "",
 ) -> dict[str, Any]:
+    corrupted = _to_float(item.get("corrupted"), 0.0)
+    fractured = _to_float(item.get("fractured"), 0.0)
+    synthesised = _to_float(item.get("synthesised"), 0.0)
     result = {
         "category": _model_category_for_route(item.get("category"), route=route),
         "base_type": str(item.get("base_type") or "unknown"),
         "rarity": str(item.get("rarity") or ""),
         "ilvl": _bucket_ilvl(item.get("ilvl")),
         "stack_size": _bucket_stack_size(item.get("stack_size")),
-        "corrupted": _to_float(item.get("corrupted"), 0.0),
-        "fractured": _to_float(item.get("fractured"), 0.0),
-        "synthesised": _to_float(item.get("synthesised"), 0.0),
+        "corrupted": corrupted,
+        "fractured": fractured,
+        "synthesised": synthesised,
         "mod_token_count": _bucket_mod_token_count(
             item.get("mod_token_count", item.get("mod_count"))
         ),
     }
+    result.update(
+        _derived_route_features(
+            category=item.get("category"),
+            base_type=item.get("base_type"),
+            item_type_line=item.get("item_type_line", item.get("base_type")),
+            item_name=item.get("item_name"),
+            corrupted=corrupted,
+            fractured=fractured,
+            synthesised=synthesised,
+            route=route,
+        )
+    )
     mod_features = _parse_mod_features_json(item.get("mod_features_json", "{}"))
     discovered = (
         {feature for feature in feature_fields if feature not in BASE_FEATURE_FIELDS}
@@ -7267,7 +7668,11 @@ def _predict_with_bundle(
         if route == "fungible_reference":
             scope = _fungible_reference_family_scope(parsed_item.get("category"))
         elif route == "structured_boosted_other":
-            scope = _structured_boosted_other_family_scope(parsed_item.get("category"))
+            scope = _structured_boosted_other_family_scope_from_fields(
+                parsed_item.get("category"),
+                base_type=parsed_item.get("base_type"),
+                item_type_line=parsed_item.get("item_type_line"),
+            )
         else:
             scope = "other"
         scoped_bundle = family_scoped_bundles.get(scope)

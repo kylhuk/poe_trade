@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-20T11:16:21.343517+00:00",
+  "timestamp": "2026-03-20T12:03:23.585707+00:00",
   "league": "Mirage",
   "snapshot_mode": "steady_state_snapshot_only",
   "downstream_derivation_owner": "clickhouse_v2",

@@ -576,22 +576,22 @@ def test_fit_route_bundle_uses_more_regularized_params_for_sparse_retrieval():
 
     price_model = bundle["price_models"]["p50"]
     price_params = price_model.get_params()
-    assert price_params["n_estimators"] == 120
-    assert price_params["learning_rate"] == 0.04
+    assert price_params["n_estimators"] == 90
+    assert price_params["learning_rate"] == 0.03
     assert price_params["max_depth"] == 2
-    assert price_params["min_samples_leaf"] == 6
-    assert price_params["min_samples_split"] == 12
-    assert price_params["subsample"] == 0.9
+    assert price_params["min_samples_leaf"] == 8
+    assert price_params["min_samples_split"] == 16
+    assert price_params["subsample"] == 0.85
     assert price_params["max_features"] == "sqrt"
 
     assert bundle["sale_model"] is not None
     sale_params = bundle["sale_model"].get_params()
-    assert sale_params["n_estimators"] == 80
-    assert sale_params["learning_rate"] == 0.05
+    assert sale_params["n_estimators"] == 70
+    assert sale_params["learning_rate"] == 0.04
     assert sale_params["max_depth"] == 2
-    assert sale_params["min_samples_leaf"] == 6
-    assert sale_params["min_samples_split"] == 12
-    assert sale_params["subsample"] == 0.95
+    assert sale_params["min_samples_leaf"] == 8
+    assert sale_params["min_samples_split"] == 16
+    assert sale_params["subsample"] == 0.9
     assert sale_params["max_features"] == "sqrt"
 
 
@@ -646,6 +646,20 @@ def test_fit_route_bundle_uses_log_winsorized_target_for_structured_boosted_othe
     ring_bundle = bundle["family_scoped_bundles"]["ring"]
     assert ring_bundle["target_transform"] == "log1p_winsorized_p50_anchor"
     assert ring_bundle["target_transform_meta"]["winsor_upper"] < 5000.0
+    ring_price_params = ring_bundle["price_models"]["p50"].get_params()
+    assert ring_price_params["n_estimators"] == 180
+    assert ring_price_params["learning_rate"] == 0.025
+    assert ring_price_params["max_depth"] == 2
+    assert ring_price_params["min_samples_leaf"] == 8
+    assert ring_price_params["min_samples_split"] == 16
+    assert ring_price_params["subsample"] == 0.85
+    ring_sale_params = ring_bundle["sale_model"].get_params()
+    assert ring_sale_params["n_estimators"] == 110
+    assert ring_sale_params["learning_rate"] == 0.035
+    assert ring_sale_params["max_depth"] == 2
+    assert ring_sale_params["min_samples_leaf"] == 8
+    assert ring_sale_params["min_samples_split"] == 16
+    assert ring_sale_params["subsample"] == 0.9
 
 
 def test_predict_with_bundle_inverts_log_winsorized_targets() -> None:

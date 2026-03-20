@@ -187,6 +187,60 @@ def test_feature_dict_from_parsed_item_keeps_split_family_for_structured_boosted
     assert features["category"] == "amulet"
 
 
+def test_feature_dict_from_row_adds_map_text_and_unique_state_interactions() -> None:
+    row = {
+        "category": "map",
+        "base_type": "Blight-Ravaged Constrictor Map T17",
+        "item_type_line": "Blight-Ravaged Constrictor Map (T17)",
+        "item_name": "Elder Echo",
+        "rarity": "Unique",
+        "ilvl": 84,
+        "stack_size": 1,
+        "corrupted": 1,
+        "fractured": 1,
+        "synthesised": 1,
+        "mod_token_count": 4,
+        "mod_features_json": "{}",
+    }
+
+    features = workflows._feature_dict_from_row(row, route="structured_boosted")
+
+    assert features["map_family_flag"] == 1.0
+    assert features["map_blighted_flag"] == 1.0
+    assert features["map_blight_ravaged_flag"] == 1.0
+    assert features["map_elder_guardian_flag"] == 1.0
+    assert features["map_t17_flag"] == 1.0
+    assert features["unique_state_pair_count"] == 3.0
+    assert features["unique_state_all_three_flag"] == 1.0
+    assert features["text_has_influence_flag"] == 1.0
+    assert features["text_has_parentheses_flag"] == 1.0
+    assert features["text_has_hyphen_flag"] == 1.0
+
+
+def test_feature_dict_from_parsed_item_adds_family_scope_for_structured_routes() -> None:
+    parsed_item = {
+        "category": "other",
+        "base_type": "Onyx Amulet",
+        "item_type_line": "Onyx Amulet",
+        "rarity": "Unique",
+        "ilvl": 84,
+        "stack_size": 1,
+        "corrupted": 0,
+        "fractured": 0,
+        "synthesised": 0,
+        "mod_token_count": 4,
+        "mod_features_json": "{}",
+    }
+
+    features = workflows._feature_dict_from_parsed_item(
+        parsed_item,
+        route="structured_boosted",
+    )
+
+    assert features["family_scope"] == "amulet"
+    assert features["family_scope_is_other"] == 0.0
+
+
 def test_dataset_rebuild_window_is_stable_for_unchanged_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -321,10 +375,13 @@ def test_sparse_route_training_predicate_excludes_fungible_families() -> None:
 
     assert "rarity = 'Rare'" in predicate
     assert "cluster_jewel" in predicate
-    assert "category NOT IN ('fossil', 'scarab', 'logbook', 'cluster_jewel')" in predicate
+    assert (
+        "category NOT IN ('fossil', 'scarab', 'logbook', 'cluster_jewel', 'map')"
+        in predicate
+    )
 
 
-def test_route_for_item_assigns_rare_maps_to_sparse_retrieval() -> None:
+def test_route_for_item_assigns_rare_maps_to_guardrailed_fallback() -> None:
     routed = workflows._route_for_item(
         {
             "category": "map",
@@ -332,8 +389,8 @@ def test_route_for_item_assigns_rare_maps_to_sparse_retrieval() -> None:
         }
     )
 
-    assert routed["route"] == "sparse_retrieval"
-    assert routed["route_reason"] == "sparse_high_dimensional"
+    assert routed["route"] == "fallback_abstain"
+    assert routed["route_reason"] == "map_sparse_guardrail"
 
 
 def test_cluster_jewel_route_training_predicate_targets_cluster_jewel_only() -> None:
@@ -579,8 +636,9 @@ def test_predict_with_bundle_uses_structured_other_family_scope_model() -> None:
     predicted = workflows._predict_with_bundle(
         bundle=bundle,
         parsed_item={
-            "category": "amulet",
+            "category": "other",
             "base_type": "Onyx Amulet",
+            "item_type_line": "Onyx Amulet",
             "rarity": "Unique",
             "ilvl": 0,
             "stack_size": 1,
@@ -681,3 +739,82 @@ def test_prediction_records_canonicalize_split_family_labels() -> None:
 
     assert records[0]["family"] == "other"
     assert records[1]["family"] == "cluster_jewel"
+
+
+def test_prediction_records_keep_structured_other_family_labels() -> None:
+    rows = [
+        {
+            "category": "other",
+            "base_type": "Two-Stone Ring",
+            "item_type_line": "Two-Stone Ring",
+            "family": "ring",
+            "normalized_price_chaos": 10.0,
+        },
+        {
+            "category": "other",
+            "base_type": "Onyx Amulet",
+            "item_type_line": "Onyx Amulet",
+            "family": "amulet",
+            "normalized_price_chaos": 20.0,
+        },
+    ]
+
+    records = workflows._prediction_records_from_rows(
+        rows,
+        bundle=None,
+        reference_price=5.0,
+        route="structured_boosted_other",
+    )
+
+    assert records[0]["family"] == "ring"
+    assert records[1]["family"] == "amulet"
+
+
+def test_training_aggregate_rows_selects_route_family_scope_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"query": ""}
+
+    def _fake_query_rows(_client, query: str):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(workflows, "_query_rows", _fake_query_rows)
+
+    workflows._training_aggregate_rows(
+        cast(workflows.ClickHouseClient, cast(object, object())),
+        route="structured_boosted_other",
+        league="Mirage",
+        dataset_table="poe_trade.ml_price_dataset_v2",
+    )
+
+    assert " AS family" in captured["query"]
+    assert " AS item_type_line," in captured["query"]
+    assert "match(lowerUTF8(concat" in captured["query"]
+    assert "GROUP BY" in captured["query"]
+    assert "item_type_line" in captured["query"]
+    assert ", family" in captured["query"]
+
+
+def test_evaluation_rows_selects_route_family_scope_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"query": ""}
+
+    def _fake_query_rows(_client, query: str):
+        captured["query"] = query
+        return []
+
+    monkeypatch.setattr(workflows, "_query_rows", _fake_query_rows)
+
+    workflows._evaluation_rows(
+        cast(workflows.ClickHouseClient, cast(object, object())),
+        route="structured_boosted_other",
+        league="Mirage",
+        dataset_table="poe_trade.ml_price_dataset_v2",
+        limit=100,
+    )
+
+    assert " AS family" in captured["query"]
+    assert " AS item_type_line," in captured["query"]
+    assert "match(lowerUTF8(concat" in captured["query"]
