@@ -62,6 +62,14 @@
 - Disable rollup primary mode by exporting `POE_ML_MOD_ROLLUP_PRIMARY_ENABLED=false`.
 - Re-verify rollback readiness with `PYTHONPATH=. python3 scripts/verify_mod_rollup_rollback.py --output .sisyphus/evidence/task-9-rollback-ready.json`.
 
+### Fast-sale shadow gate controls
+- Shadow duration minimum: `7` days and `10000` scored items before cutover eligibility.
+- Require `3` consecutive passing windows for serving-path metrics before enabling cutover.
+- Roll back when any threshold is breached:
+  - protected-cohort extreme miss worsening `> 15%`,
+  - confidence calibration ECE degradation `> 0.03`,
+  - abstain-rate spike `> 25%` without error improvement.
+
 ## Reference commands
 - `curl -i http://127.0.0.1:8080/healthz` for unauthenticated API health checks.
 - `curl -i -H "Authorization: Bearer $POE_API_OPERATOR_TOKEN" -H "Origin: https://poe.lama-lan.ch" http://127.0.0.1:8080/api/v1/ops/contract` to bootstrap frontend-facing route and capability metadata.

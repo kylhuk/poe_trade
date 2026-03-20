@@ -157,6 +157,27 @@ def test_train_loop_stops_for_no_improvement(monkeypatch, tmp_path):
     assert result["stop_reason"] == "no_improvement_patience_exhausted"
 
 
+def test_training_uses_adjustment_vs_anchor_target_for_price_heads() -> None:
+    ratio = workflows._anchor_adjustment_target(price=12.0, anchor_price=10.0)
+    restored = workflows._invert_anchor_adjustment_target(
+        adjustment_target=ratio,
+        anchor_price=10.0,
+    )
+    assert restored == pytest.approx(12.0)
+
+
+def test_censored_reliability_weights_1_0_0_6_0_4_are_applied() -> None:
+    sold = workflows._censored_reliability_weight(is_sold_proxy=True, support_count=10)
+    supported = workflows._censored_reliability_weight(
+        is_sold_proxy=False,
+        support_count=25,
+    )
+    thin = workflows._censored_reliability_weight(is_sold_proxy=False, support_count=24)
+    assert sold == 1.0
+    assert supported == 0.6
+    assert thin == 0.4
+
+
 def test_train_loop_resume_requires_existing_run(monkeypatch, tmp_path):
     client = cast(workflows.ClickHouseClient, cast(object, SimpleNamespace()))
     monkeypatch.setattr(workflows, "_ensure_supported_league", lambda _league: None)

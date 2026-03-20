@@ -195,8 +195,8 @@ _MOD_FEATURE_SQL_EXTRA_SNIPPETS: dict[str, tuple[str, ...]] = {
 
 def _normalize_mod_token_sql(expr: str) -> str:
     lowered = f"lowerUTF8(trimBoth({expr}))"
-    unescaped = f'replaceAll({lowered}, \'\\"\', \'"\')'
-    unquoted = f'replaceRegexpAll({unescaped}, \'^"|"$\', \'\')'
+    unescaped = f"replaceAll({lowered}, '\\\"', '\"')"
+    unquoted = f"replaceRegexpAll({unescaped}, '^\"|\"$', '')"
     return f"replaceRegexpAll({unquoted}, '\\s+', ' ')"
 
 
@@ -207,13 +207,9 @@ def _primary_numeric_sql(token_expr: str) -> str:
         + ", '(?:^|\\\\s)[+-]?(\\\\d+(?:\\\\.\\\\d+)?)\\\\s*%?'))"
     )
     fallback_numeric = (
-        "if(empty(extractAll("
-        + token_expr
-        + ", '\\d+(?:\\\\.\\\\d+)?')), 0., "
+        "if(empty(extractAll(" + token_expr + ", '\\d+(?:\\\\.\\\\d+)?')), 0., "
         "arrayReduce('max', arrayMap(x -> toFloat64OrZero(x), "
-        "extractAll("
-        + token_expr
-        + ", '\\d+(?:\\\\.\\\\d+)?'))))"
+        "extractAll(" + token_expr + ", '\\d+(?:\\\\.\\\\d+)?'))))"
     )
     return f"if({first_numeric} > 0., {first_numeric}, {fallback_numeric})"
 
@@ -300,7 +296,9 @@ def _feature_sql_value_columns() -> tuple[str, ...]:
     )
 
 
-def _build_sql_mod_feature_stage_query(*, league: str, hour_ts: str | None = None) -> str:
+def _build_sql_mod_feature_stage_query(
+    *, league: str, hour_ts: str | None = None
+) -> str:
     token_expr = _normalize_mod_token_sql("mod_token")
     primary_numeric_expr = _primary_numeric_sql("token")
     prefilter_condition = " OR ".join(
@@ -314,8 +312,7 @@ def _build_sql_mod_feature_stage_query(*, league: str, hour_ts: str | None = Non
     where_clauses = [f"league = {_quote(league)}"]
     if hour_ts:
         where_clauses.append(
-            "toStartOfHour(as_of_ts) = "
-            + f"toDateTime64({_quote(hour_ts)}, 3, 'UTC')"
+            "toStartOfHour(as_of_ts) = " + f"toDateTime64({_quote(hour_ts)}, 3, 'UTC')"
         )
     return " ".join(
         [
@@ -422,7 +419,10 @@ def _read_mod_feature_stage_mv_sql() -> str:
     sql = migration_path.read_text(encoding="utf-8")
     statements = MigrationRunner._split_sql_statements(sql)
     for statement in statements:
-        if "CREATE MATERIALIZED VIEW IF NOT EXISTS poe_trade.mv_ml_item_mod_features_sql_stage_v1" in statement:
+        if (
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS poe_trade.mv_ml_item_mod_features_sql_stage_v1"
+            in statement
+        ):
             return statement
     return ""
 
@@ -507,7 +507,9 @@ def _mod_feature_sql_query_settings() -> dict[str, str]:
             max(1, _env_int("POE_ML_MOD_FEATURE_SQL_MAX_MEMORY_USAGE", 1610612736))
         ),
         "max_threads": str(max(1, _env_int("POE_ML_MOD_FEATURE_SQL_MAX_THREADS", 4))),
-        "max_block_size": str(max(1, _env_int("POE_ML_MOD_FEATURE_SQL_MAX_BLOCK_SIZE", 2048))),
+        "max_block_size": str(
+            max(1, _env_int("POE_ML_MOD_FEATURE_SQL_MAX_BLOCK_SIZE", 2048))
+        ),
         "optimize_aggregation_in_order": "1",
         "max_execution_time": str(
             max(1, _env_int("POE_ML_MOD_FEATURE_SQL_MAX_EXECUTION_TIME", 180))
@@ -1296,9 +1298,7 @@ _DIRECT_CATEGORY_FAMILIES = {
 
 _MODEL_CATEGORY_COLLAPSE_TO_OTHER = {"jewel", "ring", "amulet", "belt"}
 
-_FUNGIBLE_REFERENCE_EXCLUDED_CATEGORIES = (
-    "essence",
-)
+_FUNGIBLE_REFERENCE_EXCLUDED_CATEGORIES = ("essence",)
 
 _FUNGIBLE_REFERENCE_CATEGORIES = (
     "fossil",
@@ -1480,7 +1480,10 @@ def _canonical_model_category(category: object) -> str:
 
 def _model_category_for_route(category: object, *, route: str = "") -> str:
     normalized = str(category or "other").strip().lower() or "other"
-    if route in {"structured_boosted", "structured_boosted_other"} and normalized in _MODEL_CATEGORY_COLLAPSE_TO_OTHER:
+    if (
+        route in {"structured_boosted", "structured_boosted_other"}
+        and normalized in _MODEL_CATEGORY_COLLAPSE_TO_OTHER
+    ):
         return normalized
     return _canonical_model_category(normalized)
 
@@ -2406,7 +2409,9 @@ def repair_incremental_price_labels_v2(
             ")",
         ]
     )
-    fx_currency_expr = "replaceRegexpAll(lowerUTF8(trimBoth(fx.currency)), '\\s+orbs?$', '')"
+    fx_currency_expr = (
+        "replaceRegexpAll(lowerUTF8(trimBoth(fx.currency)), '\\s+orbs?$', '')"
+    )
     alias_non_chaos_predicate = (
         "lowerUTF8(trimBoth(labels.parsed_currency)) NOT IN "
         "('chaos', 'chaos orb', 'chaos orbs', '')"
@@ -2666,7 +2671,9 @@ def _unique_state_interaction_features(
     pair_count = (corr * frac) + (corr * synth) + (frac * synth)
     return {
         "unique_state_pair_count": pair_count,
-        "unique_state_all_three_flag": 1.0 if (corr > 0.0 and frac > 0.0 and synth > 0.0) else 0.0,
+        "unique_state_all_three_flag": 1.0
+        if (corr > 0.0 and frac > 0.0 and synth > 0.0)
+        else 0.0,
         "unique_state_corrupted_fractured": corr * frac,
         "unique_state_corrupted_synthesised": corr * synth,
         "unique_state_fractured_synthesised": frac * synth,
@@ -2677,7 +2684,9 @@ def _text_pattern_features(combined_text: str) -> dict[str, float]:
     return {
         "text_has_delirium_flag": _regex_flag(_TEXT_DELIRIUM_PATTERN, combined_text),
         "text_has_influence_flag": _regex_flag(_TEXT_INFLUENCE_PATTERN, combined_text),
-        "text_has_parentheses_flag": 1.0 if ("(" in combined_text or ")" in combined_text) else 0.0,
+        "text_has_parentheses_flag": 1.0
+        if ("(" in combined_text or ")" in combined_text)
+        else 0.0,
         "text_has_hyphen_flag": 1.0 if "-" in combined_text else 0.0,
     }
 
@@ -3198,7 +3207,9 @@ def _fit_route_bundle_from_aggregates(
                 route=route,
                 trained_at=trained_at,
             )
-            scope_train_row_count = max(0, _to_int(scope_stats.get("train_row_count"), 0))
+            scope_train_row_count = max(
+                0, _to_int(scope_stats.get("train_row_count"), 0)
+            )
             scope_feature_row_count = max(
                 0,
                 _to_int(scope_stats.get("feature_row_count"), 0),
@@ -3470,7 +3481,9 @@ def _prediction_tuple(
 ) -> tuple[float, float, float, float]:
     price_p10 = max(0.1, _to_float(prediction.get("price_p10"), fallback_price * 0.8))
     price_p50 = max(price_p10, _to_float(prediction.get("price_p50"), fallback_price))
-    price_p90 = max(price_p50, _to_float(prediction.get("price_p90"), fallback_price * 1.2))
+    price_p90 = max(
+        price_p50, _to_float(prediction.get("price_p90"), fallback_price * 1.2)
+    )
     sale_probability = min(
         1.0,
         max(0.0, _to_float(prediction.get("sale_probability"), 0.6)),
@@ -4052,6 +4065,365 @@ def evaluate_stack(
     }
 
 
+def _serving_eval_rows(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    dataset_table: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    query = " ".join(
+        [
+            "SELECT",
+            "toString(ifNull(clipboard_text, '')) AS clipboard_text,",
+            "toFloat64(ifNull(normalized_price_chaos, 0.0)) AS target_price,",
+            "toFloat64(ifNull(normalized_price_chaos, 0.0)) AS credible_low,",
+            "toFloat64(ifNull(normalized_price_chaos, 0.0)) AS credible_high,",
+            "toString(ifNull(route, 'fallback_abstain')) AS route,",
+            "toString(ifNull(rarity, '')) AS rarity,",
+            "toString(ifNull(support_bucket, 'unknown')) AS support_bucket,",
+            "toString(ifNull(value_band, 'unknown')) AS value_band,",
+            "toString(ifNull(category, 'other')) AS category_family,",
+            "toString(ifNull(league, '')) AS league",
+            f"FROM {dataset_table}",
+            f"WHERE league = {_quote(league)}",
+            "AND normalized_price_chaos IS NOT NULL",
+            "AND normalized_price_chaos > 0",
+            "ORDER BY as_of_ts DESC",
+            f"LIMIT {max(1, limit)}",
+            "FORMAT JSONEachRow",
+        ]
+    )
+    try:
+        rows = _query_rows(client, query)
+    except ClickHouseClientError:
+        return []
+    return [row for row in rows if str(row.get("clipboard_text") or "").strip()]
+
+
+def _serving_bucket_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
+    if not rows:
+        return {
+            "count": 0,
+            "relative_abs_error_mean": 0.0,
+            "extreme_miss_rate": 0.0,
+            "band_hit_rate": 0.0,
+            "abstain_rate": 0.0,
+            "abstain_precision": 0.0,
+        }
+    raes = [
+        abs(
+            _to_float(row.get("predicted_price"), 0.0)
+            - _to_float(row.get("target_price"), 0.0)
+        )
+        / max(_to_float(row.get("target_price"), 0.0), 0.01)
+        for row in rows
+    ]
+    band_hits = [
+        1.0
+        if _to_float(row.get("credible_low"), 0.0)
+        <= _to_float(row.get("predicted_price"), 0.0)
+        <= _to_float(row.get("credible_high"), 0.0)
+        else 0.0
+        for row in rows
+    ]
+    abstains = [1.0 if bool(row.get("abstained")) else 0.0 for row in rows]
+    abstain_true_positive = [
+        1.0
+        if bool(row.get("abstained"))
+        and _to_float(row.get("forced_baseline_rae"), 0.0) >= 0.75
+        else 0.0
+        for row in rows
+    ]
+    total = float(len(rows))
+    abstain_count = sum(abstains)
+    return {
+        "count": int(total),
+        "relative_abs_error_mean": sum(raes) / total,
+        "extreme_miss_rate": sum(1.0 for value in raes if value >= 1.0) / total,
+        "band_hit_rate": sum(band_hits) / total,
+        "abstain_rate": abstain_count / total,
+        "abstain_precision": (sum(abstain_true_positive) / abstain_count)
+        if abstain_count > 0.0
+        else 0.0,
+    }
+
+
+def _comparable_similarity_score(
+    *, item: dict[str, Any], comparable: dict[str, Any]
+) -> float:
+    base_type_match = (
+        1.0
+        if str(item.get("base_type") or "") == str(comparable.get("base_type") or "")
+        else 0.0
+    )
+    item_mod = set(str(item.get("mod_signature") or "").split(",")) - {""}
+    comp_mod = set(str(comparable.get("mod_signature") or "").split(",")) - {""}
+    if not item_mod and not comp_mod:
+        mod_overlap = 1.0
+    else:
+        denom = max(1, len(item_mod | comp_mod))
+        mod_overlap = len(item_mod & comp_mod) / denom
+    ilvl_delta = abs(
+        _to_float(item.get("ilvl"), 0.0) - _to_float(comparable.get("ilvl"), 0.0)
+    )
+    ilvl_proximity = max(0.0, 1.0 - min(ilvl_delta, 20.0) / 20.0)
+    state_compat = (
+        1.0
+        if str(item.get("state") or "") == str(comparable.get("state") or "")
+        else 0.0
+    )
+    hours_ago = max(0.0, _to_float(comparable.get("hours_ago"), 9999.0))
+    recency = max(0.0, 1.0 - min(hours_ago, 72.0) / 72.0)
+    return (
+        0.35 * base_type_match
+        + 0.30 * mod_overlap
+        + 0.10 * ilvl_proximity
+        + 0.10 * state_compat
+        + 0.15 * recency
+    )
+
+
+def _select_top_comparables(
+    *,
+    item: dict[str, Any],
+    comparable_rows: list[dict[str, Any]],
+    cap: int = 200,
+    allow_broader_fallback: bool = True,
+) -> list[dict[str, Any]]:
+    filtered = [
+        row
+        for row in comparable_rows
+        if str(row.get("league") or "") == str(item.get("league") or "")
+        and str(row.get("item_class") or "") == str(item.get("item_class") or "")
+        and (
+            str(row.get("route_family") or "") == str(item.get("route_family") or "")
+            or allow_broader_fallback
+        )
+    ]
+    scored = []
+    for row in filtered:
+        score = _comparable_similarity_score(item=item, comparable=row)
+        scored.append({**row, "similarity": score})
+    scored.sort(
+        key=lambda row: (
+            -_to_float(row.get("similarity"), 0.0),
+            _to_float(row.get("hours_ago"), 9999.0),
+            str(row.get("listing_id") or ""),
+        )
+    )
+    return scored[: max(1, cap)]
+
+
+def _robust_anchor_from_comparables(
+    comparable_rows: list[dict[str, Any]], *, route_kind: str
+) -> dict[str, Any]:
+    route_min_support = {
+        "structured": 25,
+        "sparse": 15,
+        "fallback": 10,
+    }
+    floor_ratio = {
+        "structured": 0.60,
+        "sparse": 0.70,
+        "fallback": 0.75,
+    }
+    recency_filtered = [
+        row
+        for row in comparable_rows
+        if _to_float(row.get("hours_ago"), 9999.0) <= 72.0
+    ]
+    if len(recency_filtered) < route_min_support.get(route_kind, 10):
+        return {
+            "anchor_price": 0.0,
+            "credible_low": 0.0,
+            "credible_high": 0.0,
+            "support_count": 0,
+            "trim_low_count": 0,
+            "trim_high_count": max(0, len(comparable_rows) - len(recency_filtered)),
+            "abstain_reason": "low_support",
+        }
+    prices = [_to_float(row.get("price_chaos"), 0.0) for row in recency_filtered]
+    prices = [price for price in prices if price > 0.0]
+    if not prices:
+        return {
+            "anchor_price": 0.0,
+            "credible_low": 0.0,
+            "credible_high": 0.0,
+            "support_count": 0,
+            "trim_low_count": 0,
+            "trim_high_count": 0,
+            "abstain_reason": "no_valid_prices",
+        }
+    q05 = _weighted_quantile(prices, [1.0] * len(prices), 0.05)
+    q25 = _weighted_quantile(prices, [1.0] * len(prices), 0.25)
+    q75 = _weighted_quantile(prices, [1.0] * len(prices), 0.75)
+    q95 = _weighted_quantile(prices, [1.0] * len(prices), 0.95)
+    iqr = max(0.0, q75 - q25)
+    low_bound = max(q25 * floor_ratio.get(route_kind, 0.75), q05 - 1.5 * iqr)
+    high_bound = q95 + 1.5 * iqr
+    kept = [price for price in prices if low_bound <= price <= high_bound]
+    trim_low_count = sum(1 for price in prices if price < low_bound)
+    trim_high_count = sum(1 for price in prices if price > high_bound) + max(
+        0, len(comparable_rows) - len(recency_filtered)
+    )
+    if len(kept) < route_min_support.get(route_kind, 10):
+        return {
+            "anchor_price": 0.0,
+            "credible_low": 0.0,
+            "credible_high": 0.0,
+            "support_count": 0,
+            "trim_low_count": trim_low_count,
+            "trim_high_count": trim_high_count,
+            "abstain_reason": "low_support",
+        }
+    return {
+        "anchor_price": _weighted_quantile(kept, [1.0] * len(kept), 0.5),
+        "credible_low": _weighted_quantile(kept, [1.0] * len(kept), 0.25),
+        "credible_high": _weighted_quantile(kept, [1.0] * len(kept), 0.75),
+        "support_count": len(kept),
+        "trim_low_count": trim_low_count,
+        "trim_high_count": trim_high_count,
+        "abstain_reason": "",
+    }
+
+
+def _anchor_adjustment_target(*, price: float, anchor_price: float) -> float:
+    safe_anchor = max(0.01, _to_float(anchor_price, 0.01))
+    safe_price = max(0.01, _to_float(price, 0.01))
+    return math.log(safe_price / safe_anchor)
+
+
+def _invert_anchor_adjustment_target(
+    *, adjustment_target: float, anchor_price: float
+) -> float:
+    safe_anchor = max(0.01, _to_float(anchor_price, 0.01))
+    return max(0.01, safe_anchor * math.exp(_to_float(adjustment_target, 0.0)))
+
+
+def _censored_reliability_weight(*, is_sold_proxy: bool, support_count: int) -> float:
+    if is_sold_proxy:
+        return 1.0
+    if max(0, _to_int(support_count, 0)) >= 25:
+        return 0.6
+    return 0.4
+
+
+def _apply_recommendation_policy(
+    *,
+    support_count: int,
+    confidence: float,
+    price_p10: float,
+    price_p50: float,
+    price_p90: float,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if _to_int(support_count, 0) < 10:
+        reasons.append("low_support")
+    width_ratio = (_to_float(price_p90, 0.0) - _to_float(price_p10, 0.0)) / max(
+        _to_float(price_p50, 0.0), 0.01
+    )
+    if width_ratio > 0.9:
+        reasons.append("unstable_band")
+    if _to_float(confidence, 0.0) < 0.35:
+        reasons.append("low_confidence")
+    return {
+        "abstained": bool(reasons),
+        "abstain_reasons": reasons,
+        "band_width_ratio": width_ratio,
+    }
+
+
+def _expected_calibration_error(
+    observations: list[dict[str, Any]], *, bins: int = 10
+) -> float:
+    if not observations:
+        return 0.0
+    bucketed: dict[int, list[dict[str, Any]]] = {}
+    for row in observations:
+        conf = min(0.9999, max(0.0, _to_float(row.get("confidence"), 0.0)))
+        idx = min(bins - 1, int(conf * bins))
+        bucketed.setdefault(idx, []).append(row)
+    total = float(len(observations))
+    ece = 0.0
+    for bucket in bucketed.values():
+        mean_conf = sum(_to_float(row.get("confidence"), 0.0) for row in bucket) / len(
+            bucket
+        )
+        empirical = sum(
+            1.0 for row in bucket if _to_float(row.get("rae"), 1.0) <= 0.30
+        ) / len(bucket)
+        ece += (len(bucket) / total) * abs(mean_conf - empirical)
+    return ece
+
+
+def evaluate_serving_path(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    dataset_table: str,
+    limit: int = 200,
+) -> dict[str, Any]:
+    _ensure_supported_league(league)
+    rows = _serving_eval_rows(
+        client,
+        league=league,
+        dataset_table=dataset_table,
+        limit=limit,
+    )
+    scored_rows: list[dict[str, Any]] = []
+    for row in rows:
+        clipboard_text = str(row.get("clipboard_text") or "")
+        if not clipboard_text:
+            continue
+        prediction = predict_one(client, league=league, clipboard_text=clipboard_text)
+        predicted_price = _to_float(prediction.get("price_p50"), 0.0)
+        target_price = _to_float(row.get("target_price"), 0.0)
+        forced_baseline_rae = (
+            abs(_to_float(row.get("credible_low"), target_price) - target_price)
+            / max(target_price, 0.01)
+            if target_price > 0
+            else 0.0
+        )
+        scored_rows.append(
+            {
+                **row,
+                "route": str(prediction.get("route") or row.get("route") or ""),
+                "predicted_price": predicted_price,
+                "confidence": _to_float(prediction.get("confidence"), 0.0),
+                "abstained": not bool(
+                    prediction.get("price_recommendation_eligible", False)
+                ),
+                "forced_baseline_rae": forced_baseline_rae,
+            }
+        )
+
+    cohort_dimensions = (
+        "route",
+        "rarity",
+        "support_bucket",
+        "value_band",
+        "category_family",
+        "league",
+    )
+    cohorts: dict[str, dict[str, dict[str, float]]] = {}
+    for dimension in cohort_dimensions:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in scored_rows:
+            key = str(row.get(dimension) or "unknown")
+            grouped.setdefault(key, []).append(row)
+        cohorts[dimension] = {
+            key: _serving_bucket_metrics(group_rows)
+            for key, group_rows in grouped.items()
+        }
+
+    return {
+        "league": league,
+        "overall": _serving_bucket_metrics(scored_rows),
+        "cohorts": cohorts,
+    }
+
+
 def train_loop(
     client: ClickHouseClient,
     *,
@@ -4285,6 +4657,8 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
         latest["source_watermarks"] = _parse_source_watermarks(
             latest.get("source_watermarks_json")
         )
+        latest["serving_path_gate"] = _default_serving_path_gate_payload()
+        latest["observability"] = _default_observability_payload()
         latest["warmup"] = _warmup_status_payload(league)
         return latest
     rows = train_run_history(client, league=league, limit=1, run_id=run)
@@ -4315,8 +4689,33 @@ def status(client: ClickHouseClient, *, league: str, run: str) -> dict[str, Any]
     row["source_watermarks"] = _parse_source_watermarks(
         row.get("source_watermarks_json")
     )
+    row["serving_path_gate"] = _default_serving_path_gate_payload()
+    row["observability"] = _default_observability_payload()
     row["warmup"] = _warmup_status_payload(league)
     return row
+
+
+def _default_serving_path_gate_payload() -> dict[str, Any]:
+    return {
+        "shadow_min_days": 7,
+        "shadow_min_scored_items": 10000,
+        "required_consecutive_windows": 3,
+        "rollback_thresholds": {
+            "protected_cohort_extreme_miss_worsening": 0.15,
+            "ece_degradation": 0.03,
+            "abstain_spike": 0.25,
+        },
+    }
+
+
+def _default_observability_payload() -> dict[str, Any]:
+    return {
+        "anchor_usage_rate": 0.0,
+        "fallback_or_blend_rate": 0.0,
+        "abstain_rate": 0.0,
+        "outlier_trim_rate": 0.0,
+        "confidence_calibration_ece": 0.0,
+    }
 
 
 def _latest_eval_feedback(client: ClickHouseClient, league: str) -> dict[str, Any]:
@@ -4559,7 +4958,9 @@ def predict_one(
         price_p10 = max(0.1, float(model_prediction["price_p10"]))
         price_p50 = max(price_p10, float(model_prediction["price_p50"]))
         price_p90 = max(price_p50, float(model_prediction["price_p90"]))
-        sale_probability = min(1.0, max(0.0, float(model_prediction["sale_probability"])))
+        sale_probability = min(
+            1.0, max(0.0, float(model_prediction["sale_probability"]))
+        )
         confidence = _model_confidence(
             route,
             support=support,
@@ -4596,7 +4997,14 @@ def predict_one(
             )
             fallback_reason = str(adjusted.get("fallback_reason") or "")
 
-    recommendation_eligible = sale_probability >= 0.5
+    policy = _apply_recommendation_policy(
+        support_count=support,
+        confidence=confidence,
+        price_p10=price_p10,
+        price_p50=price_p50,
+        price_p90=price_p90,
+    )
+    recommendation_eligible = sale_probability >= 0.5 and not bool(policy["abstained"])
     return {
         "league": league,
         "parsed_item": parsed,
@@ -4609,6 +5017,8 @@ def predict_one(
         "sale_probability": round(sale_probability, 4),
         "sale_probability_percent": round(sale_probability * 100.0, 2),
         "price_recommendation_eligible": recommendation_eligible,
+        "abstained": bool(policy["abstained"]),
+        "abstain_reasons": list(policy["abstain_reasons"]),
         "confidence": round(confidence, 4),
         "confidence_percent": round(confidence * 100.0, 2),
         "fallback_reason": fallback_reason,
@@ -4716,7 +5126,10 @@ def predict_batch(
             if confidence < _low_confidence_threshold(route):
                 incumbent_prediction = None
                 active_version = str(artifact.get("active_model_version") or "").strip()
-                if incumbent_model_version and incumbent_model_version != active_version:
+                if (
+                    incumbent_model_version
+                    and incumbent_model_version != active_version
+                ):
                     incumbent_artifact = incumbent_artifacts.get(route)
                     if incumbent_artifact is None:
                         incumbent_artifact = _load_active_route_artifact(
@@ -6024,6 +6437,35 @@ def _should_promote(comparison: dict[str, Any]) -> bool:
         return False
     if not bool(comparison.get("coverage_floor_ok")):
         return False
+    serving_gate = comparison.get("serving_path_gate") or {}
+    if serving_gate:
+        if not bool(serving_gate.get("pass", True)):
+            return False
+        if _to_float(serving_gate.get("overall_rae_improvement_relative"), 0.0) < 0.05:
+            return False
+        if _to_float(serving_gate.get("overall_extreme_miss_delta"), 0.0) > 0.0:
+            return False
+        if (
+            _to_float(serving_gate.get("sparse_extreme_miss_improvement_relative"), 0.0)
+            < 0.10
+        ):
+            return False
+        if _to_float(serving_gate.get("ece_delta"), 0.0) > 0.01:
+            return False
+        if (
+            _to_float(
+                serving_gate.get("max_required_cohort_rae_regression_relative"),
+                0.0,
+            )
+            > 0.02
+        ):
+            return False
+        if not bool(serving_gate.get("abstain_spike_justified", True)):
+            return False
+        if not bool(serving_gate.get("required_dimensions_present", True)):
+            return False
+        if not bool(serving_gate.get("protected_cohorts_present", True)):
+            return False
     return True
 
 
@@ -6419,7 +6861,6 @@ def _ensure_comps_table(client: ClickHouseClient, table: str) -> None:
     client.execute(
         f"CREATE TABLE IF NOT EXISTS {table}(as_of_ts DateTime64(3, 'UTC'), league String, target_item_id String, comp_item_id String, target_base_type String, comp_base_type String, distance_score Float64, comp_price_chaos Float64, retrieval_window_hours UInt16, updated_at DateTime64(3, 'UTC')) ENGINE=ReplacingMergeTree(updated_at) PARTITION BY toYYYYMMDD(as_of_ts) ORDER BY (league, target_item_id, distance_score, comp_item_id)"
     )
-
 
 
 def _ensure_route_eval_table(client: ClickHouseClient) -> None:
