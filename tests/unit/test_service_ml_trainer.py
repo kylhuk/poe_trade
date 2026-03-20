@@ -71,3 +71,34 @@ def test_ml_trainer_persists_rollout_controls_in_status(monkeypatch) -> None:
     assert payload["rollout"]["incumbent_model_version"] == "mirage-v1"
     assert payload["rollout"]["effective_serving_model_version"] == "mirage-v1"
     assert calls == ["Mirage", "Mirage"]
+
+
+def test_ml_trainer_rejects_legacy_v1_dataset(monkeypatch) -> None:
+    cfg = SimpleNamespace(
+        clickhouse_url="http://ch",
+        ml_automation_enabled=True,
+        ml_automation_league="Mirage",
+        ml_automation_interval_seconds=30,
+        ml_automation_max_iterations=1,
+        ml_automation_max_wall_clock_seconds=60,
+        ml_automation_no_improvement_patience=2,
+        ml_automation_min_mdape_improvement=0.005,
+    )
+    monkeypatch.setattr(ml_trainer.config_settings, "get_settings", lambda: cfg)
+
+    try:
+        ml_trainer.main(
+            [
+                "--once",
+                "--league",
+                "Mirage",
+                "--dataset-table",
+                "poe_trade.ml_price_dataset_v1",
+                "--model-dir",
+                "artifacts/ml/mirage_v2",
+            ]
+        )
+    except ValueError as exc:
+        assert "v2 dataset table" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for legacy v1 dataset table")

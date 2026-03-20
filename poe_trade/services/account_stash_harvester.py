@@ -11,7 +11,6 @@ from poe_trade.ingestion.account_stash_harvester import AccountStashHarvester
 from poe_trade.ingestion.poe_client import PoeClient
 from poe_trade.ingestion.rate_limit import RateLimitPolicy
 from poe_trade.ingestion.status import StatusReporter
-from poe_trade.stash_valuation import run_account_stash_valuation_scan
 
 SERVICE_NAME = "account_stash_harvester"
 
@@ -30,11 +29,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--once", action="store_true", help="Run one harvest and exit")
     parser.add_argument("--dry-run", action="store_true", help="Skip ClickHouse writes")
-    parser.add_argument(
-        "--scan",
-        action="store_true",
-        help="After one harvest, run full account stash valuation scan",
-    )
     parser.add_argument("--realm", help="Realm override")
     parser.add_argument("--league", help="League override")
     parser.add_argument(
@@ -88,13 +82,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         dry_run=args.dry_run,
         once=args.once,
     )
-    if args.scan and not args.dry_run:
-        run_account_stash_valuation_scan(
-            clickhouse,
-            league=args.league or cfg.account_stash_league,
-            realm=args.realm or cfg.account_stash_realm,
-            account_name=account_name,
-        )
     return 0
 
 

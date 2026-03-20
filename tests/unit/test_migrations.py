@@ -241,9 +241,7 @@ def test_mod_feature_stage_mv_migration_defines_materialized_view() -> None:
 
     sql = migration.read_text(encoding="utf-8")
 
-    assert (
-        "CREATE TABLE IF NOT EXISTS poe_trade.ml_item_mod_features_sql_stage_v1" in sql
-    )
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_item_mod_features_sql_stage_v1" in sql
     assert (
         "CREATE MATERIALIZED VIEW IF NOT EXISTS "
         "poe_trade.mv_ml_item_mod_features_sql_stage_v1" in sql
@@ -307,90 +305,6 @@ def test_incremental_v2_fx_alias_expansion_migration_maps_common_shorthand() -> 
     sql = migration.read_text(encoding="utf-8")
 
     assert "IN ('alch', 'alchemy'), 'orb of alchemy'" in sql
-    assert (
-        "IN ('gcp', 'gemcutter', 'gemcutters', 'gemcutter''s prism'), 'gemcutter''s prism'"
-        in sql
-    )
+    assert "IN ('gcp', 'gemcutter', 'gemcutters', 'gemcutter''s prism'), 'gemcutter''s prism'" in sql
     assert "IN ('mirror',), 'mirror of kalandra'" in sql
     assert "IN ('exa', 'exalt', 'exalted', 'exalts'), 'exalted'" in sql
-
-
-def test_migrations_list_includes_0051_account_stash_valuation_runs_v1() -> None:
-    runner = MigrationRunner(
-        client=cast(Any, RecordingClient()),
-        database="poe_trade",
-        dry_run=True,
-    )
-
-    by_version = {
-        migration.version: migration.path.name for migration in runner.migrations
-    }
-
-    assert "0051" in by_version
-    assert by_version["0051"] == "0051_account_stash_valuation_runs_v1.sql"
-
-
-def test_account_stash_valuation_runs_migration_creates_expected_tables() -> None:
-    migration = (
-        Path(__file__).resolve().parents[2]
-        / "schema"
-        / "migrations"
-        / "0051_account_stash_valuation_runs_v1.sql"
-    )
-
-    sql = migration.read_text(encoding="utf-8")
-
-    assert "CREATE TABLE IF NOT EXISTS poe_trade.account_stash_valuation_runs" in sql
-    assert "CREATE TABLE IF NOT EXISTS poe_trade.account_stash_scan_items" in sql
-    assert "CREATE TABLE IF NOT EXISTS poe_trade.account_stash_item_valuations" in sql
-    assert "CREATE TABLE IF NOT EXISTS poe_trade.account_stash_active_scans" in sql
-    assert "realm String" in sql
-    assert "status LowCardinality(String)" in sql
-    assert "completed_at Nullable(DateTime64(3, 'UTC'))" in sql
-    assert "failed_at Nullable(DateTime64(3, 'UTC'))" in sql
-    assert "published_at Nullable(DateTime64(3, 'UTC'))" in sql
-    assert "item_id Nullable(String)" in sql
-    assert "source_observed_at DateTime64(3, 'UTC')" in sql
-    assert "predicted_price Float64" in sql
-    assert "confidence Float64" in sql
-    assert "price_p10 Nullable(Float64)" in sql
-    assert "price_p90 Nullable(Float64)" in sql
-    assert "comparable_count UInt32" in sql
-    assert "fallback_reason String" in sql
-    assert "payload_json String" in sql
-    assert ") ENGINE = ReplacingMergeTree(started_at)" in sql
-    assert "PARTITION BY (league, toYYYYMMDD(started_at))" in sql
-    assert "ORDER BY (account_name, realm, league, scan_id)" in sql
-    assert ") ENGINE = ReplacingMergeTree(published_at)" in sql
-    assert (
-        "GRANT SELECT, INSERT ON poe_trade.account_stash_valuation_runs TO poe_api_reader;"
-        in sql
-    )
-    assert (
-        "GRANT SELECT, INSERT ON poe_trade.account_stash_scan_items TO poe_api_reader;"
-        in sql
-    )
-    assert (
-        "GRANT SELECT, INSERT ON poe_trade.account_stash_item_valuations TO poe_api_reader;"
-        in sql
-    )
-    assert (
-        "GRANT SELECT, INSERT ON poe_trade.account_stash_active_scans TO poe_api_reader;"
-        in sql
-    )
-    assert (
-        "GRANT INSERT ON poe_trade.account_stash_valuation_runs TO poe_ingest_writer;"
-        in sql
-    )
-    assert (
-        "GRANT INSERT ON poe_trade.account_stash_scan_items TO poe_ingest_writer;"
-        in sql
-    )
-    assert (
-        "GRANT INSERT ON poe_trade.account_stash_item_valuations TO poe_ingest_writer;"
-        in sql
-    )
-    assert (
-        "GRANT INSERT ON poe_trade.account_stash_active_scans TO poe_ingest_writer;"
-        in sql
-    )

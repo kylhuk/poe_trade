@@ -11,6 +11,7 @@ from pathlib import Path
 from poe_trade.config import settings
 from poe_trade.db import ClickHouseClient
 
+from . import workflows
 from .audit import build_audit_report
 from .runtime import detect_runtime_profile, persist_runtime_profile
 from .workflows import (
@@ -225,6 +226,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = args.command
         league = args.league
         output_arg = args.output or ""
+
+        guarded_dataset_commands = {
+            "route-preview",
+            "build-comps",
+            "train-route",
+            "evaluate-route",
+            "train",
+            "train-saleability",
+            "evaluate-saleability",
+            "evaluate",
+            "train-loop",
+            "predict-batch",
+        }
+        guarded_model_dir_commands = {
+            "train-route",
+            "evaluate-route",
+            "train",
+            "train-saleability",
+            "evaluate-saleability",
+            "evaluate",
+            "train-loop",
+            "predict-batch",
+            "report",
+        }
+        if command in guarded_dataset_commands:
+            workflows._ensure_non_legacy_dataset_table(str(args.dataset_table))
+        if command in guarded_model_dir_commands:
+            workflows._ensure_non_legacy_model_dir(str(args.model_dir))
 
         if command == "audit-data":
             audit_payload = build_audit_report(

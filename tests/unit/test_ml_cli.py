@@ -202,9 +202,9 @@ def test_train_loop_forwards_bounded_controls(monkeypatch, capsys):
             "--league",
             "Mirage",
             "--dataset-table",
-            "poe_trade.ml_price_dataset_v1",
+            "poe_trade.ml_price_dataset_v2",
             "--model-dir",
-            "artifacts/ml/mirage_v1",
+            "artifacts/ml/mirage_v2",
             "--max-iterations",
             "2",
             "--max-wall-clock-seconds",
@@ -224,6 +224,42 @@ def test_train_loop_forwards_bounded_controls(monkeypatch, capsys):
     assert seen["min_mdape_improvement"] == 0.005
     assert seen["resume"] is True
     assert "iteration_budget_exhausted" in capsys.readouterr().out
+
+
+def test_train_loop_rejects_legacy_v1_dataset(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.settings,
+        "get_settings",
+        lambda: SimpleNamespace(clickhouse_url="http://clickhouse"),
+    )
+
+    class _Client:
+        pass
+
+    monkeypatch.setattr(
+        cli.ClickHouseClient,
+        "from_env",
+        lambda _url: _Client(),
+    )
+    monkeypatch.setattr(
+        cli, "detect_runtime_profile", lambda: cast(object, SimpleNamespace())
+    )
+    monkeypatch.setattr(cli, "persist_runtime_profile", lambda _profile: None)
+
+    result = cli.main(
+        [
+            "train-loop",
+            "--league",
+            "Mirage",
+            "--dataset-table",
+            "poe_trade.ml_price_dataset_v1",
+            "--model-dir",
+            "artifacts/ml/mirage_v2",
+        ]
+    )
+
+    assert result == 2
+    assert "v2 dataset table" in capsys.readouterr().err
 
 
 def test_report_includes_manifest_and_baseline_benchmark_metadata(

@@ -141,6 +141,8 @@ def fetch_predict_one(
         return response
     except ValueError:
         raise
+    except workflows.ActiveModelUnavailableError as exc:
+        raise BackendUnavailable(f"predict backend unavailable: {exc.reason}") from exc
     except ClickHouseClientError as exc:
         raise BackendUnavailable("predict backend unavailable") from exc
     except Exception as exc:
@@ -564,6 +566,7 @@ def map_status_payload(*, league: str, payload: dict[str, Any]) -> dict[str, Any
             "candidate_vs_incumbent": {},
             "route_hotspots": [],
             "warmup": _as_dict(payload.get("warmup")),
+            "route_decisions": [],
         }
     return {
         "league": league,
@@ -580,6 +583,7 @@ def map_status_payload(*, league: str, payload: dict[str, Any]) -> dict[str, Any
         "candidate_vs_incumbent": _as_dict(payload.get("candidate_vs_incumbent")),
         "route_hotspots": _as_list(payload.get("route_hotspots")),
         "warmup": _as_dict(payload.get("warmup")),
+        "route_decisions": _as_list(payload.get("route_decisions")),
     }
 
 

@@ -18,15 +18,16 @@
 - `docker compose exec clickhouse clickhouse-client --query "SELECT 1"` to verify ClickHouse accepts connections.
 - `make down` to stop every container while keeping the ClickHouse data volume intact for the next `make up`.
 - `docker compose up --detach account_stash_harvester` to start the optional, credential-gated private stash sync.
-- `.venv/bin/python -m poe_trade.cli service --name account_stash_harvester -- --once --scan` runs one private stash harvest and then prices the full account stash snapshot with confidence and p10/p90 bands.
 - Refer to `docs/ops-runbook.md` for queue-based telemetry, checkpoint history, and failure patterns.
 
 ## ML Quick Start (Mirage)
 `ml_trainer` runs by default in the background to handle autonomous training. For manual control or one-shot jobs:
-1. `.venv/bin/poe-ml train-loop --league Mirage --dataset-table poe_trade.ml_price_dataset_v1 --model-dir artifacts/ml/mirage_v1 --max-iterations 2 --max-wall-clock-seconds 1800 --no-improvement-patience 2 --min-mdape-improvement 0.005`
+1. `.venv/bin/poe-ml train-loop --league Mirage --dataset-table poe_trade.ml_price_dataset_v2 --model-dir artifacts/ml/mirage_v2 --max-iterations 2 --max-wall-clock-seconds 1800 --no-improvement-patience 2 --min-mdape-improvement 0.005`
 2. `.venv/bin/poe-ml status --league Mirage --run latest`
-3. `.venv/bin/poe-ml report --league Mirage --model-dir artifacts/ml/mirage_v1 --output artifacts/ml/mirage_v1/latest-report.json`
+3. `.venv/bin/poe-ml report --league Mirage --model-dir artifacts/ml/mirage_v2 --output artifacts/ml/mirage_v2/latest-report.json`
 4. `.venv/bin/poe-ml predict-one --league Mirage --input-format poe-clipboard --stdin < tests/fixtures/ml/sample_clipboard_item.txt`
+
+Serving now expects promoted route artifacts to be present under the shared `artifacts/` mount for both `ml_trainer` and `api`; unreadable promoted bundles are treated as a degraded ML state instead of silently falling back to legacy heuristics.
 
 ML verdict vocabulary:
 - `promote`: candidate beats incumbent on MDAPE improvement, coverage floor, and protected cohort checks.
@@ -87,8 +88,6 @@ Verify routes:
 - `curl -i -X POST -H "Authorization: Bearer phase1-token" -H "Content-Type: application/json" --data '{"itemText":"Item Class: Maps\nRarity: Rare\nGrim Veil\nCemetery Map"}' http://127.0.0.1:8080/api/v1/ops/leagues/Mirage/price-check`
 - `curl -i -H "Authorization: Bearer phase1-token" "http://127.0.0.1:8080/api/v1/ops/scanner/recommendations?sort=liquidity_score&limit=5&min_confidence=0.8"`
 - `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://poe.lama-lan.ch" "http://127.0.0.1:8080/api/v1/stash/tabs?league=Mirage&realm=pc"`
-- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://poe.lama-lan.ch" "http://127.0.0.1:8080/api/v1/stash/status?league=Mirage&realm=pc"` returns last successful full scan freshness and active scan progress.
-- `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://poe.lama-lan.ch" "http://127.0.0.1:8080/api/v1/stash/items/<itemFingerprint>/history?league=Mirage&realm=pc"` returns per-item valuation history with predicted price, confidence, and p10/p90 ranges.
 - `curl -i -H "Authorization: Bearer phase1-token" -H "Origin: https://evil.example.com" http://127.0.0.1:8080/api/v1/ml/leagues/Mirage/status`
 
 Current non-goals:
@@ -131,9 +130,9 @@ Current non-goals:
 - `.venv/bin/python -m poe_trade.cli research backtest --strategy bulk_essence --league Mirage --days 14` prints `run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary` with explicit `completed`, `no_data`, `no_opportunities`, or `failed` status.
 - `.venv/bin/python -m poe_trade.cli research backtest-all --league Mirage --days 14 --enabled-only` prints one summary row per enabled strategy using the same canonical header.
 - `make backtest-all BACKTEST_LEAGUE=Mirage BACKTEST_DAYS=14` runs one command that backtests every discovered strategy pack (omit `BACKTEST_FLAGS` for real writes, or add `BACKTEST_FLAGS=--dry-run` for a safe preflight).
-- `.venv/bin/poe-ml train-loop --league Mirage --dataset-table poe_trade.ml_price_dataset_v1 --model-dir artifacts/ml/mirage_v1 --max-iterations 2 --max-wall-clock-seconds 1800 --no-improvement-patience 2 --min-mdape-improvement 0.005` runs a bounded rebuild/train/evaluate loop and returns explicit stop reason.
+- `.venv/bin/poe-ml train-loop --league Mirage --dataset-table poe_trade.ml_price_dataset_v2 --model-dir artifacts/ml/mirage_v2 --max-iterations 2 --max-wall-clock-seconds 1800 --no-improvement-patience 2 --min-mdape-improvement 0.005` runs a bounded rebuild/train/evaluate loop and returns explicit stop reason.
 - `.venv/bin/poe-ml status --league Mirage --run latest` prints candidate-vs-incumbent verdict, deltas, stop reason, route hotspots, and active model version.
-- `.venv/bin/poe-ml report --league Mirage --model-dir artifacts/ml/mirage_v1 --output artifacts/ml/mirage_v1/latest-report.json` writes route metrics, hotspot summaries, outlier cleaning summary, and low-confidence reasons.
+- `.venv/bin/poe-ml report --league Mirage --model-dir artifacts/ml/mirage_v2 --output artifacts/ml/mirage_v2/latest-report.json` writes route metrics, hotspot summaries, outlier cleaning summary, and low-confidence reasons.
 - `.venv/bin/poe-ml predict-one --league Mirage --input-format poe-clipboard --stdin < tests/fixtures/ml/sample_clipboard_item.txt` prints routed interval pricing with confidence and sale probability percentages.
 - `.venv/bin/python -m poe_trade.cli scan once --league Mirage --dry-run` and `.venv/bin/python -m poe_trade.cli scan watch --league Mirage --max-runs 2 --dry-run` exercise the recommendation pipeline.
 - `.venv/bin/python -m poe_trade.cli scan plan --league Mirage --limit 20` runs one scan and prints actionable `strategy_id`, `search_hint`, `buy_plan`, `max_buy`, `exit_plan`, and confidence fields for quick execution.

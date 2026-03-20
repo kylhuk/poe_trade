@@ -163,6 +163,8 @@ services:
       POE_ENABLE_ACCOUNT_STASH: "true"
       POE_ACCOUNT_STASH_REALM: pc
       POE_ACCOUNT_STASH_LEAGUE: Mirage
+    volumes:
+      - ./artifacts:/app/artifacts
     networks:
       - default
       - lama-lan_backend

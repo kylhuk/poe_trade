@@ -29,6 +29,16 @@ from .contract import MIRAGE_EVAL_CONTRACT, TARGET_CONTRACT
 logger = logging.getLogger(__name__)
 
 
+class ActiveModelUnavailableError(RuntimeError):
+    def __init__(self, *, league: str, route: str, reason: str) -> None:
+        super().__init__(
+            f"active model unavailable league={league} route={route} reason={reason}"
+        )
+        self.league = league
+        self.route = route
+        self.reason = reason
+
+
 def _clickhouse_datetime(dt: datetime) -> str:
     normalized = dt.astimezone(UTC)
     return normalized.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -136,6 +146,21 @@ _LEGACY_LABELS_TABLE = "poe_trade.ml_price_labels_v1"
 _MOD_FEATURES_CACHE_PATH = Path("/tmp/mod_features_cache.json")
 
 _MOD_FEATURE_BATCH_SIZE = 5000
+
+
+def _ensure_non_legacy_dataset_table(dataset_table: str) -> None:
+    normalized = str(dataset_table or "").strip().lower()
+    if normalized.endswith("_v1"):
+        raise ValueError("legacy v1 dataset tables are blocked; use a v2 dataset table")
+
+
+def _ensure_non_legacy_model_dir(model_dir: str) -> None:
+    normalized = str(model_dir or "").strip().lower()
+    if normalized.endswith("_v1") or "/mirage_v1" in normalized:
+        raise ValueError(
+            "legacy v1 model directories are blocked; use a v2 artifact directory"
+        )
+
 
 _MOD_FEATURE_RULES: tuple[tuple[str, tuple[str, ...], float, float], ...] = (
     ("Strength", ("to strength",), 6.0, 60.0),
@@ -986,7 +1011,7 @@ def build_listing_events_and_labels(
             "toUInt8(0) AS note_edited,",
             "toUInt8(0) AS relist_event,",
             "toUInt8(meta.trade_id IS NOT NULL) AS has_trade_metadata,",
-            "multiIf(meta.trade_id IS NOT NULL AND cityHash64(concat(items.stash_id, '|', ifNull(items.item_id, items.base_type))) % 5 != 0, 'trade_metadata', 'heuristic') AS evidence_source",
+            "multiIf(meta.trade_id IS NOT NULL, 'trade_metadata', 'heuristic') AS evidence_source",
             "FROM poe_trade.v_ps_items_enriched AS items",
             "LEFT JOIN poe_trade.bronze_trade_metadata AS meta",
             "ON items.item_id IS NOT NULL",
@@ -1201,7 +1226,9 @@ def build_dataset(
             "ifNull(features.mod_features_json, '{}') AS mod_features_json",
             "FROM poe_trade.v_ps_items_enriched AS items",
             f"INNER JOIN {labels_table} AS labels",
-            "ON labels.item_id = items.item_id",
+            "ON labels.as_of_ts = items.observed_at",
+            "AND labels.realm = items.realm",
+            "AND labels.item_id = items.item_id",
             "AND labels.stash_id = items.stash_id",
             "AND labels.league = ifNull(items.league, '')",
             "LEFT JOIN poe_trade.ml_execution_labels_v1 AS exec_labels",
@@ -1982,7 +2009,7 @@ def route_preview(
             "count() OVER (PARTITION BY d.league, d.category, d.base_type) AS support_count_recent,",
             "multiIf(count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 250, 'high', count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'medium', 'low') AS support_bucket,",
             f"multiIf(d.category IN ({_fungible_reference_excluded_categories_sql()}), 'fallback_abstain', d.category IN ({_fungible_reference_categories_sql()}), 'fungible_reference', d.rarity IN ('Unique') AND {_structured_boosted_other_family_scope_sql('d')} != 'other' AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'structured_boosted_other', d.rarity IN ('Unique') AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'structured_boosted', d.category = 'cluster_jewel', 'cluster_jewel_retrieval', d.category = 'map', 'fallback_abstain', d.rarity IN ('Rare'), 'sparse_retrieval', 'fallback_abstain') AS route,",
-            f"multiIf(d.category IN ({_fungible_reference_excluded_categories_sql()}), 'noisy_essence_family', d.category = 'fossil', 'stackable_fossil_family', d.category = 'scarab', 'stackable_scarab_family', d.category = 'logbook', 'stackable_logbook_family', d.category IN ({_fungible_reference_categories_sql()}), 'stackable_other_family', d.rarity IN ('Unique') AND {_structured_boosted_other_family_scope_sql('d')} != 'other' AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'specialized_other_unique_family', d.rarity IN ('Unique') AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'sufficient_structured_support', d.category = 'cluster_jewel', 'cluster_jewel_specialized', d.category = 'map', 'map_sparse_guardrail', d.rarity IN ('Rare'), 'sparse_high_dimensional', 'fallback_due_to_support') AS route_reason,",
+            f"multiIf(d.category IN ({_fungible_reference_excluded_categories_sql()}), 'noisy_essence_family', d.category = 'fossil', 'stackable_fossil_family', d.category = 'scarab', 'stackable_scarab_family', d.category = 'logbook', 'stackable_logbook_family', d.category IN ({_fungible_reference_categories_sql()}), 'stackable_other_family', d.rarity IN ('Unique') AND {_structured_boosted_other_family_scope_sql('d')} != 'other' AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, concat('specialized_', {_structured_boosted_other_family_scope_sql('d')}, '_unique_family'), d.rarity IN ('Unique') AND count() OVER (PARTITION BY d.league, d.category, d.base_type) >= 50, 'sufficient_structured_support', d.category = 'cluster_jewel', 'cluster_jewel_specialized', d.category = 'map', 'map_sparse_guardrail', d.rarity IN ('Rare'), 'sparse_high_dimensional', 'fallback_due_to_support') AS route_reason,",
             "multiIf(d.category = 'cluster_jewel', 'cluster_jewel_retrieval', d.category = 'map', 'fallback_abstain', d.rarity IN ('Rare'), 'sparse_retrieval', 'fallback_abstain') AS fallback_parent_route",
             f"FROM {dataset_table} AS d",
             f"WHERE d.league = {_quote(league)}",
@@ -3562,6 +3589,8 @@ def train_route(
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
     _ensure_route(route)
+    _ensure_non_legacy_dataset_table(dataset_table)
+    _ensure_non_legacy_model_dir(model_dir)
     model_path = Path(model_dir)
     model_path.mkdir(parents=True, exist_ok=True)
 
@@ -3643,6 +3672,8 @@ def evaluate_route(
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
     _ensure_route(route)
+    _ensure_non_legacy_dataset_table(dataset_table)
+    _ensure_non_legacy_model_dir(model_dir)
     _ensure_route_eval_table(client)
     eval_run_id = run_id or f"eval-{route}-{int(time.time())}"
     now = _now_ts()
@@ -3753,6 +3784,8 @@ def train_saleability(
     model_dir: str,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
+    _ensure_non_legacy_dataset_table(dataset_table)
+    _ensure_non_legacy_model_dir(model_dir)
     model_path = Path(model_dir)
     model_path.mkdir(parents=True, exist_ok=True)
     mix = _query_rows(
@@ -3788,6 +3821,8 @@ def evaluate_saleability(
     model_dir: str,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
+    _ensure_non_legacy_dataset_table(dataset_table)
+    _ensure_non_legacy_model_dir(model_dir)
     rows = _query_rows(
         client,
         " ".join(
@@ -3822,6 +3857,8 @@ def train_all_routes(
     model_dir: str,
     comps_table: str,
 ) -> dict[str, Any]:
+    _ensure_non_legacy_dataset_table(dataset_table)
+    _ensure_non_legacy_model_dir(model_dir)
     trained: list[dict[str, Any]] = []
     for route in ROUTES:
         trained.append(
@@ -3848,6 +3885,8 @@ def evaluate_stack(
     run_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
+    _ensure_non_legacy_dataset_table(dataset_table)
+    _ensure_non_legacy_model_dir(model_dir)
     _ensure_eval_contract_split(split)
     _ensure_eval_runs_table(client)
     _ensure_promotion_audit_table(client)
@@ -3998,8 +4037,27 @@ def evaluate_stack(
     )
     comparison["protected_cohort_regression"] = protected
     comparison["hold_reason_codes"] = _promotion_hold_reason_codes(comparison)
-    verdict = "promote" if _should_promote(comparison) else "hold"
-    stop_reason = _promotion_stop_reason(comparison)
+    global_verdict = "promote" if _should_promote(comparison) else "hold"
+    route_decisions = _route_promotion_decisions(
+        client,
+        league=league,
+        run_id=run_id,
+        model_dir=model_dir,
+        incumbent_run_id=baseline_for_slice.get("run_id")
+        if baseline_for_slice
+        else None,
+        eval_slice_id=eval_slice_id,
+        route_results=route_results,
+        global_gate_ok=global_verdict == "promote",
+    )
+    comparison["route_decisions"] = route_decisions
+    promoted_routes = [
+        str(decision.get("route") or "")
+        for decision in route_decisions
+        if bool(decision.get("promote"))
+    ]
+    verdict = "promote" if promoted_routes else "hold"
+    stop_reason = "promote" if promoted_routes else _promotion_stop_reason(comparison)
     hotspot_rows = _build_route_hotspots(
         client,
         league=league,
@@ -4059,6 +4117,8 @@ def evaluate_stack(
             "integrity": _integrity_gate_policy(),
         },
         "route_hotspots": _present_hotspots(hotspot_rows),
+        "route_decisions": route_decisions,
+        "promoted_routes": promoted_routes,
         "promotion_verdict": verdict,
         "stop_reason": stop_reason,
         "run_manifest": manifest,
@@ -4437,6 +4497,8 @@ def train_loop(
     resume: bool,
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
+    _ensure_non_legacy_dataset_table(dataset_table)
+    _ensure_non_legacy_model_dir(model_dir)
     initialize_mod_features(client, league=league, dataset_table=dataset_table)
     _ensure_train_runs_table(client)
     _ensure_tuning_rounds_table(client)
@@ -4531,7 +4593,12 @@ def train_loop(
             current_version if controls.warm_start_enabled else "cold_start"
         )
         comparison = eval_result.get("candidate_vs_incumbent") or {}
-        promoted = bool(eval_result.get("promotion_verdict") == "promote")
+        promoted_routes = [
+            str(route)
+            for route in (eval_result.get("promoted_routes") or [])
+            if str(route or "").strip()
+        ]
+        promoted = bool(promoted_routes)
         if promoted:
             current_version = f"{league.lower()}-{int(time.time())}"
             _promote_models(
@@ -4539,6 +4606,7 @@ def train_loop(
                 league=league,
                 model_dir=model_dir,
                 model_version=current_version,
+                routes=promoted_routes,
             )
             status = "completed"
             stop_reason = "promoted_against_incumbent"
@@ -4590,6 +4658,7 @@ def train_loop(
                 "run_id": run_id,
                 "status": status,
                 "promoted_model": current_version if promoted else None,
+                "promoted_routes": promoted_routes,
                 "stop_reason": stop_reason,
                 "candidate_vs_incumbent": comparison,
             }
@@ -4897,8 +4966,6 @@ def predict_one(
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
     parsed = _parse_clipboard_item(clipboard_text)
-    route_bundle = _route_for_item(parsed)
-    route = route_bundle["route"]
     profile = _serving_profile_lookup(
         client,
         league=league,
@@ -4929,6 +4996,9 @@ def predict_one(
             category=parsed["category"],
             base_type=parsed["base_type"],
         )
+    parsed["support_count_recent"] = support
+    route_bundle = _route_for_item(parsed)
+    route = route_bundle["route"]
 
     incumbent_model_version = (
         ""
@@ -4942,18 +5012,32 @@ def predict_one(
         route=route,
         model_version=model_version,
     )
+    artifact_invalid_reason = str(artifact.get("artifact_invalid_reason") or "")
+    if artifact_invalid_reason:
+        raise ActiveModelUnavailableError(
+            league=league,
+            route=route,
+            reason=artifact_invalid_reason,
+        )
     model_prediction = _predict_with_artifact(
         artifact=artifact,
         parsed_item=parsed,
     )
 
     if model_prediction is None:
-        confidence = _route_default_confidence(route)
-        price_p50 = base_price
-        price_p10 = max(0.1, price_p50 * 0.8)
-        price_p90 = price_p50 * 1.2
-        sale_probability = 0.6 if route != "fallback_abstain" else 0.3
-        fallback_reason = "no_trained_model" if route == "fallback_abstain" else ""
+        if route == "fallback_abstain":
+            confidence = _route_default_confidence(route)
+            price_p50 = base_price
+            price_p10 = max(0.1, price_p50 * 0.8)
+            price_p90 = price_p50 * 1.2
+            sale_probability = 0.3
+            fallback_reason = "deterministic_fallback_route"
+        else:
+            raise ActiveModelUnavailableError(
+                league=league,
+                route=route,
+                reason="no_trained_model",
+            )
     else:
         price_p10 = max(0.1, float(model_prediction["price_p10"]))
         price_p50 = max(price_p10, float(model_prediction["price_p50"]))
@@ -6511,6 +6595,151 @@ def _promotion_stop_reason(comparison: dict[str, Any]) -> str:
     return "hold_no_material_improvement"
 
 
+def _route_eval_summary_for_run(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    run_id: str,
+    route: str,
+    eval_slice_id: str = "",
+) -> dict[str, Any] | None:
+    where_clauses = [
+        f"league = {_quote(league)}",
+        f"run_id = {_quote(run_id)}",
+        f"route = {_quote(route)}",
+    ]
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT route, avg(coalesce(mdape, 1.0)) AS mdape, avg(coalesce(interval_80_coverage, 0.0)) AS coverage, avg(coalesce(abstain_rate, 1.0)) AS abstain_rate, sum(sample_count) AS sample_count",
+                "FROM poe_trade.ml_route_eval_v1",
+                f"WHERE {' AND '.join(where_clauses)}",
+                "GROUP BY route",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "route": route,
+        "mdape": _to_float(row.get("mdape"), 1.0),
+        "coverage": _to_float(row.get("coverage"), 0.0),
+        "abstain_rate": _to_float(row.get("abstain_rate"), 1.0),
+        "sample_count": _to_int(row.get("sample_count"), 0),
+    }
+
+
+def _route_artifact_promotable(
+    *, model_dir: str, route: str, league: str
+) -> dict[str, Any]:
+    validation = _validate_route_artifact(
+        model_dir=model_dir,
+        route=route,
+        league=league,
+    )
+    artifact = (
+        validation.get("artifact")
+        if isinstance(validation.get("artifact"), dict)
+        else {}
+    )
+    train_row_count = _to_int(artifact.get("train_row_count"), 0)
+    if not bool(validation.get("valid")):
+        return {
+            "valid": False,
+            "reason": str(validation.get("reason") or "artifact_invalid"),
+            "train_row_count": train_row_count,
+        }
+    if train_row_count <= 0:
+        return {
+            "valid": False,
+            "reason": "insufficient_rows",
+            "train_row_count": train_row_count,
+        }
+    return {
+        "valid": True,
+        "reason": "validated",
+        "train_row_count": train_row_count,
+    }
+
+
+def _route_promotion_decisions(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    run_id: str,
+    model_dir: str,
+    incumbent_run_id: str | None,
+    eval_slice_id: str,
+    route_results: list[dict[str, Any]],
+    global_gate_ok: bool,
+) -> list[dict[str, Any]]:
+    decisions: list[dict[str, Any]] = []
+    result_map = {
+        str(result.get("route") or ""): result
+        for result in route_results
+        if str(result.get("route") or "")
+    }
+    for route in ROUTES:
+        candidate = result_map.get(route, {})
+        candidate_sample_count = _to_int(candidate.get("sample_count"), 0)
+        candidate_mdape = _to_float(candidate.get("mdape"), 1.0)
+        candidate_coverage = _to_float(candidate.get("interval_80_coverage"), 0.0)
+        incumbent = (
+            _route_eval_summary_for_run(
+                client,
+                league=league,
+                run_id=incumbent_run_id,
+                route=route,
+                eval_slice_id=eval_slice_id,
+            )
+            if incumbent_run_id
+            else None
+        )
+        artifact_state = _route_artifact_promotable(
+            model_dir=model_dir,
+            route=route,
+            league=league,
+        )
+        reason = "promote"
+        if not global_gate_ok:
+            reason = "global_gate_failed"
+        elif not bool(artifact_state.get("valid")):
+            reason = str(artifact_state.get("reason") or "artifact_invalid")
+        elif candidate_sample_count < PROTECTED_COHORT_MIN_SUPPORT_COUNT:
+            reason = "insufficient_rows"
+        elif candidate_coverage < MIRAGE_EVAL_CONTRACT.promotion.coverage_floor:
+            reason = "hold_coverage_floor"
+        elif incumbent is not None and candidate_mdape >= _to_float(
+            incumbent.get("mdape"), 1.0
+        ):
+            reason = "hold_route_regression"
+        decisions.append(
+            {
+                "route": route,
+                "candidate_run_id": run_id,
+                "incumbent_run_id": incumbent_run_id or "",
+                "candidate_sample_count": candidate_sample_count,
+                "candidate_mdape": candidate_mdape,
+                "candidate_coverage": candidate_coverage,
+                "incumbent_mdape": _to_float(
+                    (incumbent or {}).get("mdape"), candidate_mdape
+                ),
+                "incumbent_coverage": _to_float(
+                    (incumbent or {}).get("coverage"), candidate_coverage
+                ),
+                "artifact_valid": bool(artifact_state.get("valid")),
+                "artifact_reason": str(artifact_state.get("reason") or "validated"),
+                "train_row_count": _to_int(artifact_state.get("train_row_count"), 0),
+                "promote": reason == "promote",
+                "decision_reason": reason,
+            }
+        )
+    return decisions
+
+
 def _build_route_hotspots(
     client: ClickHouseClient,
     *,
@@ -7230,11 +7459,16 @@ def _promotion_gate(client: ClickHouseClient, league: str, run_id: str) -> bool:
 
 
 def _promote_models(
-    client: ClickHouseClient, *, league: str, model_dir: str, model_version: str
+    client: ClickHouseClient,
+    *,
+    league: str,
+    model_dir: str,
+    model_version: str,
+    routes: list[str],
 ) -> None:
     now = _now_ts()
     rows: list[dict[str, Any]] = []
-    for route in ROUTES:
+    for route in routes:
         rows.append(
             {
                 "league": league,
@@ -7248,6 +7482,8 @@ def _promote_models(
                 ),
             }
         )
+    if not rows:
+        return
     _insert_json_rows(client, "poe_trade.ml_model_registry_v1", rows)
     with _ACTIVE_MODEL_CACHE_LOCK:
         _ACTIVE_MODEL_VERSION_HINT[league] = model_version
@@ -7275,7 +7511,7 @@ def _promote_models(
         logger.warning(
             "model warmup failed after promotion for league=%s route=%s: %s",
             league,
-            "all",
+            ",".join(routes),
             exc,
         )
 
@@ -7373,63 +7609,104 @@ def _parse_clipboard_item(text: str) -> dict[str, Any]:
     }
 
 
-def _route_for_item(item: dict[str, Any]) -> dict[str, Any]:
-    raw_category = str(item.get("category") or "").strip().lower()
-    category = _canonical_model_category(raw_category)
-    rarity = str(item.get("rarity") or "")
-    structured_other_scope = _structured_boosted_other_family_scope_from_fields(
-        raw_category,
-        base_type=item.get("base_type"),
-        item_type_line=item.get("item_type_line"),
-    )
+def _resolve_route_decision(
+    *,
+    category: str,
+    rarity: str,
+    structured_other_scope: str,
+    support_count_recent: int,
+) -> dict[str, Any]:
+    support_bucket = _support_bucket_for_count(max(0, support_count_recent))
     if category in _FUNGIBLE_REFERENCE_EXCLUDED_CATEGORY_SET:
         return {
             "route": "fallback_abstain",
             "route_reason": "noisy_essence_family",
-            "support_count_recent": 20,
+            "support_count_recent": support_count_recent,
+            "support_bucket": support_bucket,
+            "fallback_parent_route": "fallback_abstain",
         }
     if category in _FUNGIBLE_REFERENCE_CATEGORY_SET:
         family_scope = _fungible_reference_family_scope(category)
         return {
             "route": "fungible_reference",
             "route_reason": f"stackable_{family_scope}_family",
-            "support_count_recent": 250,
+            "support_count_recent": support_count_recent,
+            "support_bucket": support_bucket,
+            "fallback_parent_route": "fallback_abstain",
         }
     if rarity == "Unique":
+        if support_count_recent < 50:
+            return {
+                "route": "fallback_abstain",
+                "route_reason": "fallback_due_to_support",
+                "support_count_recent": support_count_recent,
+                "support_bucket": support_bucket,
+                "fallback_parent_route": "fallback_abstain",
+            }
         if structured_other_scope != "other":
             return {
                 "route": "structured_boosted_other",
                 "route_reason": f"specialized_{structured_other_scope}_unique_family",
-                "support_count_recent": 80,
+                "support_count_recent": support_count_recent,
+                "support_bucket": support_bucket,
+                "fallback_parent_route": "fallback_abstain",
             }
         return {
             "route": "structured_boosted",
-            "route_reason": "structured_unique_family",
-            "support_count_recent": 80,
+            "route_reason": "sufficient_structured_support",
+            "support_count_recent": support_count_recent,
+            "support_bucket": support_bucket,
+            "fallback_parent_route": "fallback_abstain",
         }
     if category == "cluster_jewel":
         return {
             "route": "cluster_jewel_retrieval",
             "route_reason": "cluster_jewel_specialized",
-            "support_count_recent": 20,
+            "support_count_recent": support_count_recent,
+            "support_bucket": support_bucket,
+            "fallback_parent_route": "cluster_jewel_retrieval",
         }
     if category == "map":
         return {
             "route": "fallback_abstain",
             "route_reason": "map_sparse_guardrail",
-            "support_count_recent": 15,
+            "support_count_recent": support_count_recent,
+            "support_bucket": support_bucket,
+            "fallback_parent_route": "fallback_abstain",
         }
     if rarity == "Rare":
         return {
             "route": "sparse_retrieval",
             "route_reason": "sparse_high_dimensional",
-            "support_count_recent": 20,
+            "support_count_recent": support_count_recent,
+            "support_bucket": support_bucket,
+            "fallback_parent_route": "fallback_abstain",
         }
     return {
         "route": "fallback_abstain",
-        "route_reason": "low_support_family",
-        "support_count_recent": 5,
+        "route_reason": "fallback_due_to_support",
+        "support_count_recent": support_count_recent,
+        "support_bucket": support_bucket,
+        "fallback_parent_route": "fallback_abstain",
     }
+
+
+def _route_for_item(item: dict[str, Any]) -> dict[str, Any]:
+    raw_category = str(item.get("category") or "").strip().lower()
+    category = _canonical_model_category(raw_category)
+    rarity = str(item.get("rarity") or "")
+    support_count_recent = max(0, _to_int(item.get("support_count_recent"), 0))
+    structured_other_scope = _structured_boosted_other_family_scope_from_fields(
+        raw_category,
+        base_type=item.get("base_type"),
+        item_type_line=item.get("item_type_line"),
+    )
+    return _resolve_route_decision(
+        category=category,
+        rarity=rarity,
+        structured_other_scope=structured_other_scope,
+        support_count_recent=support_count_recent,
+    )
 
 
 def _reference_price(
@@ -7772,14 +8049,26 @@ def _load_active_route_artifact(
     model_dir = str(metadata.get("model_dir") or "")
     if not model_dir:
         return {}
-    artifact = _load_json_file(
-        _route_artifact_path(model_dir=model_dir, route=route, league=league)
+    validation = _validate_route_artifact(
+        model_dir=model_dir,
+        route=route,
+        league=league,
     )
+    if not bool(validation.get("valid")):
+        return {
+            "artifact_invalid_reason": str(
+                validation.get("reason") or "artifact_invalid"
+            ),
+            "active_model_version": str(metadata.get("model_version") or ""),
+            "active_model_promoted_at": str(metadata.get("promoted_at") or ""),
+        }
+    artifact = validation.get("artifact")
     if not artifact:
         return {}
     hydrated = dict(artifact)
     hydrated["active_model_version"] = str(metadata.get("model_version") or "")
     hydrated["active_model_promoted_at"] = str(metadata.get("promoted_at") or "")
+    hydrated["artifact_invalid_reason"] = ""
     return hydrated
 
 
@@ -7800,10 +8089,16 @@ def _active_model_dir_for_route(
         ),
     )
     if rows:
-        return str(rows[0].get("model_dir") or "")
-    default_dir = Path("artifacts/ml") / f"{league.lower()}_v1"
-    if default_dir.exists():
-        return str(default_dir)
+        model_dir = str(rows[0].get("model_dir") or "")
+        if not model_dir:
+            return ""
+        validation = _validate_route_artifact(
+            model_dir=model_dir,
+            route=route,
+            league=league,
+        )
+        if bool(validation.get("valid")):
+            return model_dir
     return ""
 
 
@@ -7902,18 +8197,24 @@ def _active_model_metadata_for_route(
     )
     if rows:
         row = rows[0]
+        model_dir = str(row.get("model_dir") or "")
+        validation = _validate_route_artifact(
+            model_dir=model_dir,
+            route=route,
+            league=league,
+        )
         return {
-            "model_dir": str(row.get("model_dir") or ""),
+            "model_dir": model_dir if bool(validation.get("valid")) else "",
             "model_version": str(row.get("model_version") or ""),
             "promoted_at": str(row.get("promoted_at") or ""),
+            "validation_reason": str(validation.get("reason") or "validated"),
             "checked_at": time.time(),
         }
-    default_dir = Path("artifacts/ml") / f"{league.lower()}_v1"
-    model_dir = str(default_dir) if default_dir.exists() else ""
     return {
-        "model_dir": model_dir,
+        "model_dir": "",
         "model_version": "",
         "promoted_at": "",
+        "validation_reason": "registry_missing",
         "checked_at": time.time(),
     }
 
@@ -7946,10 +8247,17 @@ def _model_metadata_for_route_version(
             "checked_at": time.time(),
         }
     row = rows[0]
+    model_dir = str(row.get("model_dir") or "")
+    validation = _validate_route_artifact(
+        model_dir=model_dir,
+        route=route,
+        league=league,
+    )
     return {
-        "model_dir": str(row.get("model_dir") or ""),
+        "model_dir": model_dir if bool(validation.get("valid")) else "",
         "model_version": str(row.get("model_version") or model_version),
         "promoted_at": str(row.get("promoted_at") or ""),
+        "validation_reason": str(validation.get("reason") or "validated"),
         "checked_at": time.time(),
     }
 
@@ -8024,6 +8332,23 @@ def _refresh_active_route_dirs(
             route = str(row.get("route") or "")
             model_dir = str(row.get("model_dir") or "")
             if route and model_dir:
+                validation = _validate_route_artifact(
+                    model_dir=model_dir,
+                    route=route,
+                    league=league,
+                )
+                if not bool(validation.get("valid")):
+                    key = _route_cache_key(league, route)
+                    _ACTIVE_ROUTE_MODEL_META[key] = {
+                        "model_dir": "",
+                        "model_version": str(row.get("model_version") or ""),
+                        "promoted_at": str(row.get("latest_promoted_at") or ""),
+                        "validation_reason": str(
+                            validation.get("reason") or "artifact_invalid"
+                        ),
+                        "checked_at": time.time(),
+                    }
+                    continue
                 route_map[route] = model_dir
                 key = _route_cache_key(league, route)
                 _ACTIVE_ROUTE_MODEL_DIRS[key] = model_dir
@@ -8031,6 +8356,7 @@ def _refresh_active_route_dirs(
                     "model_dir": model_dir,
                     "model_version": str(row.get("model_version") or ""),
                     "promoted_at": str(row.get("latest_promoted_at") or ""),
+                    "validation_reason": "validated",
                     "checked_at": time.time(),
                 }
     except Exception as exc:
@@ -8039,19 +8365,6 @@ def _refresh_active_route_dirs(
             league,
             exc,
         )
-    for route in ROUTES:
-        if route not in route_map:
-            fallback = _active_model_dir_for_route(client, league=league, route=route)
-            if fallback:
-                route_map[route] = fallback
-                key = _route_cache_key(league, route)
-                _ACTIVE_ROUTE_MODEL_DIRS[key] = fallback
-                _ACTIVE_ROUTE_MODEL_META[key] = {
-                    "model_dir": fallback,
-                    "model_version": "",
-                    "promoted_at": "",
-                    "checked_at": time.time(),
-                }
     return route_map
 
 
@@ -8061,35 +8374,28 @@ def warmup_active_models(client: ClickHouseClient, *, league: str) -> dict[str, 
     route_dirs = _refresh_active_route_dirs(client, league=league)
     route_states: dict[str, str] = {}
     for route in ROUTES:
+        metadata: dict[str, Any] = {}
         model_dir = route_dirs.get(route)
         if not model_dir:
-            model_dir = _get_cached_model_dir(client, league=league, route=route)
+            metadata = _get_cached_model_metadata(client, league=league, route=route)
+            model_dir = str(metadata.get("model_dir") or "")
         if not model_dir:
-            route_states[route] = "model_dir_missing"
+            if metadata and str(metadata.get("model_version") or "").strip():
+                route_states[route] = str(
+                    metadata.get("validation_reason") or "model_dir_missing"
+                )
+            else:
+                route_states[route] = "inactive"
             continue
         _ACTIVE_ROUTE_MODEL_DIRS[_route_cache_key(league, route)] = model_dir
-        artifact_path = _route_artifact_path(
-            model_dir=model_dir, route=route, league=league
+        validation = _validate_route_artifact(
+            model_dir=model_dir,
+            route=route,
+            league=league,
+            load_bundle=True,
         )
-        artifact = _load_json_file(artifact_path)
-        bundle_path = str(artifact.get("model_bundle_path") or "")
-        if not bundle_path:
-            route_states[route] = "bundle_path_missing"
-            continue
-        try:
-            bundle = _load_model_bundle(bundle_path)
-        except Exception as exc:
-            logger.warning(
-                "warmup bundle load failed league=%s route=%s path=%s: %s",
-                league,
-                route,
-                bundle_path,
-                exc,
-            )
-            route_states[route] = f"bundle_error:{type(exc).__name__}"
-            continue
-        if bundle is None:
-            route_states[route] = "bundle_load_failed"
+        if not bool(validation.get("valid")):
+            route_states[route] = str(validation.get("reason") or "artifact_invalid")
             continue
         route_states[route] = "warm"
     return _record_warmup_state(league, route_states, timestamp)
@@ -8286,6 +8592,19 @@ def _route_artifact_path(*, model_dir: str, route: str, league: str) -> Path:
     return Path(model_dir) / f"{route}-{league}.json"
 
 
+def _route_requires_bundle(route: str) -> bool:
+    return route in ROUTES and route != "fallback_abstain"
+
+
+def _resolve_bundle_path(*, model_dir: str, bundle_path: str) -> Path:
+    candidate = Path(bundle_path)
+    if candidate.is_absolute():
+        return candidate
+    if str(candidate).startswith("artifacts/"):
+        return candidate
+    return Path(model_dir) / candidate
+
+
 def _load_json_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -8296,6 +8615,79 @@ def _load_json_file(path: Path) -> dict[str, Any]:
     if isinstance(parsed, dict):
         return parsed
     return {}
+
+
+def _validate_route_artifact(
+    *, model_dir: str, route: str, league: str, load_bundle: bool = False
+) -> dict[str, Any]:
+    artifact_path = _route_artifact_path(
+        model_dir=model_dir, route=route, league=league
+    )
+    artifact = _load_json_file(artifact_path)
+    if not artifact:
+        return {
+            "valid": False,
+            "reason": "artifact_missing",
+            "artifact_path": str(artifact_path),
+            "artifact": {},
+        }
+    bundle_path_raw = str(artifact.get("model_bundle_path") or "").strip()
+    if _route_requires_bundle(route) and not bundle_path_raw:
+        return {
+            "valid": False,
+            "reason": "bundle_path_missing",
+            "artifact_path": str(artifact_path),
+            "artifact": artifact,
+        }
+    resolved_bundle_path = (
+        _resolve_bundle_path(model_dir=model_dir, bundle_path=bundle_path_raw)
+        if bundle_path_raw
+        else None
+    )
+    if resolved_bundle_path is not None and not resolved_bundle_path.exists():
+        return {
+            "valid": False,
+            "reason": "bundle_missing",
+            "artifact_path": str(artifact_path),
+            "artifact": artifact,
+            "bundle_path": str(resolved_bundle_path),
+        }
+    if load_bundle and resolved_bundle_path is not None:
+        try:
+            bundle = _load_model_bundle(str(resolved_bundle_path))
+        except Exception as exc:
+            return {
+                "valid": False,
+                "reason": f"bundle_error:{type(exc).__name__}",
+                "artifact_path": str(artifact_path),
+                "artifact": artifact,
+                "bundle_path": str(resolved_bundle_path),
+            }
+        if bundle is None:
+            return {
+                "valid": False,
+                "reason": "bundle_load_failed",
+                "artifact_path": str(artifact_path),
+                "artifact": artifact,
+                "bundle_path": str(resolved_bundle_path),
+            }
+        return {
+            "valid": True,
+            "reason": "warm",
+            "artifact_path": str(artifact_path),
+            "artifact": artifact,
+            "bundle_path": str(resolved_bundle_path),
+            "bundle": bundle,
+        }
+    return {
+        "valid": True,
+        "reason": "validated",
+        "artifact_path": str(artifact_path),
+        "artifact": artifact,
+        "bundle_path": str(resolved_bundle_path)
+        if resolved_bundle_path is not None
+        else "",
+    }
 
 
 def _to_float(value: object, default: float) -> float:

@@ -24,3 +24,6 @@ build/
 
 # Generated verification artifacts
 artifacts/verify/
+
+# Local git worktrees
+.worktrees/

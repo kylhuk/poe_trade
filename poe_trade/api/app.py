@@ -61,12 +61,7 @@ from .ops import (
 )
 from .responses import ApiError, Response, json_error, json_response
 from .routes import Router
-from .stash import (
-    StashBackendUnavailable,
-    fetch_stash_tabs,
-    stash_item_history_payload,
-    stash_status_payload,
-)
+from .stash import StashBackendUnavailable, fetch_stash_tabs, stash_status_payload
 from .service_control import (
     ServiceActionForbiddenError,
     ServiceActionInvalidError,
@@ -87,6 +82,7 @@ class ApiApp:
             raise ValueError("POE_API_OPERATOR_TOKEN is required")
         self.settings = settings
         self.client = clickhouse_client
+        self._ml_warmup_state: dict[str, dict[str, object]] = {}
         self.router = Router()
         self._register_routes()
         self._warmup_models()
@@ -150,11 +146,6 @@ class ApiApp:
             ("GET", "OPTIONS"),
             self._stash_status,
         )
-        self.router.add(
-            "/api/v1/stash/items/{item_fingerprint}/history",
-            ("GET", "OPTIONS"),
-            self._stash_item_history,
-        )
         self.router.add("/api/v1/auth/login", ("GET", "OPTIONS"), self._auth_login)
         self.router.add(
             "/api/v1/auth/callback",
@@ -201,13 +192,42 @@ class ApiApp:
     def _warmup_models(self) -> None:
         for league in self.settings.api_league_allowlist:
             try:
-                workflows.warmup_active_models(self.client, league=league)
+                self._ml_warmup_state[league] = workflows.warmup_active_models(
+                    self.client, league=league
+                )
             except Exception as exc:
+                self._ml_warmup_state[league] = {
+                    "lastAttemptAt": None,
+                    "routes": {"_global": f"warmup_failed:{type(exc).__name__}"},
+                }
                 logging.getLogger(__name__).warning(
                     "ml service warmup failed for league=%s: %s",
                     league,
                     exc,
                 )
+
+    def _ml_readiness_payload(self) -> dict[str, object]:
+        leagues: dict[str, object] = {}
+        degraded = False
+        for league in self.settings.api_league_allowlist:
+            warmup = self._ml_warmup_state.get(
+                league
+            ) or workflows._warmup_status_payload(league)
+            routes_obj = warmup.get("routes") if isinstance(warmup, dict) else {}
+            routes = routes_obj if isinstance(routes_obj, dict) else {}
+            degraded_routes = {
+                str(route): str(state)
+                for route, state in routes.items()
+                if str(state) not in {"warm", "inactive"}
+            }
+            if degraded_routes:
+                degraded = True
+            leagues[league] = {
+                "ready": not degraded_routes,
+                "routes": routes,
+                "degradedRoutes": degraded_routes,
+            }
+        return {"ready": not degraded, "leagues": leagues}
 
     def handle(
         self,
@@ -341,7 +361,17 @@ class ApiApp:
         return cors_headers(origin, ("GET", "POST", "OPTIONS"))
 
     def _healthz(self, _context: Mapping[str, object]) -> Response:
-        return json_response({"status": "ok", "service": "api", "version": "v1"})
+        ml = self._ml_readiness_payload()
+        healthy = bool(ml.get("ready", False))
+        return json_response(
+            {
+                "status": "ok" if healthy else "degraded",
+                "service": "api",
+                "version": "v1",
+                "ml": ml,
+            },
+            status=200 if healthy else 503,
+        )
 
     def _ml_contract(self, _context: Mapping[str, object]) -> Response:
         return json_response(contract_payload(self.settings))
@@ -743,51 +773,6 @@ class ApiApp:
                 realm=realm,
                 enable_account_stash=self.settings.enable_account_stash,
                 session=session,
-            )
-        except StashBackendUnavailable:
-            raise ApiError(
-                status=503,
-                code="backend_unavailable",
-                message="backend unavailable",
-            ) from None
-        return json_response(payload)
-
-    def _stash_item_history(self, context: Mapping[str, object]) -> Response:
-        params = _query_params_from_context(context)
-        league = _first_query_param(
-            params,
-            "league",
-            default=(self.settings.account_stash_league or ""),
-        )
-        realm = _first_query_param(
-            params,
-            "realm",
-            default=(self.settings.account_stash_realm or "pc"),
-        )
-        session_cookie = _session_cookie_from_headers(
-            _headers_from_context(context),
-            cookie_name=self.settings.auth_cookie_name,
-        )
-        session = get_session(self.settings, session_id=session_cookie)
-        if session is None:
-            raise ApiError(status=401, code="auth_required", message="session required")
-        account_name = str(session.get("account_name") or "")
-        if not account_name:
-            raise ApiError(status=401, code="auth_required", message="session required")
-        item_fingerprint = str(context.get("item_fingerprint") or "")
-        if not item_fingerprint:
-            raise ApiError(
-                status=400,
-                code="invalid_input",
-                message="item fingerprint required",
-            )
-        try:
-            payload = stash_item_history_payload(
-                self.client,
-                league=league,
-                realm=realm,
-                account_name=account_name,
-                item_fingerprint=item_fingerprint,
             )
         except StashBackendUnavailable:
             raise ApiError(

@@ -11,12 +11,11 @@ from poe_trade.analytics.reports import daily_report
 from poe_trade.config import constants
 from poe_trade.config.settings import Settings
 from poe_trade.db import ClickHouseClient
-from poe_trade.stash_valuation import estimate_item
 from poe_trade.db.clickhouse import ClickHouseClientError
 from poe_trade.ml import workflows as ml_workflows
 from poe_trade.strategy.alerts import ack_alert, list_alerts
 
-from .ml import fetch_status
+from .ml import fetch_predict_one, fetch_status
 from .service_control import ServiceSnapshot
 
 
@@ -645,20 +644,41 @@ def price_check_payload(
     league: str,
     item_text: str,
 ) -> dict[str, Any]:
-    valuation = estimate_item(client, league=league, item_text=item_text)
+    prediction = fetch_predict_one(
+        client,
+        league=league,
+        request_payload={
+            "input_format": "poe-clipboard",
+            "payload": item_text,
+            "output_mode": "json",
+        },
+    )
+    interval = prediction.get("interval")
+    if not isinstance(interval, dict):
+        interval = {
+            "p10": prediction.get("price_p10"),
+            "p90": prediction.get("price_p90"),
+        }
     return {
-        "predictedValue": valuation.predicted_price,
-        "currency": valuation.currency,
-        "confidence": valuation.confidence,
+        "predictedValue": prediction.get("predictedValue")
+        or prediction.get("price_p50"),
+        "currency": prediction.get("currency") or "chaos",
+        "confidence": prediction.get("confidence")
+        or prediction.get("confidence_percent")
+        or 0.0,
         "comparables": _price_check_comparables(
             client,
             league=league,
             item_text=item_text,
         ),
-        "interval": {"p10": valuation.price_p10, "p90": valuation.price_p90},
-        "saleProbabilityPercent": None,
-        "priceRecommendationEligible": None,
-        "fallbackReason": valuation.fallback_reason,
+        "interval": interval,
+        "saleProbabilityPercent": prediction.get("saleProbabilityPercent")
+        or prediction.get("sale_probability_percent"),
+        "priceRecommendationEligible": prediction.get("priceRecommendationEligible")
+        if prediction.get("priceRecommendationEligible") is not None
+        else prediction.get("price_recommendation_eligible"),
+        "fallbackReason": prediction.get("fallbackReason")
+        or prediction.get("fallback_reason"),
     }
 
 
@@ -720,9 +740,7 @@ def analytics_search_history(
     price_max = _query_param_float(query_params, "price_max")
     time_from = _query_param_datetime(query_params, "time_from")
     time_to = _query_param_datetime(query_params, "time_to")
-    query_limit = _query_param_int(
-        query_params, "limit", default=200, minimum=1, maximum=500
-    )
+    query_limit = _query_param_int(query_params, "limit", default=200, minimum=1, maximum=500)
 
     league_where = _history_where_clause(
         query=compact_query,
@@ -857,11 +875,7 @@ def analytics_search_history(
             "order": order,
         },
         "filters": {
-            "leagueOptions": [
-                str(row.get("league") or "")
-                for row in league_rows
-                if str(row.get("league") or "").strip()
-            ],
+            "leagueOptions": [str(row.get("league") or "") for row in league_rows if str(row.get("league") or "").strip()],
             "price": {
                 "min": min_price if min_price is not None else 0.0,
                 "max": max_price if max_price is not None else 0.0,
@@ -910,13 +924,9 @@ def analytics_pricing_outliers(
 ) -> dict[str, Any]:
     league = _first_query_param(query_params, "league") or (default_league or "")
     limit = _query_param_int(query_params, "limit", default=100, minimum=1, maximum=500)
-    minimum_support = _query_param_int(
-        query_params, "min_total", default=20, minimum=1, maximum=5000
-    )
+    minimum_support = _query_param_int(query_params, "min_total", default=20, minimum=1, maximum=5000)
     sort = _normalize_outlier_sort(_first_query_param(query_params, "sort"))
-    order = _normalize_sort_order(
-        _first_query_param(query_params, "order"), default="desc"
-    )
+    order = _normalize_sort_order(_first_query_param(query_params, "order"), default="desc")
     query_text = _first_query_param(query_params, "query")
     league_clause = _outlier_league_clause(league)
     item_label_expr = _search_item_label_sql("d")
@@ -1044,12 +1054,7 @@ def analytics_pricing_outliers(
         ),
     )
     return {
-        "query": {
-            "league": league,
-            "sort": sort,
-            "order": order,
-            "minTotal": minimum_support,
-        },
+        "query": {"league": league, "sort": sort, "order": order, "minTotal": minimum_support},
         "rows": [
             {
                 "itemName": str(row.get("item_name") or ""),
@@ -1204,7 +1209,7 @@ def _as_int(value: object) -> int:
 
 
 def _quote_sql_string(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    escaped = value.replace('\\', '\\\\').replace("'", "\\'")
     return f"'{escaped}'"
 
 
@@ -1243,9 +1248,7 @@ def _query_param_int(
     return max(minimum, min(maximum, parsed))
 
 
-def _query_param_datetime(
-    query_params: Mapping[str, list[str]], key: str
-) -> str | None:
+def _query_param_datetime(query_params: Mapping[str, list[str]], key: str) -> str | None:
     raw = _first_query_param(query_params, key)
     if not raw:
         return None
@@ -1335,9 +1338,7 @@ def _history_price_bucket_size(min_price: float | None, max_price: float | None)
     return _float_sql(bucket)
 
 
-def _history_time_bucket_seconds(
-    min_added_on: str | None, max_added_on: str | None
-) -> int:
+def _history_time_bucket_seconds(min_added_on: str | None, max_added_on: str | None) -> int:
     if not min_added_on or not max_added_on:
         return 86400
     start = _parse_iso_utc(min_added_on)
@@ -1349,15 +1350,7 @@ def _history_time_bucket_seconds(
 
 
 def _normalize_outlier_sort(value: str) -> str:
-    if value in {
-        "item_name",
-        "affix_analyzed",
-        "p10",
-        "median",
-        "p90",
-        "items_per_week",
-        "items_total",
-    }:
+    if value in {"item_name", "affix_analyzed", "p10", "median", "p90", "items_per_week", "items_total"}:
         return value
     return "items_total"
 

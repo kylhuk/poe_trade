@@ -46,6 +46,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not cfg.ml_automation_enabled:
         logging.getLogger(__name__).info("%s disabled", SERVICE_NAME)
         return 0
+    workflows._ensure_non_legacy_dataset_table(str(args.dataset_table))
+    workflows._ensure_non_legacy_model_dir(str(args.model_dir))
     league = args.league or cfg.ml_automation_league
     interval = args.interval_seconds or cfg.ml_automation_interval_seconds
     client = ClickHouseClient.from_env(cfg.clickhouse_url)

@@ -135,9 +135,63 @@ def test_healthz_shape_and_no_auth_required() -> None:
         headers={},
         body_reader=BytesIO(b""),
     )
-    assert response.status == 200
     body = json.loads(response.body.decode("utf-8"))
-    assert body == {"status": "ok", "service": "api", "version": "v1"}
+    assert response.status == 200
+    assert body["status"] == "ok"
+    assert body["service"] == "api"
+    assert body["version"] == "v1"
+    assert body["ml"]["ready"] is True
+    assert body["ml"]["leagues"]["Mirage"]["ready"] is True
+
+
+def test_healthz_returns_degraded_when_ml_warmup_has_invalid_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "poe_trade.ml.workflows.warmup_active_models",
+        lambda *_args, **_kwargs: {
+            "lastAttemptAt": None,
+            "routes": {"structured_boosted": "bundle_missing"},
+        },
+    )
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+    response = app.handle(
+        method="GET",
+        raw_path="/healthz",
+        headers={},
+        body_reader=BytesIO(b""),
+    )
+    body = json.loads(response.body.decode("utf-8"))
+    assert response.status == 503
+    assert body["status"] == "degraded"
+    assert body["ml"]["ready"] is False
+    assert body["ml"]["leagues"]["Mirage"]["degradedRoutes"] == {
+        "structured_boosted": "bundle_missing"
+    }
+
+
+def test_healthz_keeps_inactive_routes_non_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "poe_trade.ml.workflows.warmup_active_models",
+        lambda *_args, **_kwargs: {
+            "lastAttemptAt": None,
+            "routes": {"structured_boosted": "inactive"},
+        },
+    )
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+    response = app.handle(
+        method="GET",
+        raw_path="/healthz",
+        headers={},
+        body_reader=BytesIO(b""),
+    )
+    body = json.loads(response.body.decode("utf-8"))
+    assert response.status == 200
+    assert body["status"] == "ok"
+    assert body["ml"]["ready"] is True
+    assert body["ml"]["leagues"]["Mirage"]["degradedRoutes"] == {}
 
 
 def test_contract_exact_top_level_keys() -> None:
@@ -218,9 +272,11 @@ def test_ml_status_returns_stable_no_runs_shape(
         "candidate_vs_incumbent",
         "route_hotspots",
         "warmup",
+        "route_decisions",
     }
     assert body["candidate_vs_incumbent"] == {}
     assert body["route_hotspots"] == []
+    assert body["route_decisions"] == []
     assert body["warmup"]["routes"] == {}
 
 
@@ -298,6 +354,38 @@ def test_predict_one_returns_stable_dto(monkeypatch: pytest.MonkeyPatch) -> None
         "fallback_reason",
     }
     assert expected_keys.issubset(set(result))
+
+
+def test_predict_one_returns_backend_unavailable_for_invalid_active_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        api_ml.workflows,
+        "predict_one",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            workflows.ActiveModelUnavailableError(
+                league="Mirage",
+                route="structured_boosted",
+                reason="bundle_missing",
+            )
+        ),
+    )
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+    payload = {
+        "input_format": "poe-clipboard",
+        "payload": "item payload",
+        "output_mode": "json",
+    }
+    body = json.dumps(payload).encode("utf-8")
+    with pytest.raises(ApiError) as exc:
+        app.handle(
+            method="POST",
+            raw_path="/api/v1/ml/leagues/Mirage/predict-one",
+            headers={**_auth_headers(), "Content-Length": str(len(body))},
+            body_reader=BytesIO(body),
+        )
+    assert exc.value.status == 503
+    assert exc.value.code == "backend_unavailable"
 
 
 def test_predict_one_shadow_mode_emits_side_by_side_without_cutover(

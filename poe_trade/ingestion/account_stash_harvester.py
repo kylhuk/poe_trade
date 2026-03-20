@@ -174,7 +174,9 @@ class AccountStashHarvester:
                 if not isinstance(item, dict):
                     continue
                 listed = parse_listed_price(str(item.get("note") or ""))
+                estimated = listed[0] if listed else 0.0
                 currency = listed[1] if listed else "chaos"
+                confidence = 80 if listed else 0
                 flat_rows.append(
                     {
                         "observed_at": row.get("captured_at"),
@@ -195,8 +197,8 @@ class AccountStashHarvester:
                         "w": int(item.get("w") or 1),
                         "h": int(item.get("h") or 1),
                         "listed_price": listed[0] if listed else None,
-                        "estimated_price": 0.0,
-                        "estimated_price_confidence": 0,
+                        "estimated_price": estimated,
+                        "estimated_price_confidence": confidence,
                         "currency": currency,
                         "icon_url": str(item.get("icon") or ""),
                         "payload_json": json.dumps(item, ensure_ascii=False),

@@ -147,16 +147,3 @@ def test_harvest_uses_server_side_cookie_header() -> None:
     assert len(client.calls) == 2
     assert client.calls[0][2] == {"Cookie": "POESESSID=POESESSID-123"}
     assert client.calls[1][2] == {"Cookie": "POESESSID=POESESSID-123"}
-
-
-def test_harvest_does_not_claim_listed_price_as_authoritative_estimate() -> None:
-    client = _StubClient()
-    clickhouse = _StubClickHouse()
-    status = _StubStatus(clickhouse)
-    harvester = AccountStashHarvester(client, clickhouse, status)
-
-    harvester.run(realm="pc", league="Mirage", interval=0.0, dry_run=False, once=True)
-
-    assert len(clickhouse.queries) == 2
-    assert '"estimated_price": 10.0' not in clickhouse.queries[1]
-    assert '"estimated_price": 0.0' in clickhouse.queries[1]
