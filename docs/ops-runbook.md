@@ -32,9 +32,17 @@
 - `poeninja_snapshot` now writes raw PoeNinja snapshots for incremental ClickHouse derivation; it no longer rebuilds the ML dataset in the default service loop.
 - Confirm steady-state mode from `.sisyphus/state/poeninja_snapshot-last-run.json`; `snapshot_mode` should be `steady_state_snapshot_only` and `downstream_rebuild_triggered` should be `false` unless you explicitly ran a backfill.
 - Verify raw snapshot freshness with `clickhouse-client --query "SELECT count(), max(sample_time_utc) FROM poe_trade.raw_poeninja_currency_overview WHERE league='Mirage'"`.
-- Verify incremental FX freshness with `clickhouse-client --query "SELECT count(), max(hour_ts) FROM poe_trade.ml_fx_hour_v2 WHERE league='Mirage'"`.
-- Verify incremental dataset growth with `clickhouse-client --query "SELECT count(), max(as_of_ts) FROM poe_trade.ml_price_dataset_v2 WHERE league='Mirage'"`.
+- Verify v3 observation growth with `clickhouse-client --query "SELECT count(), max(observed_at) FROM poe_trade.silver_v3_item_observations WHERE league='Mirage'"`.
+- Verify v3 lifecycle labels with `clickhouse-client --query "SELECT count(), max(as_of_ts) FROM poe_trade.ml_v3_sale_proxy_labels WHERE league='Mirage'"`.
+- Verify v3 training examples with `clickhouse-client --query "SELECT count(), max(as_of_ts) FROM poe_trade.ml_v3_training_examples WHERE league='Mirage'"`.
 - Use `poe-ledger-cli service --name poeninja_snapshot -- --once --league Mirage --full-rebuild-backfill` only for explicit repair/backfill work; this is not the steady-state path.
+
+## ML v3 replay and disk guardrails (15GB net)
+- Run partitioned replay only: `poe-ml v3-backfill --league Mirage --start-day 2026-03-01 --end-day 2026-03-01 --max-bytes 13500000000`.
+- Before each partition window, check budget headroom: `poe-ml v3-disk-usage`.
+- Enable v3 serving path in API only after backfill + train: `POE_ML_V3_SERVING_ENABLED=1`.
+- Enable v3 trainer loop in daemon only when ready: `POE_ML_V3_TRAINER_ENABLED=1`.
+- Raw retention contract: never drop `poe_trade.raw_*`; if replay data is wrong, rebuild derived `silver_v3_*` / `ml_v3_*` from raw.
 
 ## Mod-rollup governance (32GB shared host)
 - Baseline evidence must exist at `.sisyphus/evidence/task-1-baseline-shared-host.json` before any rollup cutover decision.

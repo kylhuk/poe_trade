@@ -220,13 +220,9 @@ def exchange_oauth_code(
     state: str,
 ) -> OAuthExchangeResult:
     if not code.strip():
-        raise OAuthExchangeError(
-            "code is required", code="missing_code", status=400
-        )
+        raise OAuthExchangeError("code is required", code="missing_code", status=400)
     if not validate_state(settings, state=state):
-        raise OAuthExchangeError(
-            "invalid state", code="invalid_state", status=400
-        )
+        raise OAuthExchangeError("invalid state", code="invalid_state", status=400)
     tx_state = _load_json(_state_path(settings))
     code_verifier = str(tx_state.get("code_verifier") or "").strip()
     if not code_verifier:
@@ -421,7 +417,11 @@ def _extract_account_name_from_text(payload: str) -> str | None:
 def _extract_account_name_from_html(payload: str) -> str | None:
     if not payload:
         return None
-    for pattern in (_PROFILE_URL_PATTERN, _PROFILE_META_PATTERN, _PROFILE_TITLE_PATTERN):
+    for pattern in (
+        _PROFILE_URL_PATTERN,
+        _PROFILE_META_PATTERN,
+        _PROFILE_TITLE_PATTERN,
+    ):
         match = pattern.search(payload)
         if not match:
             continue
@@ -477,7 +477,13 @@ def _http_get_text(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="ignore")
-            status = getattr(resp, "status", None) or resp.getcode()
+            status = getattr(resp, "status", None)
+            if status is None:
+                getcode = getattr(resp, "getcode", None)
+                if callable(getcode):
+                    status = getcode()
+            if status is None:
+                status = 200
             return body, int(status)
     except urllib.error.HTTPError as exc:
         try:
@@ -512,7 +518,13 @@ def _http_post_form(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="ignore")
-            status = getattr(resp, "status", None) or resp.getcode()
+            status = getattr(resp, "status", None)
+            if status is None:
+                getcode = getattr(resp, "getcode", None)
+                if callable(getcode):
+                    status = getcode()
+            if status is None:
+                status = 200
             return body, int(status)
     except urllib.error.HTTPError as exc:
         try:

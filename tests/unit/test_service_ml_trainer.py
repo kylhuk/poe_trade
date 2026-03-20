@@ -102,3 +102,51 @@ def test_ml_trainer_rejects_legacy_v1_dataset(monkeypatch) -> None:
         assert "v2 dataset table" in str(exc)
     else:
         raise AssertionError("expected ValueError for legacy v1 dataset table")
+
+
+def test_ml_trainer_uses_v3_training_when_enabled(monkeypatch) -> None:
+    cfg = SimpleNamespace(
+        clickhouse_url="http://ch",
+        ml_automation_enabled=True,
+        ml_automation_league="Mirage",
+        ml_automation_interval_seconds=30,
+        ml_automation_max_iterations=1,
+        ml_automation_max_wall_clock_seconds=60,
+        ml_automation_no_improvement_patience=2,
+        ml_automation_min_mdape_improvement=0.005,
+    )
+    monkeypatch.setattr(ml_trainer.config_settings, "get_settings", lambda: cfg)
+    monkeypatch.setattr(
+        ml_trainer.ClickHouseClient,
+        "from_env",
+        lambda _url: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        ml_trainer.workflows,
+        "warmup_active_models",
+        lambda *_args, **_kwargs: {"lastAttemptAt": None, "routes": {}},
+    )
+    monkeypatch.setenv("POE_ML_V3_TRAINER_ENABLED", "1")
+    monkeypatch.setattr(
+        ml_trainer.v3_train,
+        "train_all_routes_v3",
+        lambda *_args, **_kwargs: {"trained_count": 2, "routes": ["a", "b"]},
+    )
+    monkeypatch.setattr(
+        ml_trainer.workflows,
+        "rollout_controls",
+        lambda *_args, **_kwargs: {
+            "league": "Mirage",
+            "shadow_mode": False,
+            "cutover_enabled": False,
+            "candidate_model_version": None,
+            "incumbent_model_version": None,
+            "effective_serving_model_version": None,
+            "updated_at": "2026-03-20 00:00:00",
+            "last_action": "noop",
+        },
+    )
+
+    result = ml_trainer.main(["--once", "--league", "Mirage"])
+
+    assert result == 0

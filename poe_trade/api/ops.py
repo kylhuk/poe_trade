@@ -662,6 +662,11 @@ def price_check_payload(
     return {
         "predictedValue": prediction.get("predictedValue")
         or prediction.get("price_p50"),
+        "fairValueP50": prediction.get("fairValueP50")
+        or prediction.get("fair_value_p50")
+        or prediction.get("price_p50"),
+        "fastSale24hPrice": prediction.get("fastSale24hPrice")
+        or prediction.get("fast_sale_24h_price"),
         "currency": prediction.get("currency") or "chaos",
         "confidence": prediction.get("confidence")
         or prediction.get("confidence_percent")

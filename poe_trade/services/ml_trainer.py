@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 from poe_trade.config import settings as config_settings
 from poe_trade.db import ClickHouseClient
 from poe_trade.ml import workflows
+from poe_trade.ml.v3 import train as v3_train
 
 SERVICE_NAME = "ml_trainer"
 
@@ -50,6 +52,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     workflows._ensure_non_legacy_model_dir(str(args.model_dir))
     league = args.league or cfg.ml_automation_league
     interval = args.interval_seconds or cfg.ml_automation_interval_seconds
+    v3_enabled = str(os.getenv("POE_ML_V3_TRAINER_ENABLED", "0")).strip() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     client = ClickHouseClient.from_env(cfg.clickhouse_url)
     try:
         workflows.warmup_active_models(client, league=league)
@@ -70,17 +78,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         rollout = {}
 
     while True:
-        result = workflows.train_loop(
-            client,
-            league=league,
-            dataset_table=str(args.dataset_table),
-            model_dir=str(args.model_dir),
-            max_iterations=cfg.ml_automation_max_iterations,
-            max_wall_clock_seconds=cfg.ml_automation_max_wall_clock_seconds,
-            no_improvement_patience=cfg.ml_automation_no_improvement_patience,
-            min_mdape_improvement=cfg.ml_automation_min_mdape_improvement,
-            resume=False,
-        )
+        if v3_enabled:
+            v3_result = v3_train.train_all_routes_v3(
+                client,
+                league=league,
+                model_dir=str(args.model_dir),
+            )
+            result = {
+                "status": "completed",
+                "stop_reason": "v3_train_cycle",
+                "active_model_version": "v3",
+                "v3": v3_result,
+            }
+        else:
+            result = workflows.train_loop(
+                client,
+                league=league,
+                dataset_table=str(args.dataset_table),
+                model_dir=str(args.model_dir),
+                max_iterations=cfg.ml_automation_max_iterations,
+                max_wall_clock_seconds=cfg.ml_automation_max_wall_clock_seconds,
+                no_improvement_patience=cfg.ml_automation_no_improvement_patience,
+                min_mdape_improvement=cfg.ml_automation_min_mdape_improvement,
+                resume=False,
+            )
         try:
             rollout = workflows.rollout_controls(client, league=league)
         except Exception as exc:

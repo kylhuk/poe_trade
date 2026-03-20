@@ -7,6 +7,7 @@ def test_ingestion_service_registry_names() -> None:
         "account_stash_harvester",
         "scanner_worker",
         "ml_trainer",
+        "poeninja_snapshot",
         "api",
     ]
 

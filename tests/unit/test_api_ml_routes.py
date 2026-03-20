@@ -989,3 +989,46 @@ def test_explicit_ops_analytics_routes_resolve(monkeypatch: pytest.MonkeyPatch) 
     assert response.status == 200
     assert body["query"] == "divine"
     assert body["league"] == "Mirage"
+
+
+def test_fetch_predict_one_uses_v3_serving_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POE_ML_V3_SERVING_ENABLED", "1")
+    monkeypatch.setattr(
+        api_ml, "validate_predict_one_request", lambda _payload: "dummy"
+    )
+    monkeypatch.setattr(
+        api_ml.v3_serve,
+        "predict_one_v3",
+        lambda *_args, **_kwargs: {
+            "route": "sparse_retrieval",
+            "price_p10": 10.0,
+            "price_p50": 12.0,
+            "price_p90": 15.0,
+            "fast_sale_24h_price": 11.0,
+            "sale_probability_percent": 62.0,
+            "sale_probability_24h": 0.62,
+            "confidence_percent": 75.0,
+            "confidence": 0.75,
+            "prediction_source": "v3_model",
+            "fallback_reason": "",
+            "ml_predicted": True,
+            "price_recommendation_eligible": True,
+            "predictedValue": 12.0,
+        },
+    )
+
+    payload = api_ml.fetch_predict_one(
+        ClickHouseClient(endpoint="http://ch"),
+        league="Mirage",
+        request_payload={
+            "input_format": "poe-clipboard",
+            "payload": "dummy",
+            "output_mode": "json",
+        },
+    )
+
+    assert payload["predictionSource"] == "v3_model"
+    assert payload["price_p50"] == 12.0
+    assert payload["saleProbabilityPercent"] == 62.0

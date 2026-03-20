@@ -12,6 +12,10 @@ from poe_trade.config import settings
 from poe_trade.db import ClickHouseClient
 
 from . import workflows
+from .v3 import backfill as v3_backfill
+from .v3 import eval as v3_eval
+from .v3 import serve as v3_serve
+from .v3 import train as v3_train
 from .audit import build_audit_report
 from .runtime import detect_runtime_profile, persist_runtime_profile
 from .workflows import (
@@ -60,6 +64,11 @@ class _Args(argparse.Namespace):
     file: str | None = None
     clipboard: bool = False
     resume: bool = False
+    start_day: str = ""
+    end_day: str = ""
+    day: str = ""
+    max_bytes: int = 13_500_000_000
+    run_id: str = ""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -209,6 +218,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ = report_parser.add_argument("--model-dir", required=True)
     _ = report_parser.add_argument("--output", required=True)
 
+    v3_backfill_parser = subparsers.add_parser("v3-backfill")
+    _ = v3_backfill_parser.add_argument("--league", required=True)
+    _ = v3_backfill_parser.add_argument("--start-day", required=True)
+    _ = v3_backfill_parser.add_argument("--end-day", required=True)
+    _ = v3_backfill_parser.add_argument("--max-bytes", type=int, default=13_500_000_000)
+
+    v3_replay_day_parser = subparsers.add_parser("v3-replay-day")
+    _ = v3_replay_day_parser.add_argument("--league", required=True)
+    _ = v3_replay_day_parser.add_argument("--day", required=True)
+    _ = v3_replay_day_parser.add_argument(
+        "--max-bytes", type=int, default=13_500_000_000
+    )
+
+    v3_disk_usage_parser = subparsers.add_parser("v3-disk-usage")
+    _ = v3_disk_usage_parser.add_argument("--league", default="Mirage")
+
+    v3_train_parser = subparsers.add_parser("v3-train")
+    _ = v3_train_parser.add_argument("--league", required=True)
+    _ = v3_train_parser.add_argument("--model-dir", required=True)
+
+    v3_train_route_parser = subparsers.add_parser("v3-train-route")
+    _ = v3_train_route_parser.add_argument("--league", required=True)
+    _ = v3_train_route_parser.add_argument("--route", required=True)
+    _ = v3_train_route_parser.add_argument("--model-dir", required=True)
+
+    v3_eval_parser = subparsers.add_parser("v3-evaluate")
+    _ = v3_eval_parser.add_argument("--league", required=True)
+    _ = v3_eval_parser.add_argument("--run-id", required=True)
+
+    v3_predict_one_parser = subparsers.add_parser("v3-predict-one")
+    _ = v3_predict_one_parser.add_argument("--league", required=True)
+    _ = v3_predict_one_parser.add_argument("--stdin", action="store_true")
+    _ = v3_predict_one_parser.add_argument("--file", default=None)
+    _ = v3_predict_one_parser.add_argument("--clipboard", action="store_true")
+    _ = v3_predict_one_parser.add_argument("--model-dir", default="artifacts/ml")
+    _ = v3_predict_one_parser.add_argument("--output", default="human")
+
     args = parser.parse_args(argv, namespace=_Args())
 
     logging.basicConfig(
@@ -276,6 +322,97 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_iterations=int(args.max_iterations or 1),
             )
             print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-backfill":
+            result = v3_backfill.backfill_range(
+                client,
+                league=league,
+                start_day=str(args.start_day),
+                end_day=str(args.end_day),
+                max_bytes=int(args.max_bytes),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-replay-day":
+            from datetime import datetime
+
+            parsed_day = datetime.strptime(str(args.day), "%Y-%m-%d").date()
+            result = v3_backfill.replay_day(
+                client,
+                league=league,
+                day=parsed_day,
+                max_bytes=int(args.max_bytes),
+            )
+            print(json.dumps(result.__dict__, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-disk-usage":
+            result = {
+                "bytes_on_disk": v3_backfill.disk_usage_bytes(client),
+            }
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-train":
+            result = v3_train.train_all_routes_v3(
+                client,
+                league=league,
+                model_dir=str(args.model_dir),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-train-route":
+            result = v3_train.train_route_v3(
+                client,
+                league=league,
+                route=str(args.route),
+                model_dir=str(args.model_dir),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-evaluate":
+            result = v3_eval.evaluate_run(
+                client,
+                league=league,
+                run_id=str(args.run_id),
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-predict-one":
+            if not args.stdin and not args.file and not args.clipboard:
+                raise ValueError(
+                    "v3-predict-one requires one of --stdin, --file, or --clipboard"
+                )
+            if args.stdin:
+                text = sys.stdin.read()
+            elif args.file:
+                text = Path(str(args.file)).read_text(encoding="utf-8")
+            else:
+                clip = os.getenv("POE_ML_CLIPBOARD_TEXT", "")
+                if not clip:
+                    raise ValueError(
+                        "--clipboard requires POE_ML_CLIPBOARD_TEXT in this environment"
+                    )
+                text = clip
+            result = v3_serve.predict_one_v3(
+                client,
+                league=league,
+                clipboard_text=text,
+                model_dir=str(args.model_dir),
+            )
+            if output_arg == "json":
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(
+                    "\n".join(
+                        [
+                            f"route: {result['route']}",
+                            f"fair_value_p50: {result['fair_value_p50']}",
+                            f"fast_sale_24h_price: {result['fast_sale_24h_price']}",
+                            f"sale_probability_24h: {result['sale_probability_24h']}",
+                            f"confidence_percent: {result['confidence_percent']}",
+                            f"prediction_source: {result['prediction_source']}",
+                        ]
+                    )
+                )
             return 0
         if command == "build-fx":
             result = build_fx(

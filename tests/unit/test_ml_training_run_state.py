@@ -126,7 +126,7 @@ def test_train_loop_marks_hold_runs_as_completed(monkeypatch) -> None:
     result = workflows.train_loop(
         ClickHouseClient(endpoint="http://ch"),
         league="Mirage",
-        dataset_table="poe_trade.ml_price_dataset_v1",
+        dataset_table="poe_trade.ml_price_dataset_v2",
         model_dir="artifacts/ml/mirage",
         max_iterations=1,
         max_wall_clock_seconds=60,
@@ -187,7 +187,7 @@ def test_train_route_uses_aggregate_rows_for_family_counts(
         ClickHouseClient(endpoint="http://ch"),
         route="structured_boosted",
         league="Mirage",
-        dataset_table="poe_trade.ml_price_dataset_v1",
+        dataset_table="poe_trade.ml_price_dataset_v2",
         model_dir=str(tmp_path),
         comps_table="poe_trade.ml_comps_v1",
     )
@@ -297,7 +297,7 @@ def test_evaluate_route_reuses_aggregate_rows_for_train_max_as_of_ts(
         ClickHouseClient(endpoint="http://ch"),
         route="structured_boosted",
         league="Mirage",
-        dataset_table="poe_trade.ml_price_dataset_v1",
+        dataset_table="poe_trade.ml_price_dataset_v2",
         model_dir="artifacts/ml/mirage",
     )
 

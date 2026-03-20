@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -8,6 +9,7 @@ from poe_trade.config.settings import Settings
 from poe_trade.db import ClickHouseClient
 from poe_trade.db.clickhouse import ClickHouseClientError
 from poe_trade.ml import workflows
+from poe_trade.ml.v3 import serve as v3_serve
 
 
 class BackendUnavailable(RuntimeError):
@@ -16,6 +18,11 @@ class BackendUnavailable(RuntimeError):
 
 _MIRAGE_ROLLOUT_LEAGUE = "Mirage"
 _AUTOMATION_DATASET_TABLE = "poe_trade.ml_price_dataset_v2"
+
+
+def _v3_serving_enabled() -> bool:
+    flag = str(os.getenv("POE_ML_V3_SERVING_ENABLED", "0")).strip().lower()
+    return flag in {"1", "true", "yes", "on"}
 
 
 def contract_payload(settings: Settings) -> dict[str, Any]:
@@ -64,6 +71,14 @@ def fetch_predict_one(
 ) -> dict[str, Any]:
     clipboard = validate_predict_one_request(request_payload)
     try:
+        if _v3_serving_enabled():
+            v3_payload = v3_serve.predict_one_v3(
+                client,
+                league=league,
+                clipboard_text=clipboard,
+            )
+            return normalize_predict_one_payload(league=league, payload=v3_payload)
+
         if league != _MIRAGE_ROLLOUT_LEAGUE:
             raw = workflows.predict_one(client, league=league, clipboard_text=clipboard)
             return normalize_predict_one_payload(league=league, payload=raw)
@@ -641,14 +656,29 @@ def normalize_predict_one_payload(
         if "mlPredicted" in payload
         else payload.get("ml_predicted", True)
     )
-    prediction_source = "ml" if ml_predicted else "static_fallback"
-    estimate_trust = "normal" if ml_predicted else "low"
+    prediction_source = str(
+        payload.get("predictionSource")
+        or payload.get("prediction_source")
+        or ("ml" if ml_predicted else "static_fallback")
+    )
+    estimate_trust = str(
+        payload.get("estimateTrust")
+        or payload.get("estimate_trust")
+        or ("normal" if ml_predicted else "low")
+    )
+    explicit_warning = payload.get("estimateWarning")
+    if explicit_warning is None:
+        explicit_warning = payload.get("estimate_warning")
     estimate_warning = (
-        None
-        if ml_predicted
+        explicit_warning
+        if explicit_warning is not None
         else (
-            "ML could not predict this item (insufficient/unseen data). "
-            "This is a static fallback estimate and may be inaccurate."
+            None
+            if ml_predicted
+            else (
+                "ML could not predict this item (insufficient/unseen data). "
+                "This is a static fallback estimate and may be inaccurate."
+            )
         )
     )
     currency = str(payload.get("currency") or "chaos")

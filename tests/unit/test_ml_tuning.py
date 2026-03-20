@@ -144,7 +144,7 @@ def test_train_loop_stops_for_no_improvement(monkeypatch, tmp_path):
     result = workflows.train_loop(
         client,
         league="Mirage",
-        dataset_table="poe_trade.ml_price_dataset_v1",
+        dataset_table="poe_trade.ml_price_dataset_v2",
         model_dir=str(tmp_path),
         max_iterations=5,
         max_wall_clock_seconds=3600,
@@ -210,7 +210,7 @@ def test_train_loop_resume_requires_existing_run(monkeypatch, tmp_path):
         workflows.train_loop(
             client,
             league="Mirage",
-            dataset_table="poe_trade.ml_price_dataset_v1",
+            dataset_table="poe_trade.ml_price_dataset_v2",
             model_dir=str(tmp_path),
             max_iterations=1,
             max_wall_clock_seconds=60,
@@ -277,7 +277,7 @@ def test_train_loop_stops_for_iteration_budget(monkeypatch, tmp_path):
     result = workflows.train_loop(
         client,
         league="Mirage",
-        dataset_table="poe_trade.ml_price_dataset_v1",
+        dataset_table="poe_trade.ml_price_dataset_v2",
         model_dir=str(tmp_path),
         max_iterations=2,
         max_wall_clock_seconds=3600,
@@ -295,10 +295,10 @@ def test_evaluate_stack_rejects_unsupported_split():
         workflows.evaluate_stack(
             cast(workflows.ClickHouseClient, cast(object, SimpleNamespace())),
             league="Mirage",
-            dataset_table="poe_trade.ml_price_dataset_v1",
-            model_dir="artifacts/ml/mirage_v1",
+            dataset_table="poe_trade.ml_price_dataset_v2",
+            model_dir="artifacts/ml/mirage_v2",
             split="random",
-            output_dir="artifacts/ml/mirage_v1",
+            output_dir="artifacts/ml/mirage_v2",
         )
 
 

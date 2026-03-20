@@ -855,3 +855,54 @@ def test_report_surfaces_shadow_gate_failure_matrix(monkeypatch, tmp_path):
 
         assert payload["promotion_verdict"] == "hold"
         assert payload["candidate_vs_incumbent"]["hold_reason_codes"] == reason_codes
+
+
+def test_v3_backfill_command_dispatches(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli.settings,
+        "get_settings",
+        lambda: SimpleNamespace(clickhouse_url="http://clickhouse"),
+    )
+    monkeypatch.setattr(cli.ClickHouseClient, "from_env", lambda _url: object())
+    monkeypatch.setattr(
+        cli, "detect_runtime_profile", lambda: cast(object, SimpleNamespace())
+    )
+    monkeypatch.setattr(cli, "persist_runtime_profile", lambda _profile: None)
+    monkeypatch.setattr(
+        cli.v3_backfill,
+        "backfill_range",
+        lambda *_args, **_kwargs: {"days_processed": 2, "league": "Mirage"},
+    )
+
+    result = cli.main(
+        [
+            "v3-backfill",
+            "--league",
+            "Mirage",
+            "--start-day",
+            "2026-03-20",
+            "--end-day",
+            "2026-03-21",
+        ]
+    )
+
+    assert result == 0
+    assert "days_processed" in capsys.readouterr().out
+
+
+def test_v3_predict_one_requires_one_input_source(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli.settings,
+        "get_settings",
+        lambda: SimpleNamespace(clickhouse_url="http://clickhouse"),
+    )
+    monkeypatch.setattr(cli.ClickHouseClient, "from_env", lambda _url: object())
+    monkeypatch.setattr(
+        cli, "detect_runtime_profile", lambda: cast(object, SimpleNamespace())
+    )
+    monkeypatch.setattr(cli, "persist_runtime_profile", lambda _profile: None)
+
+    result = cli.main(["v3-predict-one", "--league", "Mirage"])
+
+    assert result == 2
+    assert "v3-predict-one requires one of" in capsys.readouterr().err

@@ -65,6 +65,8 @@ def test_price_check_payload_uses_base_type_lookup_and_returns_recent_comparable
         "fetch_predict_one",
         lambda _client, league, request_payload: {
             "predictedValue": 120.0,
+            "fairValueP50": 121.0,
+            "fastSale24hPrice": 109.0,
             "currency": "chaos",
             "confidence": 0.64,
             "interval": {"p10": 90.0, "p90": 150.0},
@@ -112,6 +114,8 @@ def test_price_check_payload_uses_base_type_lookup_and_returns_recent_comparable
     assert payload["predictionSource"] == "ml"
     assert payload["estimateTrust"] == "normal"
     assert payload["estimateWarning"] is None
+    assert payload["fairValueP50"] == 121.0
+    assert payload["fastSale24hPrice"] == 109.0
 
 
 def test_predict_one_uses_serving_profile_when_present(monkeypatch) -> None:

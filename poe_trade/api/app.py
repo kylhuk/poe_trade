@@ -926,6 +926,13 @@ class ApiApp:
                 message=str(exc),
                 headers=cors,
             ) from None
+        except ValueError as exc:
+            raise ApiError(
+                status=400,
+                code="invalid_input",
+                message=str(exc),
+                headers=cors,
+            ) from None
         _ = save_credential_state(
             self.settings,
             account_name=account_name,

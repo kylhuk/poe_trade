@@ -111,11 +111,11 @@ def test_resolve_account_name_uses_plain_text_fallback_after_404(
             return None
 
         def read(self) -> bytes:
-            return b"qa-exile"
+            return b'<a href="/account/view-profile/qa-exile">qa-exile</a>'
 
     def _urlopen(request, timeout: float):
         attempted_urls.append(str(request.full_url))
-        if request.full_url.endswith("/character-window/get-account-name"):
+        if request.full_url.endswith("/my-account"):
             return _Response()
         raise urllib.error.URLError("not found")
 
@@ -124,7 +124,7 @@ def test_resolve_account_name_uses_plain_text_fallback_after_404(
 
     assert account_name == "qa-exile"
     assert attempted_urls[0].endswith("/account/profile")
-    assert attempted_urls[-1].endswith("/character-window/get-account-name")
+    assert attempted_urls[-1].endswith("/my-account")
 
 
 def test_resolve_account_name_reads_nested_profile_shape(tmp_path: Path) -> None:

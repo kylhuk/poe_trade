@@ -241,7 +241,9 @@ def test_mod_feature_stage_mv_migration_defines_materialized_view() -> None:
 
     sql = migration.read_text(encoding="utf-8")
 
-    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_item_mod_features_sql_stage_v1" in sql
+    assert (
+        "CREATE TABLE IF NOT EXISTS poe_trade.ml_item_mod_features_sql_stage_v1" in sql
+    )
     assert (
         "CREATE MATERIALIZED VIEW IF NOT EXISTS "
         "poe_trade.mv_ml_item_mod_features_sql_stage_v1" in sql
@@ -305,6 +307,95 @@ def test_incremental_v2_fx_alias_expansion_migration_maps_common_shorthand() -> 
     sql = migration.read_text(encoding="utf-8")
 
     assert "IN ('alch', 'alchemy'), 'orb of alchemy'" in sql
-    assert "IN ('gcp', 'gemcutter', 'gemcutters', 'gemcutter''s prism'), 'gemcutter''s prism'" in sql
+    assert (
+        "IN ('gcp', 'gemcutter', 'gemcutters', 'gemcutter''s prism'), 'gemcutter''s prism'"
+        in sql
+    )
     assert "IN ('mirror',), 'mirror of kalandra'" in sql
     assert "IN ('exa', 'exalt', 'exalted', 'exalts'), 'exalted'" in sql
+
+
+def test_v3_silver_observations_migration_creates_clickhouse_first_contract() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "schema"
+        / "migrations"
+        / "0051_ml_v3_silver_observations.sql"
+    )
+
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.silver_v3_item_observations" in sql
+    assert (
+        "CREATE MATERIALIZED VIEW IF NOT EXISTS poe_trade.mv_raw_public_stash_to_silver_v3_item_observations"
+        in sql
+    )
+    assert "FROM poe_trade.raw_public_stash_pages" in sql
+    assert "CODEC(ZSTD(6))" in sql
+
+
+def test_v3_events_and_sale_proxy_migration_creates_lifecycle_tables() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "schema"
+        / "migrations"
+        / "0052_ml_v3_events_and_sale_proxy_labels.sql"
+    )
+
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.silver_v3_stash_snapshots" in sql
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.silver_v3_item_events" in sql
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_sale_proxy_labels" in sql
+    assert (
+        "CREATE MATERIALIZED VIEW IF NOT EXISTS poe_trade.mv_raw_public_stash_to_v3_stash_snapshots"
+        in sql
+    )
+
+
+def test_v3_training_store_migration_creates_prediction_registry_tables() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "schema"
+        / "migrations"
+        / "0053_ml_v3_training_and_serving_store.sql"
+    )
+
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_training_examples" in sql
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_retrieval_candidates" in sql
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_model_registry" in sql
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_price_predictions" in sql
+
+
+def test_v3_eval_migration_creates_slice_gates_and_audit_tables() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "schema"
+        / "migrations"
+        / "0054_ml_v3_eval_and_promotion.sql"
+    )
+
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_route_eval" in sql
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_eval_runs" in sql
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_promotion_audit" in sql
+
+
+def test_v3_cleanup_migration_drops_legacy_derived_tables_not_raw() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "schema"
+        / "migrations"
+        / "0055_ml_v3_cleanup_legacy_derived.sql"
+    )
+
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "DROP TABLE IF EXISTS poe_trade.ml_price_dataset_v2" in sql
+    assert "DROP TABLE IF EXISTS poe_trade.ml_model_registry_v1" in sql
+    assert "DROP TABLE IF EXISTS poe_trade.silver_ps_items_raw" in sql
+    assert "DROP TABLE IF EXISTS poe_trade.raw_public_stash_pages" not in sql
+    assert "DROP TABLE IF EXISTS poe_trade.raw_account_stash_snapshot" not in sql

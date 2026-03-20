@@ -81,7 +81,13 @@ def test_build_dataset_uses_derived_category_sql(
     )
     monkeypatch.setattr(workflows, "_ensure_no_leakage_audit", lambda *_args: None)
     monkeypatch.setattr(workflows, "_write_leakage_audit", lambda *_args: None)
-    monkeypatch.setattr(workflows, "_env_bool", lambda key, default: False if key == "POE_ML_DATASET_CHUNK_BY_HOUR" else default)
+    monkeypatch.setattr(
+        workflows,
+        "_env_bool",
+        lambda key, default: (
+            False if key == "POE_ML_DATASET_CHUNK_BY_HOUR" else default
+        ),
+    )
     monkeypatch.setattr(
         workflows,
         "_populate_item_mod_features_from_tokens",
@@ -165,7 +171,9 @@ def test_feature_dict_from_row_keeps_split_family_for_structured_boosted() -> No
     assert features["category"] == "ring"
 
 
-def test_feature_dict_from_parsed_item_keeps_split_family_for_structured_boosted() -> None:
+def test_feature_dict_from_parsed_item_keeps_split_family_for_structured_boosted() -> (
+    None
+):
     parsed_item = {
         "category": "amulet",
         "base_type": "Onyx Amulet",
@@ -217,7 +225,9 @@ def test_feature_dict_from_row_adds_map_text_and_unique_state_interactions() -> 
     assert features["text_has_hyphen_flag"] == 1.0
 
 
-def test_feature_dict_from_parsed_item_adds_family_scope_for_structured_routes() -> None:
+def test_feature_dict_from_parsed_item_adds_family_scope_for_structured_routes() -> (
+    None
+):
     parsed_item = {
         "category": "other",
         "base_type": "Onyx Amulet",
@@ -671,6 +681,7 @@ def test_route_for_item_assigns_unique_ring_to_structured_boosted_other() -> Non
         {
             "category": "ring",
             "rarity": "Unique",
+            "support_count_recent": 120,
         }
     )
 
@@ -678,12 +689,15 @@ def test_route_for_item_assigns_unique_ring_to_structured_boosted_other() -> Non
     assert routed["route_reason"] == "specialized_ring_unique_family"
 
 
-def test_route_for_item_assigns_unique_onyx_amulet_to_structured_boosted_other() -> None:
+def test_route_for_item_assigns_unique_onyx_amulet_to_structured_boosted_other() -> (
+    None
+):
     routed = workflows._route_for_item(
         {
             "category": "other",
             "base_type": "Onyx Amulet",
             "rarity": "Unique",
+            "support_count_recent": 120,
         }
     )
 
@@ -710,7 +724,9 @@ def test_structured_boosted_training_predicate_excludes_split_other_families() -
     assert "= 'other'" in predicate
 
 
-def test_structured_boosted_other_training_predicate_targets_split_other_families() -> None:
+def test_structured_boosted_other_training_predicate_targets_split_other_families() -> (
+    None
+):
     predicate = workflows._route_training_predicate("structured_boosted_other")
 
     assert "rarity = 'Unique'" in predicate

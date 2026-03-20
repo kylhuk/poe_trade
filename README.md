@@ -27,6 +27,21 @@
 3. `.venv/bin/poe-ml report --league Mirage --model-dir artifacts/ml/mirage_v2 --output artifacts/ml/mirage_v2/latest-report.json`
 4. `.venv/bin/poe-ml predict-one --league Mirage --input-format poe-clipboard --stdin < tests/fixtures/ml/sample_clipboard_item.txt`
 
+## ML v3 Quick Start (ClickHouse-first)
+Use the v3 commands to replay raw stash history into lifecycle events and training examples, then train/serve dual outputs (`fair_value_p50`, `fast_sale_24h_price`):
+
+1. `.venv/bin/poe-ml v3-backfill --league Mirage --start-day 2026-03-01 --end-day 2026-03-03 --max-bytes 13500000000`
+2. `.venv/bin/poe-ml v3-train --league Mirage --model-dir artifacts/ml/mirage_v3`
+3. `.venv/bin/poe-ml v3-predict-one --league Mirage --stdin --model-dir artifacts/ml/mirage_v3 < tests/fixtures/ml/sample_clipboard_item.txt`
+
+Optional cutover flags:
+- `POE_ML_V3_SERVING_ENABLED=1` enables v3 path in `/api/v1/ml/leagues/{league}/predict-one`.
+- `POE_ML_V3_TRAINER_ENABLED=1` makes `ml_trainer` run v3 route training loops.
+
+Storage constraint notes:
+- Keep replay bounded by day partitions and monitor `poe-ml v3-disk-usage` between batches.
+- Keep `poe_trade.raw_*` as canonical source; treat non-raw tables as disposable rebuild artifacts.
+
 Serving now expects promoted route artifacts to be present under the shared `artifacts/` mount for both `ml_trainer` and `api`; unreadable promoted bundles are treated as a degraded ML state instead of silently falling back to legacy heuristics.
 
 ML verdict vocabulary:

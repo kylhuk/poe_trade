@@ -143,7 +143,10 @@ class QueryRouter:
                     "recorded_at": "2026-03-15 12:00:00",
                 },
             ]
-        if "FROM poe_trade.ml_route_eval_v1" in query and "GROUP BY run_id, route" in query:
+        if (
+            "FROM poe_trade.ml_route_eval_v1" in query
+            and "GROUP BY run_id, route" in query
+        ):
             return [
                 {
                     "run_id": "eval-2",
@@ -229,8 +232,7 @@ def test_fetch_automation_history_exposes_observability_panels(
         for row in payload["routeFamilies"]
     )
     assert any(
-        row.get("route") == "cluster_jewel_retrieval"
-        for row in payload["modelHistory"]
+        row.get("route") == "cluster_jewel_retrieval" for row in payload["modelHistory"]
     )
     assert any(
         route.get("route") == "cluster_jewel_retrieval"
@@ -252,7 +254,7 @@ def test_train_all_routes_includes_fallback_route(monkeypatch) -> None:
     workflows.train_all_routes(
         ClickHouseClient(endpoint="http://ch"),
         league="Mirage",
-        dataset_table="poe_trade.ml_price_dataset_v1",
+        dataset_table="poe_trade.ml_price_dataset_v2",
         model_dir="artifacts/ml/mirage",
         comps_table="poe_trade.ml_comps_v1",
     )
@@ -358,7 +360,9 @@ def test_predict_one_low_confidence_blends_with_reference_price(monkeypatch) -> 
             "reason": "profile_hit",
         },
     )
-    monkeypatch.setattr(workflows, "_safe_incumbent_model_version", lambda *_a, **_k: "")
+    monkeypatch.setattr(
+        workflows, "_safe_incumbent_model_version", lambda *_a, **_k: ""
+    )
     monkeypatch.setattr(
         workflows,
         "_load_active_route_artifact",
@@ -390,7 +394,9 @@ def test_predict_one_low_confidence_blends_with_reference_price(monkeypatch) -> 
     assert payload["price_p50"] > 20.0
 
 
-def test_predict_one_low_confidence_prefers_incumbent_when_available(monkeypatch) -> None:
+def test_predict_one_low_confidence_prefers_incumbent_when_available(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         workflows,
         "_parse_clipboard_item",
@@ -445,7 +451,9 @@ def test_predict_one_low_confidence_prefers_incumbent_when_available(monkeypatch
         _fake_load_active_route_artifact,
     )
 
-    def _fake_predict_with_artifact(*, artifact: dict[str, Any], parsed_item: dict[str, Any]):
+    def _fake_predict_with_artifact(
+        *, artifact: dict[str, Any], parsed_item: dict[str, Any]
+    ):
         del parsed_item
         if artifact.get("active_model_version") == "inc-v1":
             return {
@@ -461,7 +469,9 @@ def test_predict_one_low_confidence_prefers_incumbent_when_available(monkeypatch
             "sale_probability": 0.9,
         }
 
-    monkeypatch.setattr(workflows, "_predict_with_artifact", _fake_predict_with_artifact)
+    monkeypatch.setattr(
+        workflows, "_predict_with_artifact", _fake_predict_with_artifact
+    )
 
     payload = workflows.predict_one(
         ClickHouseClient(endpoint="http://ch"),
@@ -1151,6 +1161,11 @@ def test_warmup_active_models_records_routes(monkeypatch) -> None:
         lambda _path: {"model_bundle_path": "bundle.joblib"},
     )
     monkeypatch.setattr(
+        workflows,
+        "_validate_route_artifact",
+        lambda **_kwargs: {"valid": True, "reason": "warm"},
+    )
+    monkeypatch.setattr(
         workflows, "_load_model_bundle", lambda _path: {"price_models": {}}
     )
     monkeypatch.setattr(workflows, "_now_ts", lambda: "2026-03-18T00:00:00")
@@ -1181,6 +1196,7 @@ def test_promote_models_triggers_warmup(monkeypatch) -> None:
         league="Mirage",
         model_dir="artifacts/ml/mirage_v1",
         model_version="mirage-promo",
+        routes=["fallback_abstain"],
     )
 
     assert called == ["Mirage"]
