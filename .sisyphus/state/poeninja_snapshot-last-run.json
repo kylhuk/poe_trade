@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-03-20T12:03:23.585707+00:00",
+  "timestamp": "2026-03-21T07:43:58.082705+00:00",
   "league": "Mirage",
   "snapshot_mode": "steady_state_snapshot_only",
-  "downstream_derivation_owner": "clickhouse_v2",
+  "downstream_derivation_owner": "ml_v3",
   "downstream_rebuild_triggered": false,
-  "snapshot_rows": 1,
+  "snapshot_rows": 100,
   "fx_rows": 0,
   "labels_rows": 0,
   "events_rows": 0,
