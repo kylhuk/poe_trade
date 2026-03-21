@@ -289,6 +289,7 @@ class AccountStashHarvester:
             }
         except Exception as exc:
             failed_at = _timestamp_utc()
+            error_message = _friendly_scan_error_message(exc)
             self._write_scan_run(
                 scan_id=effective_scan_id,
                 status="failed",
@@ -304,7 +305,7 @@ class AccountStashHarvester:
                 tabs_processed=tabs_processed,
                 items_total=items_total,
                 items_processed=items_processed,
-                error_message=str(exc),
+                error_message=error_message,
             )
             self._write_active_scan(
                 account_name=account_name,
@@ -328,7 +329,7 @@ class AccountStashHarvester:
                 "accountName": account_name,
                 "league": league,
                 "realm": realm,
-                "error": str(exc),
+                "error": error_message,
             }
 
     def _harvest(self, *, realm: str, league: str, dry_run: bool) -> None:
@@ -667,6 +668,13 @@ def _json_each_row_payload(rows: list[dict[str, Any]]) -> str:
 
 def _bool_to_uint8(value: bool) -> int:
     return 1 if value else 0
+
+
+def _friendly_scan_error_message(exc: Exception) -> str:
+    message = str(exc)
+    if "PoE client error 401" in message or "PoE client error 403" in message:
+        return "invalid POESESSID or stash access denied"
+    return message
 
 
 def parse_listed_price(note: str) -> tuple[float, str] | None:

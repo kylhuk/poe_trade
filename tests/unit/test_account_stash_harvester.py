@@ -375,3 +375,29 @@ def test_private_scan_marks_failed_and_skips_publish_when_item_lacks_concrete_va
     assert any('"status": "failed"' in query and '"tabs_processed": 1' in query for query in clickhouse.queries)
     assert any('"status": "failed"' in query and '"items_processed": 1' in query for query in clickhouse.queries)
     assert not any("account_stash_published_scans" in query for query in clickhouse.queries)
+
+
+def test_private_scan_maps_upstream_auth_error_to_invalid_poe_session_message() -> None:
+    class _InvalidSessionClient(_StubClient):
+        def request(self, method, path, params=None, data=None, headers=None):
+            raise RuntimeError("PoE client error 401: unauthorized")
+
+    client = _InvalidSessionClient()
+    clickhouse = _StubClickHouse()
+    status = _StubStatus(clickhouse)
+    harvester = AccountStashHarvester(
+        client,
+        clickhouse,
+        status,
+        account_name="qa-exile",
+        request_headers={"Cookie": "POESESSID=POESESSID-123"},
+    )
+
+    result = harvester.run_private_scan(
+        realm="pc",
+        league="Mirage",
+        price_item=lambda _item: {"predictedValue": 1.0},
+    )
+
+    assert result["status"] == "failed"
+    assert result["error"] == "invalid POESESSID or stash access denied"

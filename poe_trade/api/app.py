@@ -149,6 +149,22 @@ def start_private_stash_scan(
                 code="auth_required",
                 message="session required",
             )
+        try:
+            resolved_account = resolve_account_name(
+                settings, poe_session_id=poe_session_id
+            )
+        except AccountResolutionError as exc:
+            raise ApiError(
+                status=exc.status,
+                code=exc.code,
+                message=str(exc),
+            ) from None
+        if resolved_account != account_name:
+            raise ApiError(
+                status=400,
+                code="invalid_poe_session",
+                message="invalid POESESSID or account profile unavailable",
+            )
 
         policy = RateLimitPolicy(
             settings.rate_limit_max_retries,

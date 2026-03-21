@@ -409,6 +409,56 @@ def test_stash_scan_start_route_returns_async_scan_payload(
     assert body["accountName"] == "qa-exile"
 
 
+def test_stash_scan_start_route_rejects_invalid_poe_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "poe_trade.api.app.get_session",
+        lambda _settings, *, session_id: (
+            {
+                "session_id": session_id,
+                "status": "connected",
+                "account_name": "qa-exile",
+                "expires_at": "2099-01-01T00:00:00Z",
+            }
+            if session_id
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        "poe_trade.api.app.load_credential_state",
+        lambda _settings: {
+            "account_name": "qa-exile",
+            "poe_session_id": "POESESSID-123",
+        },
+    )
+    monkeypatch.setattr("poe_trade.stash_scan.fetch_active_scan", lambda *_args, **_kwargs: None)
+
+    def _raise_invalid(_settings, *, poe_session_id):
+        raise api_app_module.AccountResolutionError(
+            "invalid POESESSID or account profile unavailable",
+            code="invalid_poe_session",
+            status=400,
+        )
+
+    monkeypatch.setattr("poe_trade.api.app.resolve_account_name", _raise_invalid)
+    app = ApiApp(
+        _settings_with_stash_enabled(),
+        clickhouse_client=ClickHouseClient(endpoint="http://ch"),
+    )
+
+    with pytest.raises(ApiError) as exc:
+        app.handle(
+            method="POST",
+            raw_path="/api/v1/stash/scan?league=Mirage&realm=pc",
+            headers={**_auth_headers(), "Cookie": "poe_session=test-session"},
+            body_reader=BytesIO(b""),
+        )
+
+    assert exc.value.status == 400
+    assert exc.value.code == "invalid_poe_session"
+
+
 def test_stash_scan_status_route_returns_progress_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
