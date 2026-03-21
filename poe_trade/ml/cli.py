@@ -69,6 +69,8 @@ class _Args(argparse.Namespace):
     day: str = ""
     max_bytes: int = 13_500_000_000
     run_id: str = ""
+    max_rows_per_route: int = 60000
+    max_rows: int = 60000
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -237,11 +239,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     v3_train_parser = subparsers.add_parser("v3-train")
     _ = v3_train_parser.add_argument("--league", required=True)
     _ = v3_train_parser.add_argument("--model-dir", required=True)
+    _ = v3_train_parser.add_argument("--max-rows-per-route", type=int, default=60000)
 
     v3_train_route_parser = subparsers.add_parser("v3-train-route")
     _ = v3_train_route_parser.add_argument("--league", required=True)
     _ = v3_train_route_parser.add_argument("--route", required=True)
     _ = v3_train_route_parser.add_argument("--model-dir", required=True)
+    _ = v3_train_route_parser.add_argument("--max-rows", type=int, default=60000)
 
     v3_eval_parser = subparsers.add_parser("v3-evaluate")
     _ = v3_eval_parser.add_argument("--league", required=True)
@@ -356,6 +360,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 client,
                 league=league,
                 model_dir=str(args.model_dir),
+                max_rows_per_route=int(args.max_rows_per_route),
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
@@ -365,6 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 league=league,
                 route=str(args.route),
                 model_dir=str(args.model_dir),
+                max_rows=int(args.max_rows),
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0

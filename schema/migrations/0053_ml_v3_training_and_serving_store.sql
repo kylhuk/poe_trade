@@ -84,8 +84,3 @@ CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_price_predictions (
 PARTITION BY toYYYYMMDD(prediction_as_of_ts)
 ORDER BY (league, route, prediction_as_of_ts, identity_key)
 SETTINGS index_granularity = 8192;
-
-GRANT SELECT ON poe_trade.ml_v3_training_examples TO poe_api_reader;
-GRANT SELECT ON poe_trade.ml_v3_retrieval_candidates TO poe_api_reader;
-GRANT SELECT ON poe_trade.ml_v3_model_registry TO poe_api_reader;
-GRANT SELECT ON poe_trade.ml_v3_price_predictions TO poe_api_reader;

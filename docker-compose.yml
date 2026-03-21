@@ -118,6 +118,7 @@ services:
       POE_ML_AUTOMATION_MAX_WALL_CLOCK_SECONDS: "180"
       POE_ML_AUTOMATION_NO_IMPROVEMENT_PATIENCE: "5"
       POE_ML_AUTOMATION_MIN_MDAPE_IMPROVEMENT: "0.001"
+      POE_ML_V3_TRAINER_ENABLED: ${POE_ML_V3_TRAINER_ENABLED:-0}
     volumes:
       - ./.state:/app/.state
       - ./artifacts:/app/artifacts
@@ -163,12 +164,33 @@ services:
       POE_ENABLE_ACCOUNT_STASH: "true"
       POE_ACCOUNT_STASH_REALM: pc
       POE_ACCOUNT_STASH_LEAGUE: Mirage
+      POE_ML_V3_SERVING_ENABLED: ${POE_ML_V3_SERVING_ENABLED:-0}
     volumes:
       - ./artifacts:/app/artifacts
     networks:
       - default
       - lama-lan_backend
     restart: unless-stopped
+
+  ml_v3_ops:
+    build: .
+    profiles: ["ml-v3"]
+    entrypoint: ["poe-ml"]
+    command: ["v3-disk-usage", "--league", "Mirage"]
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema_migrator:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_INTERNAL_URL:-http://clickhouse:8123}
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./.state:/app/.state
+    networks:
+      - default
 
 volumes:
   clickhouse_data:

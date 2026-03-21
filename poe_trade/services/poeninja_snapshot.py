@@ -41,31 +41,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Table for raw PoeNinja currency snapshot (default: poe_trade.raw_poeninja_currency_overview)",
     )
     parser.add_argument(
-        "--fx-table",
-        default="poe_trade.ml_fx_hour_v1",
-        help="Table for FX rates (default: poe_trade.ml_fx_hour_v1)",
-    )
-    parser.add_argument(
-        "--labels-table",
-        default="poe_trade.ml_price_labels_v1",
-        help="Table for price labels (default: poe_trade.ml_price_labels_v1)",
-    )
-    parser.add_argument(
-        "--dataset-table",
-        default="poe_trade.ml_price_dataset_v1",
-        help="Table for ML dataset (default: poe_trade.ml_price_dataset_v1)",
-    )
-    parser.add_argument(
-        "--comps-table",
-        default="poe_trade.ml_comps_v1",
-        help="Table for comps (default: poe_trade.ml_comps_v1)",
-    )
-    parser.add_argument(
-        "--model-dir",
-        default="artifacts/ml/mirage_v2",
-        help="Model directory (default: artifacts/ml/mirage_v2)",
-    )
-    parser.add_argument(
         "--interval-seconds",
         type=float,
         help="Polling interval in seconds (default from config or 900)",
@@ -78,10 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--full-rebuild-backfill",
         action="store_true",
-        help=(
-            "Run explicit downstream full rebuild work after snapshot ingest "
-            "(not used in steady-state mode)"
-        ),
+        help="Deprecated no-op flag retained for compatibility",
     )
     args = parser.parse_args(argv)
 
@@ -149,87 +121,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             snapshot_rows = snapshot_result.get("rows_written", 0)
             LOGGER.info("Snapshot complete: %d rows", snapshot_rows)
-            fx_rows = 0
-            labels_rows = 0
-            events_rows = 0
-            dataset_rows = 0
-            comps_rows = 0
-            serving_profile_rows = 0
-            serving_profile_as_of_ts = ""
-            rebuild_window: dict[str, object] = {}
-            previous_rebuild_window_id = ""
-            rebuild_skipped = True
-            rebuild_skip_reason = "steady_state_snapshot_only"
-            pipeline_mode = "steady_state_snapshot_only"
-            downstream_rebuild_triggered = False
-
             if args.full_rebuild_backfill:
-                LOGGER.info(
-                    "Step 2: Running explicit full rebuild backfill after snapshot ingest"
+                LOGGER.warning(
+                    "--full-rebuild-backfill is deprecated and ignored; poeninja_snapshot now performs snapshot-only ingest"
                 )
-                backfill_result = ml_workflows.run_full_snapshot_rebuild_backfill(
-                    ck_client,
-                    league=league,
-                    snapshot_table=args.snapshot_table,
-                    fx_table=args.fx_table,
-                    labels_table=args.labels_table,
-                    dataset_table=args.dataset_table,
-                    comps_table=args.comps_table,
-                )
-                fx_rows = int(backfill_result.get("fx_rows") or 0)
-                labels_rows = int(backfill_result.get("labels_rows") or 0)
-                events_rows = int(backfill_result.get("events_rows") or 0)
-                dataset_rows = int(backfill_result.get("dataset_rows") or 0)
-                comps_rows = int(backfill_result.get("comps_rows") or 0)
-                serving_profile_rows = int(backfill_result.get("serving_profile_rows") or 0)
-                serving_profile_as_of_ts = str(
-                    backfill_result.get("serving_profile_as_of_ts") or ""
-                )
-                raw_rebuild_window = backfill_result.get("rebuild_window")
-                if isinstance(raw_rebuild_window, dict):
-                    rebuild_window = raw_rebuild_window
-                rebuild_skipped = False
-                rebuild_skip_reason = ""
-                pipeline_mode = "explicit_full_rebuild_backfill"
-                downstream_rebuild_triggered = True
-            else:
-                LOGGER.info(
-                    "Step 2: Running incremental v2 label repair for FX normalization gaps"
-                )
-                label_repair_result = ml_workflows.repair_incremental_price_labels_v2(
-                    ck_client,
-                    league=league,
-                )
-                labels_rows = int(label_repair_result.get("rows_repaired") or 0)
-                LOGGER.info(
-                    "Step 2: Running incremental v2 dataset repair for MV propagation gaps"
-                )
-                repair_result = ml_workflows.repair_incremental_price_dataset_v2(
-                    ck_client,
-                    league=league,
-                )
-                dataset_rows = int(repair_result.get("rows_repaired") or 0)
 
             # Write status
             elapsed = time.time() - start_time
             status = {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "league": league,
-                "snapshot_mode": pipeline_mode,
-                "downstream_derivation_owner": "clickhouse_v2",
-                "downstream_rebuild_triggered": downstream_rebuild_triggered,
+                "snapshot_mode": "steady_state_snapshot_only",
+                "downstream_derivation_owner": "ml_v3",
+                "downstream_rebuild_triggered": False,
                 "snapshot_rows": snapshot_rows,
-                "fx_rows": fx_rows,
-                "labels_rows": labels_rows,
-                "events_rows": events_rows,
-                "dataset_rows": dataset_rows,
-                "comps_rows": comps_rows,
-                "serving_profile_rows": serving_profile_rows,
-                "serving_profile_as_of_ts": serving_profile_as_of_ts,
-                "rebuild_window": rebuild_window,
-                "previous_rebuild_window_id": previous_rebuild_window_id,
-                "rebuild_skipped": rebuild_skipped,
-                "rebuild_skip_reason": rebuild_skip_reason,
+                "fx_rows": 0,
+                "labels_rows": 0,
+                "events_rows": 0,
+                "dataset_rows": 0,
+                "comps_rows": 0,
+                "serving_profile_rows": 0,
+                "serving_profile_as_of_ts": "",
+                "rebuild_window": {},
+                "previous_rebuild_window_id": "",
+                "rebuild_skipped": True,
+                "rebuild_skip_reason": "steady_state_snapshot_only",
                 "elapsed_seconds": round(elapsed, 2),
             }
             with open(status_file, "w") as f:

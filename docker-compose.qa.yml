@@ -36,6 +36,7 @@ services:
       POE_ML_AUTOMATION_MAX_WALL_CLOCK_SECONDS: "180"
       POE_ML_AUTOMATION_NO_IMPROVEMENT_PATIENCE: "1"
       POE_ML_AUTOMATION_MIN_MDAPE_IMPROVEMENT: "0.001"
+      POE_ML_V3_TRAINER_ENABLED: ${POE_ML_V3_TRAINER_ENABLED:-0}
 
   poeninja_snapshot:
     environment:
@@ -54,6 +55,7 @@ services:
       POE_API_CORS_ORIGINS: http://127.0.0.1:4173
       POE_API_TRUSTED_ORIGIN_BYPASS: "true"
       POE_API_OPERATOR_TOKEN: qa-operator-token
+      POE_ML_V3_SERVING_ENABLED: ${POE_ML_V3_SERVING_ENABLED:-0}
     volumes:
       - ./.state/qa:/app/.state/qa
     networks:

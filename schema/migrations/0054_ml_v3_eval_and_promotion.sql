@@ -58,7 +58,3 @@ CREATE TABLE IF NOT EXISTS poe_trade.ml_v3_promotion_audit (
 PARTITION BY toYYYYMMDD(recorded_at)
 ORDER BY (league, candidate_run_id, recorded_at)
 SETTINGS index_granularity = 8192;
-
-GRANT SELECT ON poe_trade.ml_v3_route_eval TO poe_api_reader;
-GRANT SELECT ON poe_trade.ml_v3_eval_runs TO poe_api_reader;
-GRANT SELECT ON poe_trade.ml_v3_promotion_audit TO poe_api_reader;

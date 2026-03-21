@@ -120,8 +120,3 @@ SELECT
     max(observed_at) AS max_observed_at
 FROM poe_trade.silver_v3_item_observations
 GROUP BY realm, league, stash_id, identity_key;
-
-GRANT SELECT ON poe_trade.silver_v3_stash_snapshots TO poe_api_reader;
-GRANT SELECT ON poe_trade.silver_v3_item_events TO poe_api_reader;
-GRANT SELECT ON poe_trade.ml_v3_sale_proxy_labels TO poe_api_reader;
-GRANT SELECT ON poe_trade.v_v3_latest_observations TO poe_api_reader;

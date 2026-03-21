@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from poe_trade.db import ClickHouseClient
+from poe_trade.db.clickhouse import ClickHouseClientError
 
 from . import sql
 
@@ -36,7 +37,10 @@ def _query_rows(client: ClickHouseClient, query: str) -> list[dict[str, Any]]:
 
 
 def disk_usage_bytes(client: ClickHouseClient) -> int:
-    rows = _query_rows(client, sql.disk_usage_query())
+    try:
+        rows = _query_rows(client, sql.disk_usage_query())
+    except ClickHouseClientError:
+        return 0
     if not rows:
         return 0
     return int(rows[0].get("bytes_on_disk") or 0)

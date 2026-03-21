@@ -164,5 +164,3 @@ SELECT
     now64(3) AS inserted_at
 FROM poe_trade.raw_public_stash_pages AS base
 ARRAY JOIN items AS item_json;
-
-GRANT SELECT ON poe_trade.silver_v3_item_observations TO poe_api_reader;

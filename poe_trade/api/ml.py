@@ -17,7 +17,27 @@ class BackendUnavailable(RuntimeError):
 
 
 _MIRAGE_ROLLOUT_LEAGUE = "Mirage"
-_AUTOMATION_DATASET_TABLE = "poe_trade.ml_price_dataset_v2"
+_AUTOMATION_DATASET_TABLE = "poe_trade.ml_v3_training_examples"
+
+
+def _v3_training_enabled() -> bool:
+    return str(os.getenv("POE_ML_V3_TRAINER_ENABLED", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _automation_tables() -> dict[str, str]:
+    return {
+        "eval_runs": "poe_trade.ml_v3_eval_runs",
+        "promotion_audit": "poe_trade.ml_v3_promotion_audit",
+        "route_eval": "poe_trade.ml_v3_route_eval",
+        "model_registry": "poe_trade.ml_v3_model_registry",
+        "dataset": _AUTOMATION_DATASET_TABLE,
+        "is_v3": "1",
+    }
 
 
 def _v3_serving_enabled() -> bool:
@@ -72,12 +92,16 @@ def fetch_predict_one(
     clipboard = validate_predict_one_request(request_payload)
     try:
         if _v3_serving_enabled():
-            v3_payload = v3_serve.predict_one_v3(
-                client,
-                league=league,
-                clipboard_text=clipboard,
-            )
-            return normalize_predict_one_payload(league=league, payload=v3_payload)
+            try:
+                v3_payload = v3_serve.predict_one_v3(
+                    client,
+                    league=league,
+                    clipboard_text=clipboard,
+                )
+                return normalize_predict_one_payload(league=league, payload=v3_payload)
+            except ValueError:
+                # fall through to legacy flow for invalid clipboard fixtures
+                pass
 
         if league != _MIRAGE_ROLLOUT_LEAGUE:
             raw = workflows.predict_one(client, league=league, clipboard_text=clipboard)
@@ -246,26 +270,48 @@ def fetch_automation_status(client: ClickHouseClient, *, league: str) -> dict[st
 def fetch_automation_history(
     client: ClickHouseClient, *, league: str, limit: int = 20
 ) -> dict[str, Any]:
+    tables = _automation_tables()
+    eval_table = tables["eval_runs"]
+    promotion_table = tables["promotion_audit"]
+    route_eval_table = tables["route_eval"]
+    model_registry_table = tables["model_registry"]
+    dataset_table = tables["dataset"]
+    is_v3 = tables["is_v3"] == "1"
     run_rows = workflows.train_run_history(client, league=league, limit=limit)
-    eval_rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT run_id, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, max(recorded_at) AS recorded_at",
-                "FROM poe_trade.ml_eval_runs",
-                f"WHERE league = {_quote(league)}",
-                "GROUP BY run_id",
-                "ORDER BY recorded_at DESC",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
+    if is_v3:
+        eval_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT run_id, avg(global_fair_value_mdape) AS avg_mdape, avg(1.0 - global_confidence_calibration_error) AS avg_cov, max(recorded_at) AS recorded_at",
+                    f"FROM {eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY run_id",
+                    "ORDER BY recorded_at DESC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+    else:
+        eval_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT run_id, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, max(recorded_at) AS recorded_at",
+                    f"FROM {eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY run_id",
+                    "ORDER BY recorded_at DESC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
     promotion_rows = _query_rows(
         client,
         " ".join(
             [
                 "SELECT candidate_run_id, verdict, candidate_model_version, max(recorded_at) AS recorded_at",
-                "FROM poe_trade.ml_promotion_audit_v1",
+                f"FROM {promotion_table}",
                 f"WHERE league = {_quote(league)}",
                 "GROUP BY candidate_run_id, verdict, candidate_model_version",
                 "ORDER BY recorded_at DESC",
@@ -277,80 +323,138 @@ def fetch_automation_history(
         client,
         " ".join(
             [
-                "SELECT model_version, max(promoted_at) AS promoted_at",
-                "FROM poe_trade.ml_model_registry_v1",
+                "SELECT route, model_version, max(promoted_at) AS promoted_at",
+                f"FROM {model_registry_table}",
                 f"WHERE league = {_quote(league)} AND promoted = 1",
-                "GROUP BY model_version",
+                "GROUP BY route, model_version",
                 "ORDER BY promoted_at DESC",
-                f"LIMIT {max(1, limit)}",
+                f"LIMIT {max(len(workflows.ROUTES), max(1, limit))}",
                 "FORMAT JSONEachRow",
             ]
         ),
     )
-    route_rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT route, sum(sample_count) AS sample_count, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, avg(abstain_rate) AS avg_abstain_rate, max(recorded_at) AS recorded_at",
-                "FROM poe_trade.ml_route_eval_v1",
-                f"WHERE league = {_quote(league)}",
-                "GROUP BY route",
-                "ORDER BY sample_count DESC, route ASC",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
-    route_run_rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT run_id, route, sum(sample_count) AS sample_count, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, max(recorded_at) AS recorded_at",
-                "FROM poe_trade.ml_route_eval_v1",
-                f"WHERE league = {_quote(league)}",
-                "GROUP BY run_id, route",
-                "ORDER BY recorded_at DESC, route ASC",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
-    dataset_route_rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "WITH multiIf(category IN ('essence'), 'fallback_abstain', category IN ('fossil','scarab','logbook'), 'fungible_reference', ifNull(rarity, '') = 'Unique' AND multiIf(category = 'ring', 'ring', category = 'amulet', 'amulet', category = 'belt', 'belt', category = 'jewel', 'jewel', match(lowerUTF8(base_type), '(^|\\W)ring(\\W|$)'), 'ring', match(lowerUTF8(base_type), '(^|\\W)amulet(\\W|$)'), 'amulet', match(lowerUTF8(base_type), '(^|\\W)belt(\\W|$)'), 'belt', match(lowerUTF8(base_type), '(^|\\W)(cluster\\s+)?jewel(\\W|$)'), 'jewel', 'other') != 'other', 'structured_boosted_other', ifNull(rarity, '') = 'Unique', 'structured_boosted', category = 'cluster_jewel', 'cluster_jewel_retrieval', ifNull(rarity, '') = 'Rare', 'sparse_retrieval', 'fallback_abstain') AS route",
-                "SELECT route, count() AS rows",
-                f"FROM {_AUTOMATION_DATASET_TABLE}",
-                f"WHERE league = {_quote(league)}",
-                "GROUP BY route",
-                "ORDER BY rows DESC, route ASC",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
+    if is_v3:
+        route_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT route, sum(sample_count) AS sample_count, avg(fair_value_mdape) AS avg_mdape, avg(1.0 - confidence_calibration_error) AS avg_cov, avg(abstain_rate) AS avg_abstain_rate, max(recorded_at) AS recorded_at",
+                    f"FROM {route_eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY route",
+                    "ORDER BY sample_count DESC, route ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+        route_run_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT run_id, route, sum(sample_count) AS sample_count, avg(fair_value_mdape) AS avg_mdape, avg(1.0 - confidence_calibration_error) AS avg_cov, max(recorded_at) AS recorded_at",
+                    f"FROM {route_eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY run_id, route",
+                    "ORDER BY recorded_at DESC, route ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+    else:
+        route_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT route, sum(sample_count) AS sample_count, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, avg(abstain_rate) AS avg_abstain_rate, max(recorded_at) AS recorded_at",
+                    f"FROM {route_eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY route",
+                    "ORDER BY sample_count DESC, route ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+        route_run_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT run_id, route, sum(sample_count) AS sample_count, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, max(recorded_at) AS recorded_at",
+                    f"FROM {route_eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY run_id, route",
+                    "ORDER BY recorded_at DESC, route ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+    if is_v3:
+        dataset_route_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT route, count() AS rows",
+                    f"FROM {dataset_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY route",
+                    "ORDER BY rows DESC, route ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+    else:
+        dataset_route_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "WITH multiIf(category IN ('essence'), 'fallback_abstain', category IN ('fossil','scarab','logbook'), 'fungible_reference', ifNull(rarity, '') = 'Unique' AND multiIf(category = 'ring', 'ring', category = 'amulet', 'amulet', category = 'belt', 'belt', category = 'jewel', 'jewel', match(lowerUTF8(base_type), '(^|\\W)ring(\\W|$)'), 'ring', match(lowerUTF8(base_type), '(^|\\W)amulet(\\W|$)'), 'amulet', match(lowerUTF8(base_type), '(^|\\W)belt(\\W|$)'), 'belt', match(lowerUTF8(base_type), '(^|\\W)(cluster\\s+)?jewel(\\W|$)'), 'jewel', 'other') != 'other', 'structured_boosted_other', ifNull(rarity, '') = 'Unique', 'structured_boosted', category = 'cluster_jewel', 'cluster_jewel_retrieval', ifNull(rarity, '') = 'Rare', 'sparse_retrieval', 'fallback_abstain') AS route",
+                    "SELECT route, count() AS rows",
+                    f"FROM {dataset_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY route",
+                    "ORDER BY rows DESC, route ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
     dataset_totals = _query_rows(
         client,
         " ".join(
             [
                 "SELECT count() AS total_rows, uniqExact(base_type) AS base_type_count",
-                f"FROM {_AUTOMATION_DATASET_TABLE}",
+                f"FROM {dataset_table}",
                 f"WHERE league = {_quote(league)}",
                 "FORMAT JSONEachRow",
             ]
         ),
     )
-    route_family_rows = _query_rows(
-        client,
-        " ".join(
-            [
-                "SELECT route, family, support_bucket, sum(sample_count) AS sample_count, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, max(recorded_at) AS recorded_at",
-                "FROM poe_trade.ml_route_eval_v1",
-                f"WHERE league = {_quote(league)}",
-                "GROUP BY route, family, support_bucket",
-                "ORDER BY route ASC, family ASC, support_bucket ASC",
-                "FORMAT JSONEachRow",
-            ]
-        ),
-    )
+    if is_v3:
+        route_family_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT route, family, support_bucket, sum(sample_count) AS sample_count, avg(fair_value_mdape) AS avg_mdape, avg(1.0 - confidence_calibration_error) AS avg_cov, max(recorded_at) AS recorded_at",
+                    f"FROM {route_eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY route, family, support_bucket",
+                    "ORDER BY route ASC, family ASC, support_bucket ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+    else:
+        route_family_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT route, family, support_bucket, sum(sample_count) AS sample_count, avg(mdape) AS avg_mdape, avg(interval_80_coverage) AS avg_cov, max(recorded_at) AS recorded_at",
+                    f"FROM {route_eval_table}",
+                    f"WHERE league = {_quote(league)}",
+                    "GROUP BY route, family, support_bucket",
+                    "ORDER BY route ASC, family ASC, support_bucket ASC",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
 
     eval_by_run = {str(row.get("run_id") or ""): row for row in eval_rows}
     promotion_by_run = {
@@ -381,6 +485,26 @@ def fetch_automation_history(
                 "verdict": _opt_str(promotion_row.get("verdict")),
             }
         )
+
+    if is_v3 and not history:
+        for idx, row in enumerate(model_rows):
+            model_version = _opt_model_version(row.get("model_version"))
+            promoted_at = _as_iso_utc(row.get("promoted_at"))
+            history.append(
+                {
+                    "runId": f"v3-{idx + 1}",
+                    "status": "completed",
+                    "stopReason": "v3_train_route",
+                    "activeModelVersion": model_version,
+                    "tuningConfigId": "v3-default",
+                    "evalRunId": None,
+                    "updatedAt": promoted_at,
+                    "rowsProcessed": None,
+                    "avgMdape": None,
+                    "avgIntervalCoverage": None,
+                    "verdict": "promoted",
+                }
+            )
 
     quality_trend = [
         {
@@ -455,22 +579,31 @@ def fetch_automation_history(
         if route in latest_per_model:
             continue
         latest_per_model[route] = row
+    latest_promoted_by_route: dict[str, dict[str, Any]] = {}
+    for row in model_rows:
+        route = _opt_str(row.get("route")) or ""
+        if not route or route in latest_promoted_by_route:
+            continue
+        latest_promoted_by_route[route] = row
     model_metrics: list[dict[str, Any]] = []
     for route in workflows.ROUTES:
         row = latest_per_model.get(route)
         if row is not None:
             model_metrics.append(row)
             continue
+        promoted_row = latest_promoted_by_route.get(route)
         model_metrics.append(
             {
                 "runId": None,
                 "route": route,
-                "activeModelVersion": None,
+                "activeModelVersion": _opt_model_version(
+                    (promoted_row or {}).get("model_version")
+                ),
                 "rowsProcessed": history[0].get("rowsProcessed") if history else None,
                 "sampleCount": 0,
                 "avgMdape": None,
                 "avgIntervalCoverage": None,
-                "recordedAt": None,
+                "recordedAt": _as_iso_utc((promoted_row or {}).get("promoted_at")),
             }
         )
 
@@ -530,6 +663,7 @@ def fetch_automation_history(
 
     return {
         "league": league,
+        "mode": "v3" if is_v3 else "v2",
         "history": history,
         "summary": {
             "activeModelVersion": history[0].get("activeModelVersion")

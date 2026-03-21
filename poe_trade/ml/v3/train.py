@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ from sklearn.linear_model import LogisticRegression
 from poe_trade.db import ClickHouseClient
 
 from . import sql
+
+MAX_ROWS_PER_ROUTE_DEFAULT = 60_000
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,24 @@ def _load_training_rows(
     *,
     league: str,
     route: str,
+    max_rows: int,
 ) -> list[dict[str, Any]]:
+    count_rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT count() AS rows",
+                f"FROM {sql.TRAINING_TABLE}",
+                f"WHERE league = {_quote(league)} AND route = {_quote(route)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    total_rows = int((count_rows[0].get("rows") if count_rows else 0) or 0)
+    bucket_threshold = 1000
+    if max_rows > 0 and total_rows > max_rows:
+        bucket_threshold = max(1, min(1000, int((max_rows * 1000) / total_rows)))
+
     query = " ".join(
         [
             "SELECT",
@@ -53,6 +73,8 @@ def _load_training_rows(
             f"FROM {sql.TRAINING_TABLE}",
             f"WHERE league = {_quote(league)} AND route = {_quote(route)}",
             "AND target_price_chaos > 0",
+            f"AND split_bucket < {bucket_threshold}",
+            f"LIMIT {max(1, max_rows)}",
             "FORMAT JSONEachRow",
         ]
     )
@@ -79,14 +101,51 @@ def _feature_dict(row: dict[str, Any]) -> dict[str, float]:
     return merged
 
 
+def _register_route_model(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    route: str,
+    model_version: str,
+    model_dir: str,
+    row_count: int,
+) -> None:
+    recorded_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    row = {
+        "league": league,
+        "route": route,
+        "model_version": model_version,
+        "model_dir": model_dir,
+        "promoted": 1,
+        "promoted_at": recorded_at,
+        "metadata_json": json.dumps(
+            {
+                "row_count": row_count,
+                "source": "ml_v3_train",
+            },
+            separators=(",", ":"),
+        ),
+    }
+    client.execute(
+        "INSERT INTO poe_trade.ml_v3_model_registry FORMAT JSONEachRow\n"
+        + json.dumps(row, separators=(",", ":"))
+    )
+
+
 def train_route_v3(
     client: ClickHouseClient,
     *,
     league: str,
     route: str,
     model_dir: str,
+    max_rows: int = MAX_ROWS_PER_ROUTE_DEFAULT,
 ) -> dict[str, Any]:
-    rows = _load_training_rows(client, league=league, route=route)
+    rows = _load_training_rows(
+        client,
+        league=league,
+        route=route,
+        max_rows=max_rows,
+    )
     if not rows:
         return asdict(
             TrainRouteResult(
@@ -108,24 +167,24 @@ def train_route_v3(
     model_p10 = GradientBoostingRegressor(
         loss="quantile",
         alpha=0.1,
-        n_estimators=300,
+        n_estimators=120,
         learning_rate=0.05,
-        max_depth=5,
+        max_depth=3,
         random_state=42,
     )
     model_p50 = GradientBoostingRegressor(
         loss="absolute_error",
-        n_estimators=300,
+        n_estimators=120,
         learning_rate=0.05,
-        max_depth=5,
+        max_depth=3,
         random_state=42,
     )
     model_p90 = GradientBoostingRegressor(
         loss="quantile",
         alpha=0.9,
-        n_estimators=300,
+        n_estimators=120,
         learning_rate=0.05,
-        max_depth=5,
+        max_depth=3,
         random_state=42,
     )
     model_p10.fit(X, y_p10)
@@ -180,6 +239,15 @@ def train_route_v3(
     target_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = target_dir / "bundle.joblib"
     joblib.dump(bundle, bundle_path)
+    model_version = f"v3-{league.lower()}-{route}"
+    _register_route_model(
+        client,
+        league=league,
+        route=route,
+        model_version=model_version,
+        model_dir=model_dir,
+        row_count=len(rows),
+    )
 
     return asdict(
         TrainRouteResult(
@@ -197,6 +265,7 @@ def train_all_routes_v3(
     *,
     league: str,
     model_dir: str,
+    max_rows_per_route: int = MAX_ROWS_PER_ROUTE_DEFAULT,
 ) -> dict[str, Any]:
     rows = _query_rows(
         client,
@@ -215,7 +284,13 @@ def train_all_routes_v3(
         str(row.get("route") or "") for row in rows if str(row.get("route") or "")
     ]
     results = [
-        train_route_v3(client, league=league, route=route, model_dir=model_dir)
+        train_route_v3(
+            client,
+            league=league,
+            route=route,
+            model_dir=model_dir,
+            max_rows=max_rows_per_route,
+        )
         for route in routes
     ]
     return {
