@@ -241,6 +241,8 @@ def update_rollout_controls(
 
 def fetch_automation_status(client: ClickHouseClient, *, league: str) -> dict[str, Any]:
     status_payload = fetch_status(client, league=league)
+    tables = _automation_tables()
+    observability = _automation_observability(client, league=league, tables=tables)
     history_rows = workflows.train_run_history(client, league=league, limit=1)
     latest = history_rows[0] if history_rows else {}
     active_model_version = _opt_model_version(latest.get("active_model_version"))
@@ -264,6 +266,7 @@ def fetch_automation_status(client: ClickHouseClient, *, league: str) -> dict[st
         else None,
         "promotionVerdict": status_payload.get("promotion_verdict"),
         "routeHotspots": status_payload.get("route_hotspots") or [],
+        "observability": observability,
     }
 
 
@@ -486,26 +489,6 @@ def fetch_automation_history(
             }
         )
 
-    if is_v3 and not history:
-        for idx, row in enumerate(model_rows):
-            model_version = _opt_model_version(row.get("model_version"))
-            promoted_at = _as_iso_utc(row.get("promoted_at"))
-            history.append(
-                {
-                    "runId": f"v3-{idx + 1}",
-                    "status": "completed",
-                    "stopReason": "v3_train_route",
-                    "activeModelVersion": model_version,
-                    "tuningConfigId": "v3-default",
-                    "evalRunId": None,
-                    "updatedAt": promoted_at,
-                    "rowsProcessed": None,
-                    "avgMdape": None,
-                    "avgIntervalCoverage": None,
-                    "verdict": "promoted",
-                }
-            )
-
     quality_trend = [
         {
             "runId": row.get("runId"),
@@ -661,6 +644,8 @@ def fetch_automation_history(
         if value is not None:
             mdape_values.append(value)
 
+    observability = _automation_observability(client, league=league, tables=tables)
+
     return {
         "league": league,
         "mode": "v3" if is_v3 else "v2",
@@ -698,7 +683,94 @@ def fetch_automation_history(
             "routes": dataset_routes,
         },
         "promotions": promotions,
+        "observability": observability,
     }
+
+
+def _automation_observability(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    tables: dict[str, str],
+) -> dict[str, Any]:
+    dataset_table = tables["dataset"]
+    model_registry_table = tables["model_registry"]
+    eval_table = tables["eval_runs"]
+    route_eval_table = tables["route_eval"]
+
+    dataset_rows = _safe_query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT count() AS total_rows, max(as_of_ts) AS latest_as_of",
+                f"FROM {dataset_table}",
+                f"WHERE league = {_quote(league)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    model_rows = _safe_query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT count() AS promoted_models, max(promoted_at) AS latest_promoted_at",
+                f"FROM {model_registry_table}",
+                f"WHERE league = {_quote(league)} AND promoted = 1",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    eval_rows = _safe_query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT count() AS eval_runs, max(recorded_at) AS latest_eval_at",
+                f"FROM {eval_table}",
+                f"WHERE league = {_quote(league)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    route_eval_rows = _safe_query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT count() AS route_eval_rows, max(recorded_at) AS latest_route_eval_at",
+                f"FROM {route_eval_table}",
+                f"WHERE league = {_quote(league)}",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+
+    dataset = dataset_rows[0] if dataset_rows else {}
+    models = model_rows[0] if model_rows else {}
+    evals = eval_rows[0] if eval_rows else {}
+    route_evals = route_eval_rows[0] if route_eval_rows else {}
+
+    eval_run_count = _opt_int(evals.get("eval_runs")) or 0
+    eval_sample_rows = _opt_int(route_evals.get("route_eval_rows")) or 0
+    latest_eval_at = _as_iso_utc(evals.get("latest_eval_at")) or _as_iso_utc(
+        route_evals.get("latest_route_eval_at")
+    )
+
+    return {
+        "datasetRows": _opt_int(dataset.get("total_rows")) or 0,
+        "latestTrainingAsOf": _as_iso_utc(dataset.get("latest_as_of")),
+        "promotedModels": _opt_int(models.get("promoted_models")) or 0,
+        "latestPromotionAt": _as_iso_utc(models.get("latest_promoted_at")),
+        "evalRuns": eval_run_count,
+        "evalSampleRows": eval_sample_rows,
+        "latestEvalAt": latest_eval_at,
+        "evaluationAvailable": eval_run_count > 0 and eval_sample_rows > 0,
+    }
+
+
+def _safe_query_rows(client: ClickHouseClient, query: str) -> list[dict[str, Any]]:
+    try:
+        return _query_rows(client, query)
+    except ClickHouseClientError:
+        return []
 
 
 def map_status_payload(*, league: str, payload: dict[str, Any]) -> dict[str, Any]:

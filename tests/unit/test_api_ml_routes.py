@@ -920,6 +920,61 @@ def test_fetch_automation_history_normalizes_no_active_model(
     assert payload["history"][0]["activeModelVersion"] is None
 
 
+def test_fetch_automation_history_v3_does_not_fabricate_eval_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(workflows, "train_run_history", lambda *_args, **_kwargs: [])
+
+    def _fake_query_rows(
+        _client: ClickHouseClient, query: str
+    ) -> list[dict[str, object]]:
+        if "FROM poe_trade.ml_v3_model_registry" in query:
+            return [
+                {
+                    "route": "sparse_retrieval",
+                    "model_version": "v3-mirage-sparse_retrieval",
+                    "promoted_at": "2026-03-22 11:48:25.185",
+                }
+            ]
+        if (
+            "FROM poe_trade.ml_v3_training_examples" in query
+            and "count() AS total_rows" in query
+        ):
+            return [
+                {
+                    "total_rows": 1000,
+                    "base_type_count": 120,
+                    "latest_as_of": "2026-03-20 11:57:36.615",
+                }
+            ]
+        if (
+            "FROM poe_trade.ml_v3_training_examples" in query
+            and "GROUP BY route" in query
+        ):
+            return [{"route": "sparse_retrieval", "rows": 1000}]
+        if (
+            "FROM poe_trade.ml_v3_eval_runs" in query
+            or "FROM poe_trade.ml_v3_route_eval" in query
+        ):
+            return []
+        return []
+
+    monkeypatch.setattr(api_ml, "_query_rows", _fake_query_rows)
+
+    payload = api_ml.fetch_automation_history(
+        ClickHouseClient(endpoint="http://ch"),
+        league="Mirage",
+    )
+
+    assert payload["history"] == []
+    assert payload["summary"]["latestAvgMdape"] is None
+    assert payload["summary"]["latestAvgIntervalCoverage"] is None
+    assert payload["observability"]["evaluationAvailable"] is False
+    assert (
+        payload["observability"]["latestTrainingAsOf"] == "2026-03-20T11:57:36.615000Z"
+    )
+
+
 def test_ml_automation_status_backend_failure_sanitized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

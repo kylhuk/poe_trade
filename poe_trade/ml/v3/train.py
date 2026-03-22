@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+import uuid
 
 import joblib
 import numpy as np
@@ -17,6 +18,7 @@ from poe_trade.db import ClickHouseClient
 from . import sql
 
 MAX_ROWS_PER_ROUTE_DEFAULT = 60_000
+EVAL_ROWS_PER_ROUTE_DEFAULT = 2_000
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,150 @@ def _register_route_model(
         "INSERT INTO poe_trade.ml_v3_model_registry FORMAT JSONEachRow\n"
         + json.dumps(row, separators=(",", ":"))
     )
+
+
+def _load_bundle_for_route(
+    *, model_dir: str, league: str, route: str
+) -> dict[str, Any] | None:
+    bundle_path = Path(model_dir) / "v3" / league / route / "bundle.joblib"
+    if not bundle_path.exists():
+        return None
+    payload = joblib.load(bundle_path)
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _load_eval_rows(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    route: str,
+    max_rows: int,
+) -> list[dict[str, Any]]:
+    query = " ".join(
+        [
+            "SELECT as_of_ts, item_id, identity_key, support_count_recent,",
+            "feature_vector_json, mod_features_json",
+            f"FROM {sql.TRAINING_TABLE}",
+            f"WHERE league = {_quote(league)} AND route = {_quote(route)}",
+            "AND target_price_chaos > 0",
+            "AND split_bucket >= 900",
+            "ORDER BY as_of_ts DESC",
+            f"LIMIT {max(1, max_rows)}",
+            "FORMAT JSONEachRow",
+        ]
+    )
+    return _query_rows(client, query)
+
+
+def _insert_eval_predictions(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    route: str,
+    run_id: str,
+    rows: list[dict[str, Any]],
+    bundle: dict[str, Any],
+) -> int:
+    if not rows:
+        return 0
+    vectorizer = bundle.get("vectorizer")
+    models = bundle.get("models") or {}
+    if vectorizer is None or not isinstance(models, dict):
+        return 0
+    model_p10 = models.get("p10")
+    model_p50 = models.get("p50")
+    model_p90 = models.get("p90")
+    model_fast = models.get("fast_sale_24h")
+    model_sale = models.get("sale_probability")
+    if model_p10 is None or model_p50 is None or model_p90 is None:
+        return 0
+
+    feature_rows = [_feature_dict(row) for row in rows]
+    X = vectorizer.transform(feature_rows)
+    pred_p10 = model_p10.predict(X)
+    pred_p50 = model_p50.predict(X)
+    pred_p90 = model_p90.predict(X)
+    if model_fast is not None:
+        pred_fast = model_fast.predict(X)
+    else:
+        multiplier = float(bundle.get("fallback_fast_sale_multiplier") or 0.9)
+        pred_fast = pred_p50 * multiplier
+    if model_sale is not None:
+        pred_sale = model_sale.predict_proba(X)[:, 1]
+    else:
+        pred_sale = [0.5 for _ in rows]
+
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    payload_rows: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        p10 = max(0.1, float(pred_p10[idx]))
+        p50 = max(p10, float(pred_p50[idx]))
+        p90 = max(p50, float(pred_p90[idx]))
+        fast_sale = max(0.1, float(pred_fast[idx]))
+        sale_prob = float(pred_sale[idx])
+        support_count = int(row.get("support_count_recent") or 0)
+        confidence = min(0.99, max(0.05, 0.25 + min(support_count, 4000) / 8000.0))
+        payload_rows.append(
+            {
+                "prediction_id": str(uuid.uuid4()),
+                "run_id": run_id,
+                "prediction_as_of_ts": row.get("as_of_ts") or now,
+                "league": league,
+                "route": route,
+                "item_id": row.get("item_id"),
+                "identity_key": str(row.get("identity_key") or ""),
+                "fair_value_p10": p10,
+                "fair_value_p50": p50,
+                "fair_value_p90": p90,
+                "fast_sale_24h_price": fast_sale,
+                "sale_probability_24h": sale_prob,
+                "confidence": confidence,
+                "support_count_recent": support_count,
+                "prediction_source": "ml_v3_train_eval",
+                "uncertainty_tier": "medium" if confidence >= 0.45 else "high",
+                "fallback_reason": "",
+                "prediction_explainer_json": "{}",
+                "recorded_at": now,
+            }
+        )
+    body = "\n".join(json.dumps(row, separators=(",", ":")) for row in payload_rows)
+    client.execute(
+        "INSERT INTO poe_trade.ml_v3_price_predictions FORMAT JSONEachRow\n" + body
+    )
+    return len(payload_rows)
+
+
+def record_eval_predictions_for_run(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    model_dir: str,
+    routes: list[str],
+    run_id: str,
+    max_rows_per_route: int = EVAL_ROWS_PER_ROUTE_DEFAULT,
+) -> int:
+    total = 0
+    for route in routes:
+        bundle = _load_bundle_for_route(model_dir=model_dir, league=league, route=route)
+        if bundle is None:
+            continue
+        rows = _load_eval_rows(
+            client,
+            league=league,
+            route=route,
+            max_rows=max_rows_per_route,
+        )
+        total += _insert_eval_predictions(
+            client,
+            league=league,
+            route=route,
+            run_id=run_id,
+            rows=rows,
+            bundle=bundle,
+        )
+    return total
 
 
 def train_route_v3(
@@ -295,6 +441,7 @@ def train_all_routes_v3(
     routes = [
         str(row.get("route") or "") for row in rows if str(row.get("route") or "")
     ]
+    run_id = f"v3-train-{league.lower()}-{int(datetime.now(UTC).timestamp())}"
     results = [
         train_route_v3(
             client,
@@ -305,9 +452,23 @@ def train_all_routes_v3(
         )
         for route in routes
     ]
+    trained_routes = [
+        str(row.get("route") or "")
+        for row in results
+        if str(row.get("status") or "") == "trained" and str(row.get("route") or "")
+    ]
+    eval_prediction_rows = record_eval_predictions_for_run(
+        client,
+        league=league,
+        model_dir=model_dir,
+        routes=trained_routes,
+        run_id=run_id,
+    )
     return {
+        "run_id": run_id,
         "league": league,
         "routes": routes,
         "results": results,
         "trained_count": sum(1 for row in results if row.get("status") == "trained"),
+        "eval_prediction_rows": eval_prediction_rows,
     }

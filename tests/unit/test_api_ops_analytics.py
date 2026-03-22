@@ -12,6 +12,7 @@ from poe_trade.api.ops import (
     analytics_report,
     analytics_scanner,
     analytics_search_history,
+    analytics_search_suggestions,
     dashboard_payload,
     scanner_recommendations_payload,
     scanner_summary_payload,
@@ -79,6 +80,10 @@ class _LegacyFallbackClickHouse(ClickHouseClient):
         self.queries.append(query)
         if "complexity_tier" in query:
             raise ClickHouseClientError("Unknown column complexity_tier")
+        if "estimated_searches" in query:
+            raise ClickHouseClientError(
+                "Unknown expression identifier `estimated_searches`"
+            )
         return self.legacy_response
 
 
@@ -642,6 +647,91 @@ def test_scanner_recommendations_payload_keeps_legacy_rows_readable() -> None:
     assert len(client.queries) == 2
     assert "complexity_tier" in client.queries[0]
     assert "complexity_tier" not in client.queries[1]
+
+
+def test_scanner_recommendations_payload_falls_back_on_unknown_identifier() -> None:
+    client = _LegacyFallbackClickHouse(
+        '{"scanner_run_id":"scan-legacy","strategy_id":"bulk_essence","league":"Mirage",'
+        '"item_or_market_key":"legacy-key","why_it_fired":"spread>10",'
+        '"buy_plan":"buy <= 10c","max_buy":10.0,"transform_plan":"none",'
+        '"exit_plan":"list @ 15c","execution_venue":"manual_trade",'
+        '"expected_profit_chaos":5.0,"expected_roi":0.5,"expected_hold_time":"~20m",'
+        '"confidence":0.7,"evidence_snapshot":"{}",'
+        '"recorded_at":"2026-03-14 10:00:00"}\n'
+    )
+
+    payload = scanner_recommendations_payload(client)
+
+    assert payload["recommendations"][0]["scannerRunId"] == "scan-legacy"
+    assert len(client.queries) == 2
+    assert "estimated_searches" in client.queries[0]
+    assert "estimated_searches" not in client.queries[1]
+
+
+class _MissingAnalyticsTablesClickHouse(ClickHouseClient):
+    def __init__(self) -> None:
+        super().__init__(endpoint="http://clickhouse")
+
+    def execute(  # pyright: ignore[reportImplicitOverride]
+        self, query: str, settings: Mapping[str, str] | None = None
+    ) -> str:
+        del settings
+        lowered = query.lower()
+        if "from poe_trade.v_ps_items_enriched" in lowered:
+            raise ClickHouseClientError(
+                "Unknown table expression identifier 'poe_trade.v_ps_items_enriched'"
+            )
+        if "from poe_trade.ml_price_dataset_v1" in lowered:
+            raise ClickHouseClientError(
+                "Unknown table expression identifier 'poe_trade.ml_price_dataset_v1'"
+            )
+        return ""
+
+
+def test_analytics_search_suggestions_returns_empty_when_dataset_missing() -> None:
+    payload = analytics_search_suggestions(
+        _MissingAnalyticsTablesClickHouse(),
+        query="Divine",
+    )
+
+    assert payload == {"query": "Divine", "suggestions": []}
+
+
+def test_analytics_search_history_returns_empty_payload_when_dataset_missing() -> None:
+    payload = analytics_search_history(
+        _MissingAnalyticsTablesClickHouse(),
+        query_params={"query": ["Divine"]},
+        default_league="Mirage",
+    )
+
+    assert payload["query"]["text"] == "Divine"
+    assert payload["filters"]["leagueOptions"] == []
+    assert payload["rows"] == []
+
+
+def test_analytics_pricing_outliers_returns_empty_payload_when_dataset_missing() -> (
+    None
+):
+    payload = analytics_pricing_outliers(
+        _MissingAnalyticsTablesClickHouse(),
+        query_params={"query": ["Divine"]},
+        default_league="Mirage",
+    )
+
+    assert payload["query"]["league"] == "Mirage"
+    assert payload["rows"] == []
+    assert payload["weekly"] == []
+
+
+def test_analytics_gold_diagnostics_handles_missing_source_view() -> None:
+    payload = analytics_gold_diagnostics(
+        _MissingAnalyticsTablesClickHouse(), league="Mirage"
+    )
+
+    assert payload["league"] == "Mirage"
+    assert payload["summary"]["status"] == "empty"
+    assert payload["summary"]["martCount"] == 0
+    assert payload["marts"] == []
 
 
 def test_scanner_recommendations_payload_legacy_fallback_supports_operation_sort() -> (

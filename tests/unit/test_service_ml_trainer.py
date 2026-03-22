@@ -129,6 +129,15 @@ def test_ml_trainer_uses_v3_training_when_enabled(monkeypatch) -> None:
     )
     monkeypatch.setenv("POE_ML_V3_TRAINER_ENABLED", "1")
     monkeypatch.setattr(
+        ml_trainer,
+        "_refresh_v3_training_examples",
+        lambda *_args, **_kwargs: {
+            "latest_source_at": None,
+            "latest_training_at": None,
+            "replayed_days": [],
+        },
+    )
+    monkeypatch.setattr(
         ml_trainer.v3_train,
         "train_all_routes_v3",
         lambda *_args, **_kwargs: {"trained_count": 2, "routes": ["a", "b"]},
@@ -151,3 +160,36 @@ def test_ml_trainer_uses_v3_training_when_enabled(monkeypatch) -> None:
     result = ml_trainer.main(["--once", "--league", "Mirage"])
 
     assert result == 0
+
+
+def test_refresh_v3_training_examples_replays_missing_days() -> None:
+    class _Client:
+        def execute(self, query: str) -> str:
+            if "max(observed_at) AS latest_source_at" in query:
+                return '{"latest_source_at":"2026-03-22 12:06:15.756"}\n'
+            if "max(as_of_ts) AS latest_training_at" in query:
+                return '{"latest_training_at":"2026-03-20 11:57:36.615"}\n'
+            if "min(toDate(observed_at)) AS first_day" in query:
+                return '{"first_day":"2026-03-01"}\n'
+            return ""
+
+    calls: list[tuple[str, str]] = []
+
+    def _backfill_range(*_args, **kwargs):
+        calls.append((kwargs["start_day"], kwargs["end_day"]))
+        return {
+            "results": [
+                {"day": "2026-03-21"},
+                {"day": "2026-03-22"},
+            ]
+        }
+
+    original = ml_trainer.v3_backfill.backfill_range
+    ml_trainer.v3_backfill.backfill_range = _backfill_range
+    try:
+        payload = ml_trainer._refresh_v3_training_examples(_Client(), league="Mirage")
+    finally:
+        ml_trainer.v3_backfill.backfill_range = original
+
+    assert calls == [("2026-03-21", "2026-03-22")]
+    assert payload["replayed_days"] == ["2026-03-21", "2026-03-22"]

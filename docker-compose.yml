@@ -33,8 +33,8 @@ services:
     env_file:
       - .env
     environment:
-      POE_CLICKHOUSE_USER: ${POE_CLICKHOUSE_USER:-poe_ingest}
-      POE_CLICKHOUSE_PASSWORD: ${POE_CLICKHOUSE_PASSWORD:-poe_ingest}
+      POE_CLICKHOUSE_USER: ${POE_MIGRATOR_CLICKHOUSE_USER:-default}
+      POE_CLICKHOUSE_PASSWORD: ${POE_MIGRATOR_CLICKHOUSE_PASSWORD:-}
       POE_CLICKHOUSE_URL: ${POE_CLICKHOUSE_INTERNAL_URL:-http://clickhouse:8123}
     depends_on:
       clickhouse:

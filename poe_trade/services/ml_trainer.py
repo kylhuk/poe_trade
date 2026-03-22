@@ -6,11 +6,14 @@ import logging
 import os
 import time
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from poe_trade.config import settings as config_settings
 from poe_trade.db import ClickHouseClient
 from poe_trade.ml import workflows
+from poe_trade.ml.v3 import backfill as v3_backfill
+from poe_trade.ml.v3 import eval as v3_eval
 from poe_trade.ml.v3 import train as v3_train
 
 SERVICE_NAME = "ml_trainer"
@@ -30,6 +33,98 @@ def _write_status(payload: dict[str, object]) -> None:
     _ = status_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+
+
+def _query_rows(client: ClickHouseClient, query: str) -> list[dict[str, object]]:
+    payload = client.execute(query).strip()
+    if not payload:
+        return []
+    return [json.loads(line) for line in payload.splitlines() if line.strip()]
+
+
+def _refresh_v3_training_examples(
+    client: ClickHouseClient, *, league: str
+) -> dict[str, object]:
+    source_rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT max(observed_at) AS latest_source_at",
+                "FROM poe_trade.silver_v3_item_observations",
+                f"WHERE league = '{league}'",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    train_rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT max(as_of_ts) AS latest_training_at",
+                "FROM poe_trade.ml_v3_training_examples",
+                f"WHERE league = '{league}'",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    latest_source_at = str(
+        (source_rows[0] if source_rows else {}).get("latest_source_at") or ""
+    )
+    latest_training_at = str(
+        (train_rows[0] if train_rows else {}).get("latest_training_at") or ""
+    )
+    if not latest_source_at:
+        return {
+            "latest_source_at": None,
+            "latest_training_at": latest_training_at or None,
+            "replayed_days": [],
+        }
+
+    source_day = latest_source_at.split(" ", 1)[0]
+    training_day = latest_training_at.split(" ", 1)[0] if latest_training_at else ""
+    replayed_days: list[str] = []
+    if not training_day or source_day >= training_day:
+        start_rows = _query_rows(
+            client,
+            " ".join(
+                [
+                    "SELECT min(toDate(observed_at)) AS first_day",
+                    "FROM poe_trade.silver_v3_item_observations",
+                    f"WHERE league = '{league}'",
+                    "FORMAT JSONEachRow",
+                ]
+            ),
+        )
+        first_source_day = str(
+            (start_rows[0] if start_rows else {}).get("first_day") or ""
+        )
+        start_day = first_source_day
+        if training_day:
+            try:
+                next_day = datetime.strptime(
+                    training_day, "%Y-%m-%d"
+                ).date() + timedelta(days=1)
+                start_day = next_day.isoformat()
+            except ValueError:
+                start_day = training_day
+        if start_day and start_day <= source_day:
+            v3_backfill_result = v3_backfill.backfill_range(
+                client,
+                league=league,
+                start_day=start_day,
+                end_day=source_day,
+            )
+            replayed_days = [
+                str(row.get("day") or "")
+                for row in v3_backfill_result.get("results", [])
+                if str(row.get("day") or "")
+            ]
+
+    return {
+        "latest_source_at": latest_source_at,
+        "latest_training_at": latest_training_at or None,
+        "replayed_days": replayed_days,
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -79,16 +174,28 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     while True:
         if v3_enabled:
+            data_refresh = _refresh_v3_training_examples(client, league=league)
             v3_result = v3_train.train_all_routes_v3(
                 client,
                 league=league,
                 model_dir=str(args.model_dir),
             )
+            eval_result: dict[str, object] | None = None
+            run_id = str(v3_result.get("run_id") or "")
+            eval_prediction_rows = int(v3_result.get("eval_prediction_rows") or 0)
+            if run_id and eval_prediction_rows > 0:
+                eval_result = v3_eval.evaluate_run(
+                    client,
+                    league=league,
+                    run_id=run_id,
+                )
             result = {
                 "status": "completed",
                 "stop_reason": "v3_train_cycle",
                 "active_model_version": "v3",
                 "v3": v3_result,
+                "data_refresh": data_refresh,
+                "evaluation": eval_result,
             }
         else:
             result = workflows.train_loop(

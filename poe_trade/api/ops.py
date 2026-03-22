@@ -730,7 +730,7 @@ def analytics_gold_diagnostics(
         }
 
     league_sql = _quote_sql_string(league)
-    league_rows = _safe_json_rows(
+    league_rows = _safe_json_rows_optional_compat(
         client,
         "SELECT mart_name, source_league_rows, gold_league_rows "
         "FROM ("
@@ -949,7 +949,7 @@ def analytics_search_suggestions(
     query_limit = max(1, min(limit, 20))
     label_expr = _search_item_label_sql()
     kind_expr = _search_item_kind_sql()
-    rows = _safe_json_rows(
+    rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1040,7 +1040,7 @@ def analytics_search_history(
         time_to=time_to,
     )
 
-    league_rows = _safe_json_rows(
+    league_rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1052,7 +1052,7 @@ def analytics_search_history(
             ]
         ),
     )
-    range_rows = _safe_json_rows(
+    range_rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1074,7 +1074,7 @@ def analytics_search_history(
     max_added_on = _as_iso_utc(ranges.get("max_added_on"))
 
     price_bucket = _history_price_bucket_size(min_price, max_price)
-    price_rows = _safe_json_rows(
+    price_rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1091,7 +1091,7 @@ def analytics_search_history(
     )
 
     time_bucket_seconds = _history_time_bucket_seconds(min_added_on, max_added_on)
-    time_rows = _safe_json_rows(
+    time_rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1108,7 +1108,7 @@ def analytics_search_history(
     )
 
     label_expr = _search_item_label_sql()
-    row_rows = _safe_json_rows(
+    row_rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1205,7 +1205,7 @@ def analytics_pricing_outliers(
             + quoted_query
             + ") > 0"
         )
-    summary_rows = _safe_json_rows(
+    summary_rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1286,7 +1286,7 @@ def analytics_pricing_outliers(
             ]
         ),
     )
-    weekly_rows = _safe_json_rows(
+    weekly_rows = _safe_json_rows_optional_compat(
         client,
         " ".join(
             [
@@ -1484,7 +1484,11 @@ def _scanner_recommendations_query(
 
 def _is_missing_metadata_column_error(exc: ClickHouseClientError) -> bool:
     message = str(exc).lower()
-    return "column" in message and ("unknown" in message or "missing" in message)
+    if ("column" in message or "identifier" in message) and (
+        "unknown" in message or "missing" in message
+    ):
+        return True
+    return "unknown expression identifier" in message
 
 
 def _is_schema_compatibility_error(exc: ClickHouseClientError) -> bool:

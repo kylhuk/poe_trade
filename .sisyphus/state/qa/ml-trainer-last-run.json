@@ -2,6 +2,12 @@
   "league": "Mirage",
   "result": {
     "active_model_version": "v3",
+    "data_refresh": {
+      "latest_source_at": null,
+      "latest_training_at": null,
+      "replayed_days": []
+    },
+    "evaluation": null,
     "status": "completed",
     "stop_reason": "v3_train_cycle",
     "v3": {
