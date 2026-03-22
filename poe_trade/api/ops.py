@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,13 @@ from .service_control import ServiceSnapshot
 
 class OpsBackendUnavailable(RuntimeError):
     pass
+
+
+_MISSING_TABLE_ERROR_PATTERNS = (
+    re.compile(r"table\s+([a-z0-9_.]+)\s+does(?:n't| not)\s+exist"),
+    re.compile(r"unknown\s+table\s+(?:expression|identifier)?\s*([a-z0-9_.]+)"),
+    re.compile(r"table\s+([a-z0-9_.]+)\s+not\s+found"),
+)
 
 
 def contract_payload(
@@ -48,6 +56,7 @@ def contract_payload(
             "ops_scanner_recommendations": "/api/v1/ops/scanner/recommendations",
             "ops_alert_ack": "/api/v1/ops/alerts/{alert_id}/ack",
             "ops_analytics": "/api/v1/ops/analytics/{kind}",
+            "ops_analytics_opportunities": "/api/v1/ops/analytics/opportunities",
             "ops_search_suggestions": "/api/v1/ops/analytics/search-suggestions",
             "ops_search_history": "/api/v1/ops/analytics/search-history",
             "ops_pricing_outliers": "/api/v1/ops/analytics/pricing-outliers",
@@ -104,7 +113,7 @@ def dashboard_payload(
     opportunities = scanner_recommendations_payload(
         client,
         limit=3,
-        sort_by="expected_profit_per_minute_chaos",
+        sort_by="expected_profit_per_operation_chaos",
     )["recommendations"]
     summary_snapshots = [
         snapshot
@@ -203,7 +212,87 @@ def analytics_scanner(client: ClickHouseClient) -> dict[str, Any]:
         "FROM poe_trade.scanner_recommendations "
         "GROUP BY strategy_id ORDER BY strategy_id FORMAT JSONEachRow",
     )
-    return {"rows": rows}
+    gate_rejections = _safe_json_rows_optional_compat(
+        client,
+        "SELECT decision_reason, count() AS rejection_count "
+        "FROM poe_trade.scanner_candidate_decisions "
+        "WHERE accepted = 0 "
+        "GROUP BY decision_reason "
+        "ORDER BY rejection_count DESC, decision_reason ASC FORMAT JSONEachRow",
+    )
+    complexity_tiers, _ = _safe_json_rows_with_legacy_fallback(
+        client,
+        "SELECT complexity_tier, count() AS tier_count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY tier_count DESC, complexity_tier ASC FORMAT JSONEachRow",
+        "SELECT ifNull(JSONExtractString(evidence_snapshot, 'complexity_tier'), '') AS complexity_tier, count() AS tier_count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY tier_count DESC, complexity_tier ASC FORMAT JSONEachRow",
+    )
+    return {
+        "rows": rows,
+        "gateRejections": gate_rejections,
+        "complexityTiers": complexity_tiers,
+    }
+
+
+def analytics_opportunities(client: ClickHouseClient) -> dict[str, Any]:
+    opportunity_type_distribution, _ = _safe_json_rows_with_legacy_fallback(
+        client,
+        "SELECT ifNull(opportunity_type, '') AS opportunity_type, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY opportunity_type "
+        "ORDER BY count DESC, opportunity_type ASC FORMAT JSONEachRow",
+        "SELECT ifNull(JSONExtractString(evidence_snapshot, 'opportunity_type'), '') AS opportunity_type, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY opportunity_type "
+        "ORDER BY count DESC, opportunity_type ASC FORMAT JSONEachRow",
+    )
+    complexity_tier_distribution, _ = _safe_json_rows_with_legacy_fallback(
+        client,
+        "SELECT ifNull(complexity_tier, '') AS complexity_tier, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY count DESC, complexity_tier ASC FORMAT JSONEachRow",
+        "SELECT ifNull(JSONExtractString(evidence_snapshot, 'complexity_tier'), '') AS complexity_tier, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY count DESC, complexity_tier ASC FORMAT JSONEachRow",
+    )
+    decision_rows = _safe_json_rows_optional_compat(
+        client,
+        "SELECT decision_reason, count() AS count "
+        "FROM poe_trade.scanner_candidate_decisions "
+        "WHERE accepted = 0 "
+        "GROUP BY decision_reason "
+        "ORDER BY count DESC, decision_reason ASC FORMAT JSONEachRow",
+    )
+    top_opportunities = scanner_recommendations_payload(
+        client,
+        limit=20,
+        sort_by="expected_profit_per_operation_chaos",
+    )["recommendations"]
+    suppressions: list[dict[str, Any]] = []
+    rejections: list[dict[str, Any]] = []
+    for row in decision_rows:
+        reason = str(row.get("decision_reason") or "")
+        if reason.startswith("suppressed_"):
+            suppressions.append(row)
+        else:
+            rejections.append(row)
+    return {
+        "distributions": {
+            "opportunityType": opportunity_type_distribution,
+            "complexityTier": complexity_tier_distribution,
+        },
+        "decisionLog": {
+            "rejections": rejections,
+            "suppressions": suppressions,
+        },
+        "topOpportunities": top_opportunities,
+    }
 
 
 def scanner_summary_payload(client: ClickHouseClient) -> dict[str, Any]:
@@ -250,6 +339,7 @@ def scanner_recommendations_payload(
     cursor: str | None = None,
 ) -> dict[str, Any]:
     sort_spec = _validate_scanner_sort(sort_by)
+    legacy_sort_spec = _scanner_legacy_sort_spec(sort_spec)
     if min_confidence is not None and min_confidence > 1:
         if min_confidence <= 100:
             min_confidence = min_confidence / 100.0
@@ -267,22 +357,41 @@ def scanner_recommendations_payload(
     )
 
     filters: list[str] = []
+    legacy_filters: list[str] = []
     if league:
-        filters.append(f"league = {_quote_sql_string(league)}")
+        league_filter = f"league = {_quote_sql_string(league)}"
+        filters.append(league_filter)
+        legacy_filters.append(league_filter)
     if strategy_id:
-        filters.append(f"strategy_id = {_quote_sql_string(strategy_id)}")
+        strategy_filter = f"strategy_id = {_quote_sql_string(strategy_id)}"
+        filters.append(strategy_filter)
+        legacy_filters.append(strategy_filter)
     if min_confidence is not None:
-        filters.append(f"isNotNull(confidence) AND confidence >= {min_confidence!r}")
+        confidence_filter = (
+            f"isNotNull(confidence) AND confidence >= {min_confidence!r}"
+        )
+        filters.append(confidence_filter)
+        legacy_filters.append(confidence_filter)
     if cursor:
         cursor_payload = _decode_scanner_cursor(cursor)
         _validate_scanner_cursor_signature(cursor_payload.get("signature"), signature)
         filters.append(_scanner_seek_predicate(sort_spec, cursor_payload.get("tuple")))
+        legacy_filters.append(
+            _scanner_seek_predicate(legacy_sort_spec, cursor_payload.get("tuple"))
+        )
 
     where_clause = ""
     if filters:
         where_clause = " WHERE " + " AND ".join(f"({part})" for part in filters)
 
+    legacy_where_clause = ""
+    if legacy_filters:
+        legacy_where_clause = " WHERE " + " AND ".join(
+            f"({part})" for part in legacy_filters
+        )
+
     order_clause = ", ".join(sort_spec["order_by"])
+    legacy_order_clause = ", ".join(legacy_sort_spec["order_by"])
     query_limit = page_limit + 1
     expected_hold_minutes_sql = _scanner_expected_hold_minutes_sql(
         evidence_snapshot_expr="evidence_snapshot",
@@ -292,7 +401,7 @@ def scanner_recommendations_payload(
         expected_profit_expr="expected_profit_chaos",
         expected_hold_minutes_expr=expected_hold_minutes_sql,
     )
-    rows = _safe_json_rows_with_legacy_fallback(
+    rows, used_legacy_fallback = _safe_json_rows_with_legacy_fallback(
         client,
         _scanner_recommendations_query(
             include_metadata=True,
@@ -306,8 +415,8 @@ def scanner_recommendations_payload(
             include_metadata=False,
             expected_hold_minutes_sql=expected_hold_minutes_sql,
             expected_profit_per_minute_sql=expected_profit_per_minute_sql,
-            where_clause=where_clause,
-            order_clause=order_clause,
+            where_clause=legacy_where_clause,
+            order_clause=legacy_order_clause,
             query_limit=query_limit,
         ),
     )
@@ -338,6 +447,42 @@ def scanner_recommendations_payload(
         transform_plan = str(row.get("transform_plan") or "")
         exit_plan = str(row.get("exit_plan") or "")
         execution_venue = str(row.get("execution_venue") or "")
+        opportunity_type = _first_string(
+            row,
+            "opportunity_type",
+            evidence_snapshot,
+            "opportunity_type",
+        )
+        complexity_tier = _first_string(
+            row,
+            "complexity_tier",
+            evidence_snapshot,
+            "complexity_tier",
+        )
+        required_capital_chaos = _first_numeric(
+            row,
+            "required_capital_chaos",
+            evidence_snapshot,
+            "required_capital_chaos",
+        )
+        estimated_operations = _first_int_value(
+            row,
+            "estimated_operations",
+            evidence_snapshot,
+            "estimated_operations",
+        )
+        estimated_searches = _first_int_value(
+            row,
+            "estimated_searches",
+            evidence_snapshot,
+            "estimated_searches",
+        )
+        estimated_whispers = _first_int_value(
+            row,
+            "estimated_whispers",
+            evidence_snapshot,
+            "estimated_whispers",
+        )
         max_buy = row.get("max_buy")
         semantic_key = _semantic_key(
             league=row_league,
@@ -352,12 +497,79 @@ def scanner_recommendations_payload(
         )
         expected_hold_time = str(row.get("expected_hold_time") or "")
         expected_hold_minutes = _coerce_float(row.get("expected_hold_minutes"))
+        if expected_hold_minutes is not None and expected_hold_minutes <= 0:
+            expected_hold_minutes = None
+        if expected_hold_minutes is None:
+            expected_hold_minutes = _first_number(
+                evidence_snapshot,
+                "expected_hold_minutes",
+            )
+        if expected_hold_minutes is not None and expected_hold_minutes <= 0:
+            expected_hold_minutes = None
+        if expected_hold_minutes is None:
+            expected_hold_minutes = _parse_hold_minutes_text(expected_hold_time)
+        estimated_time_to_acquire_minutes = _first_numeric(
+            row,
+            "estimated_time_to_acquire_minutes",
+            evidence_snapshot,
+            "estimated_time_to_acquire_minutes",
+        )
+        estimated_time_to_exit_minutes = _first_numeric(
+            row,
+            "estimated_time_to_exit_minutes",
+            evidence_snapshot,
+            "estimated_time_to_exit_minutes",
+        )
+        estimated_total_cycle_minutes = _first_numeric(
+            row,
+            "estimated_total_cycle_minutes",
+            evidence_snapshot,
+            "estimated_total_cycle_minutes",
+        )
+        if estimated_total_cycle_minutes is None:
+            estimated_total_cycle_minutes = expected_hold_minutes
+        expected_profit_per_operation_chaos = _first_numeric(
+            row,
+            "expected_profit_per_operation_chaos",
+            evidence_snapshot,
+            "expected_profit_per_operation_chaos",
+        )
         expected_profit_per_minute_chaos = _coerce_float(
             row.get("expected_profit_per_minute_chaos")
         )
+        feasibility_score = _first_numeric(
+            row,
+            "feasibility_score",
+            evidence_snapshot,
+            "feasibility_score",
+        )
+        liquidity_score = _first_numeric(
+            row,
+            "liquidity_score",
+            evidence_snapshot,
+            "liquidity_score",
+        )
+        risk_score = _first_numeric(
+            row,
+            "risk_score",
+            evidence_snapshot,
+            "risk_score",
+        )
+        competition_score = _first_numeric(
+            row,
+            "competition_score",
+            evidence_snapshot,
+            "competition_score",
+        )
         freshness_minutes = _first_number(evidence_snapshot, "freshness_minutes")
         if freshness_minutes is None:
+            freshness_minutes = _coerce_float(row.get("freshness_minutes"))
+        if freshness_minutes is None:
             freshness_minutes = _freshness_minutes(recorded_at_iso)
+        why_now = _first_string(row, "why_now", evidence_snapshot, "why_now") or str(
+            row.get("why_it_fired") or ""
+        )
+        warnings = _warnings_payload(row.get("warnings"), evidence_snapshot)
 
         mapped.append(
             {
@@ -379,7 +591,17 @@ def scanner_recommendations_payload(
                 "exitPlan": exit_plan,
                 "executionVenue": execution_venue,
                 "expectedProfitChaos": row.get("expected_profit_chaos"),
+                "opportunityType": opportunity_type,
+                "complexityTier": complexity_tier,
+                "requiredCapitalChaos": required_capital_chaos,
+                "estimatedOperations": estimated_operations,
+                "estimatedSearches": estimated_searches,
+                "estimatedWhispers": estimated_whispers,
                 "expectedProfitPerMinuteChaos": expected_profit_per_minute_chaos,
+                "estimatedTimeToAcquireMinutes": estimated_time_to_acquire_minutes,
+                "estimatedTimeToExitMinutes": estimated_time_to_exit_minutes,
+                "estimatedTotalCycleMinutes": estimated_total_cycle_minutes,
+                "expectedProfitPerOperationChaos": expected_profit_per_operation_chaos,
                 "expectedRoi": row.get("expected_roi"),
                 "expectedHoldTime": expected_hold_time,
                 "expectedHoldMinutes": expected_hold_minutes,
@@ -387,8 +609,25 @@ def scanner_recommendations_payload(
                 "effectiveConfidence": effective_confidence,
                 "mlInfluenceScore": ml_influence_score,
                 "mlInfluenceReason": ml_influence_reason,
-                "liquidityScore": _first_number(evidence_snapshot, "liquidity_score"),
+                "feasibilityScore": feasibility_score,
+                "liquidityScore": liquidity_score,
+                "riskScore": risk_score,
+                "competitionScore": competition_score,
                 "freshnessMinutes": freshness_minutes,
+                "whyNow": why_now,
+                "warnings": warnings,
+                "executionPlan": {
+                    "buyPlan": buy_plan,
+                    "transformPlan": transform_plan,
+                    "exitPlan": exit_plan,
+                    "executionVenue": execution_venue,
+                },
+                "evidence": {
+                    "searchHint": search_hint,
+                    "itemName": item_name,
+                    "whyItFired": str(row.get("why_it_fired") or ""),
+                    "snapshot": _evidence_payload_snapshot(evidence_snapshot),
+                },
                 "goldCost": _first_number(evidence_snapshot, "gold_cost"),
                 "evidenceSnapshot": evidence_snapshot,
                 "recordedAt": recorded_at_iso,
@@ -399,7 +638,8 @@ def scanner_recommendations_payload(
     next_cursor: str | None = None
     if has_more and recommendations:
         last_recommendation = recommendations[-1]
-        cursor_tuple = _scanner_cursor_tuple(sort_spec, last_recommendation)
+        cursor_sort_spec = legacy_sort_spec if used_legacy_fallback else sort_spec
+        cursor_tuple = _scanner_cursor_tuple(cursor_sort_spec, last_recommendation)
         next_cursor = _encode_scanner_cursor(
             {
                 "signature": signature,
@@ -703,13 +943,12 @@ def analytics_search_suggestions(
     query: str,
     limit: int = 8,
 ) -> dict[str, Any]:
-    compact_query = _normalized_query(query)
+    compact_query = query.strip()
     if not compact_query:
         return {"query": "", "suggestions": []}
     query_limit = max(1, min(limit, 20))
     label_expr = _search_item_label_sql()
     kind_expr = _search_item_kind_sql()
-    relevance_sql = _search_relevance_sql(label_expr, compact_query)
     rows = _safe_json_rows(
         client,
         " ".join(
@@ -717,14 +956,13 @@ def analytics_search_suggestions(
                 "SELECT",
                 f"{label_expr} AS item_name,",
                 f"{kind_expr} AS item_kind,",
-                f"{relevance_sql} AS relevance_rank,",
                 "count() AS match_count",
                 "FROM poe_trade.ml_price_dataset_v1",
                 "WHERE normalized_price_chaos IS NOT NULL",
                 "AND normalized_price_chaos > 0",
                 f"AND positionCaseInsensitiveUTF8({label_expr}, {_quote_sql_string(compact_query)}) > 0",
-                "GROUP BY item_name, item_kind, relevance_rank",
-                "ORDER BY relevance_rank ASC, match_count DESC, item_name ASC",
+                "GROUP BY item_name, item_kind",
+                "ORDER BY match_count DESC, item_name ASC",
                 f"LIMIT {query_limit} FORMAT JSONEachRow",
             ]
         ),
@@ -749,7 +987,7 @@ def analytics_search_history(
     query_params: Mapping[str, list[str]],
     default_league: str | None = None,
 ) -> dict[str, Any]:
-    compact_query = _normalized_query(_first_query_param(query_params, "query"))
+    compact_query = _first_query_param(query_params, "query")
     league = _first_query_param(query_params, "league") or (default_league or "")
     sort = _normalize_history_sort(_first_query_param(query_params, "sort"))
     order = _normalize_sort_order(_first_query_param(query_params, "order"))
@@ -870,7 +1108,6 @@ def analytics_search_history(
     )
 
     label_expr = _search_item_label_sql()
-    relevance_sql = _search_relevance_sql(label_expr, compact_query)
     row_rows = _safe_json_rows(
         client,
         " ".join(
@@ -879,11 +1116,10 @@ def analytics_search_history(
                 f"{label_expr} AS item_name,",
                 "league,",
                 "normalized_price_chaos AS listed_price,",
-                "as_of_ts AS added_on,",
-                f"{relevance_sql} AS relevance_rank",
+                "as_of_ts AS added_on",
                 "FROM poe_trade.ml_price_dataset_v1",
                 rows_where,
-                f"ORDER BY {_history_order_sql(sort, order, query_text=compact_query)}",
+                f"ORDER BY {_history_order_sql(sort, order)}",
                 f"LIMIT {query_limit} FORMAT JSONEachRow",
             ]
         ),
@@ -952,55 +1188,99 @@ def analytics_pricing_outliers(
     minimum_support = _query_param_int(
         query_params, "min_total", default=20, minimum=1, maximum=5000
     )
-    max_buy_in = _first_bounded_float_query_param(
-        query_params,
-        ["max_buy_in", "maxBuyIn"],
-        default=100.0,
-        minimum=1.0,
-        maximum=1000.0,
-    )
-    sort = _normalize_outlier_sort(
-        _first_query_param(query_params, "sort") or "expected_profit"
-    )
+    sort = _normalize_outlier_sort(_first_query_param(query_params, "sort"))
     order = _normalize_sort_order(
         _first_query_param(query_params, "order"), default="desc"
     )
-    query_text = _normalized_query(_first_query_param(query_params, "query"))
+    query_text = _first_query_param(query_params, "query")
     league_clause = _outlier_league_clause(league)
-    affix_token_league_clause = _outlier_token_league_clause(league)
     item_label_expr = _search_item_label_sql("d")
-    item_query_filter = "1"
-    item_or_affix_query_filter = "1"
+    summary_filter = ""
     if query_text:
         quoted_query = _quote_sql_string(query_text)
-        item_query_filter = (
-            f"positionCaseInsensitiveUTF8(item_name, {quoted_query}) > 0"
-        )
-        item_or_affix_query_filter = (
-            f"positionCaseInsensitiveUTF8(item_name, {quoted_query}) > 0 "
-            f"OR positionCaseInsensitiveUTF8(affix_analyzed, {quoted_query}) > 0"
+        summary_filter = (
+            "WHERE positionCaseInsensitiveUTF8(item_name, "
+            + quoted_query
+            + ") > 0 OR positionCaseInsensitiveUTF8(affix_analyzed, "
+            + quoted_query
+            + ") > 0"
         )
     summary_rows = _safe_json_rows(
         client,
         " ".join(
             [
-                "SELECT * FROM (",
-                *_pricing_outlier_ctes(
-                    item_label_expr=item_label_expr,
-                    league_clause=league_clause,
-                    affix_token_league_clause=affix_token_league_clause,
-                    minimum_support=minimum_support,
-                    item_query_filter=item_query_filter,
-                    item_or_affix_query_filter=item_or_affix_query_filter,
-                    summary_mode=True,
-                ),
-                "SELECT item_name, base_type, rarity, affix_analyzed, p10, median, p90, items_per_week, items_total, analysis_level, observed_weeks, cheap_weeks,",
-                "p10 AS entry_price,",
-                "median - p10 AS expected_profit,",
-                "if(p10 > 0, (median - p10) / p10, NULL) AS roi,",
-                "round(coalesce(cheap_weeks / nullIf(toFloat64(observed_weeks), 0), 0), 4) AS underpriced_rate",
-                "FROM table_rows",
-                f") WHERE entry_price <= {max_buy_in}",
+                "WITH base AS (",
+                "SELECT",
+                f"{item_label_expr} AS item_name,",
+                "d.base_type AS base_type,",
+                "ifNull(d.rarity, '') AS rarity,",
+                "d.item_id AS item_id,",
+                "d.as_of_ts AS as_of_ts,",
+                "toFloat64(d.normalized_price_chaos) AS listed_price",
+                "FROM poe_trade.ml_price_dataset_v1 AS d",
+                f"WHERE {league_clause}",
+                "AND d.normalized_price_chaos IS NOT NULL",
+                "AND d.normalized_price_chaos > 0",
+                "),",
+                "item_thresholds AS (",
+                "SELECT item_name, base_type, rarity,",
+                "quantileTDigest(0.1)(listed_price) AS p10,",
+                "quantileTDigest(0.5)(listed_price) AS median,",
+                "quantileTDigest(0.9)(listed_price) AS p90,",
+                "count() AS items_total",
+                "FROM base",
+                "GROUP BY item_name, base_type, rarity",
+                f"HAVING items_total >= {minimum_support}",
+                "),",
+                "item_weekly AS (",
+                "SELECT t.item_name, t.base_type, t.rarity, toStartOfWeek(b.as_of_ts) AS week_start,",
+                "countIf(b.listed_price <= t.p10) AS too_cheap_count",
+                "FROM base AS b",
+                "INNER JOIN item_thresholds AS t ON b.item_name = t.item_name AND b.base_type = t.base_type AND b.rarity = t.rarity",
+                "GROUP BY t.item_name, t.base_type, t.rarity, week_start",
+                "),",
+                "item_rows AS (",
+                "SELECT t.item_name AS item_name, '' AS affix_analyzed, t.p10 AS p10, t.median AS median, t.p90 AS p90,",
+                "round(avg(w.too_cheap_count), 4) AS items_per_week, t.items_total AS items_total, 'item' AS analysis_level",
+                "FROM item_thresholds AS t",
+                "LEFT JOIN item_weekly AS w ON t.item_name = w.item_name AND t.base_type = w.base_type AND t.rarity = w.rarity",
+                "GROUP BY t.item_name, t.base_type, t.rarity, t.p10, t.median, t.p90, t.items_total",
+                "),",
+                "affix_base AS (",
+                "SELECT b.item_name, b.base_type, b.rarity, b.as_of_ts, b.listed_price,",
+                "coalesce(nullIf(c.mod_text, ''), nullIf(t.mod_token, '')) AS affix_analyzed",
+                "FROM base AS b",
+                f"INNER JOIN poe_trade.ml_item_mod_tokens_v1 AS t ON assumeNotNull(b.item_id) = t.item_id AND {_outlier_token_league_clause('t', league)}",
+                "LEFT JOIN poe_trade.ml_mod_catalog_v1 AS c ON c.mod_token = t.mod_token",
+                "WHERE b.item_id IS NOT NULL",
+                "),",
+                "affix_thresholds AS (",
+                "SELECT item_name, base_type, rarity, affix_analyzed,",
+                "quantileTDigest(0.1)(listed_price) AS p10,",
+                "quantileTDigest(0.5)(listed_price) AS median,",
+                "quantileTDigest(0.9)(listed_price) AS p90,",
+                "count() AS items_total",
+                "FROM affix_base",
+                "WHERE affix_analyzed IS NOT NULL",
+                "GROUP BY item_name, base_type, rarity, affix_analyzed",
+                f"HAVING items_total >= {minimum_support}",
+                "),",
+                "affix_weekly AS (",
+                "SELECT t.item_name, t.base_type, t.rarity, t.affix_analyzed, toStartOfWeek(a.as_of_ts) AS week_start,",
+                "countIf(a.listed_price <= t.p10) AS too_cheap_count",
+                "FROM affix_base AS a",
+                "INNER JOIN affix_thresholds AS t ON a.item_name = t.item_name AND a.base_type = t.base_type AND a.rarity = t.rarity AND a.affix_analyzed = t.affix_analyzed",
+                "GROUP BY t.item_name, t.base_type, t.rarity, t.affix_analyzed, week_start",
+                "),",
+                "affix_rows AS (",
+                "SELECT t.item_name AS item_name, t.affix_analyzed AS affix_analyzed, t.p10 AS p10, t.median AS median, t.p90 AS p90,",
+                "round(avg(w.too_cheap_count), 4) AS items_per_week, t.items_total AS items_total, 'affix' AS analysis_level",
+                "FROM affix_thresholds AS t",
+                "LEFT JOIN affix_weekly AS w ON t.item_name = w.item_name AND t.base_type = w.base_type AND t.rarity = w.rarity AND t.affix_analyzed = w.affix_analyzed",
+                "GROUP BY t.item_name, t.base_type, t.rarity, t.affix_analyzed, t.p10, t.median, t.p90, t.items_total",
+                ")",
+                "SELECT * FROM (SELECT * FROM item_rows UNION ALL SELECT * FROM affix_rows)",
+                summary_filter,
                 f"ORDER BY {_outlier_order_sql(sort, order)}",
                 f"LIMIT {limit} FORMAT JSONEachRow",
             ]
@@ -1010,24 +1290,29 @@ def analytics_pricing_outliers(
         client,
         " ".join(
             [
-                *_pricing_outlier_ctes(
-                    item_label_expr=item_label_expr,
-                    league_clause=league_clause,
-                    affix_token_league_clause=affix_token_league_clause,
-                    minimum_support=minimum_support,
-                    item_query_filter=item_query_filter,
-                    item_or_affix_query_filter=item_or_affix_query_filter,
-                    summary_mode=False,
-                ),
-                "filtered_item_rows AS (",
-                f"SELECT item_name, min(p10) AS p10, max(items_total) AS items_total FROM table_rows WHERE p10 <= {max_buy_in} GROUP BY item_name",
+                "WITH base AS (",
+                "SELECT",
+                f"{item_label_expr} AS item_name,",
+                "d.base_type AS base_type,",
+                "ifNull(d.rarity, '') AS rarity,",
+                "d.as_of_ts AS as_of_ts,",
+                "toFloat64(d.normalized_price_chaos) AS listed_price",
+                "FROM poe_trade.ml_price_dataset_v1 AS d",
+                f"WHERE {league_clause}",
+                "AND d.normalized_price_chaos IS NOT NULL",
+                "AND d.normalized_price_chaos > 0",
                 "),",
-                "weekly_input AS (",
-                f"SELECT item_name, p10 FROM filtered_item_rows WHERE items_total >= {minimum_support}",
+                "item_thresholds AS (",
+                "SELECT item_name, base_type, rarity,",
+                "quantileTDigest(0.1)(listed_price) AS p10,",
+                "count() AS items_total",
+                "FROM base",
+                "GROUP BY item_name, base_type, rarity",
+                f"HAVING items_total >= {minimum_support}",
                 ")",
-                "SELECT toStartOfWeek(b.as_of_ts) AS week_start, countIf(b.listed_price <= f.p10) AS too_cheap_count",
+                "SELECT toStartOfWeek(b.as_of_ts) AS week_start, countIf(b.listed_price <= t.p10) AS too_cheap_count",
                 "FROM base AS b",
-                "INNER JOIN weekly_input AS f ON b.item_name = f.item_name",
+                "INNER JOIN item_thresholds AS t ON b.item_name = t.item_name AND b.base_type = t.base_type AND b.rarity = t.rarity",
                 "GROUP BY week_start",
                 "ORDER BY week_start ASC FORMAT JSONEachRow",
             ]
@@ -1035,18 +1320,10 @@ def analytics_pricing_outliers(
     )
     return {
         "query": {
-            "query": query_text,
-            "text": query_text,
             "league": league,
             "sort": sort,
             "order": order,
             "minTotal": minimum_support,
-            "maxBuyIn": int(max_buy_in) if max_buy_in.is_integer() else max_buy_in,
-            "limit": limit,
-            "weeklyAggregation": {
-                "level": "item_name",
-                "scope": "deduped_filtered_rows",
-            },
         },
         "rows": [
             {
@@ -1058,29 +1335,6 @@ def analytics_pricing_outliers(
                 "itemsPerWeek": _coerce_float(row.get("items_per_week")) or 0.0,
                 "itemsTotal": _as_int(row.get("items_total")),
                 "analysisLevel": str(row.get("analysis_level") or "item"),
-                "entryPrice": _coerce_float(row.get("entry_price"))
-                if _coerce_float(row.get("entry_price")) is not None
-                else _coerce_float(row.get("p10")),
-                "expectedProfit": _coerce_float(row.get("expected_profit"))
-                if _coerce_float(row.get("expected_profit")) is not None
-                else (
-                    (_coerce_float(row.get("median")) or 0.0)
-                    - (_coerce_float(row.get("p10")) or 0.0)
-                ),
-                "roi": _coerce_float(row.get("roi"))
-                if _coerce_float(row.get("roi")) is not None
-                else (
-                    (
-                        (_coerce_float(row.get("median")) or 0.0)
-                        - (_coerce_float(row.get("p10")) or 0.0)
-                    )
-                    / (_coerce_float(row.get("p10")) or 1.0)
-                    if (_coerce_float(row.get("p10")) or 0.0) > 0
-                    else None
-                ),
-                "underpricedRate": round(
-                    _coerce_float(row.get("underpriced_rate")) or 0.0, 4
-                ),
             }
             for row in summary_rows
         ],
@@ -1162,16 +1416,31 @@ def _safe_json_rows_with_legacy_fallback(
     client: ClickHouseClient,
     query: str,
     legacy_query: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     try:
-        return _safe_json_rows(client, query)
+        return _safe_json_rows(client, query), False
     except OpsBackendUnavailable as exc:
         cause = exc.__cause__
         if not isinstance(
             cause, ClickHouseClientError
         ) or not _is_missing_metadata_column_error(cause):
             raise
-        return _safe_json_rows(client, legacy_query)
+        return _safe_json_rows(client, legacy_query), True
+
+
+def _safe_json_rows_optional_compat(
+    client: ClickHouseClient,
+    query: str,
+) -> list[dict[str, Any]]:
+    try:
+        return _safe_json_rows(client, query)
+    except OpsBackendUnavailable as exc:
+        cause = exc.__cause__
+        if isinstance(cause, ClickHouseClientError) and _is_schema_compatibility_error(
+            cause
+        ):
+            return []
+        raise
 
 
 def _scanner_recommendations_query(
@@ -1185,7 +1454,14 @@ def _scanner_recommendations_query(
 ) -> str:
     metadata_columns = ""
     if include_metadata:
-        metadata_columns = "recommendation_source, recommendation_contract_version, producer_version, producer_run_id, "
+        metadata_columns = (
+            "recommendation_source, recommendation_contract_version, producer_version, producer_run_id, "
+            "opportunity_type, complexity_tier, required_capital_chaos, estimated_operations, "
+            "estimated_searches, estimated_whispers, freshness_minutes, "
+            "estimated_time_to_acquire_minutes, estimated_time_to_exit_minutes, "
+            "estimated_total_cycle_minutes, expected_profit_per_operation_chaos, "
+            "feasibility_score, liquidity_score, risk_score, competition_score, why_now, warnings, "
+        )
     return (
         "SELECT scanner_run_id, strategy_id, league, "
         + metadata_columns
@@ -1209,6 +1485,13 @@ def _scanner_recommendations_query(
 def _is_missing_metadata_column_error(exc: ClickHouseClientError) -> bool:
     message = str(exc).lower()
     return "column" in message and ("unknown" in message or "missing" in message)
+
+
+def _is_schema_compatibility_error(exc: ClickHouseClientError) -> bool:
+    message = str(exc).lower()
+    if _is_missing_metadata_column_error(exc):
+        return True
+    return any(pattern.search(message) for pattern in _MISSING_TABLE_ERROR_PATTERNS)
 
 
 def _as_int(value: object) -> int:
@@ -1243,7 +1526,7 @@ def _query_param_float(query_params: Mapping[str, list[str]], key: str) -> float
     try:
         return float(raw)
     except ValueError:
-        return None
+        raise ValueError(key) from None
 
 
 def _query_param_int(
@@ -1260,46 +1543,8 @@ def _query_param_int(
     try:
         parsed = int(raw)
     except ValueError:
-        return default
+        raise ValueError(key) from None
     return max(minimum, min(maximum, parsed))
-
-
-def _query_param_float_with_bounds(
-    query_params: Mapping[str, list[str]],
-    key: str,
-    *,
-    default: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    raw = _first_query_param(query_params, key)
-    if not raw:
-        return default
-    try:
-        parsed = float(raw)
-    except ValueError:
-        return default
-    return max(minimum, min(maximum, parsed))
-
-
-def _first_bounded_float_query_param(
-    query_params: Mapping[str, list[str]],
-    keys: list[str],
-    *,
-    default: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    for key in keys:
-        raw = _first_query_param(query_params, key)
-        if not raw:
-            continue
-        try:
-            parsed = float(raw)
-        except ValueError:
-            return default
-        return max(minimum, min(maximum, parsed))
-    return default
 
 
 def _query_param_datetime(
@@ -1310,12 +1555,8 @@ def _query_param_datetime(
         return None
     parsed = _parse_iso_utc(raw)
     if parsed is None:
-        return None
+        raise ValueError(key)
     return parsed.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _normalized_query(value: str) -> str:
-    return value.strip()
 
 
 def _search_item_label_sql(alias: str = "") -> str:
@@ -1378,33 +1619,17 @@ def _normalize_sort_order(value: str, *, default: str = "asc") -> str:
 def _normalize_history_sort(value: str) -> str:
     if value in {"item_name", "league", "listed_price", "added_on"}:
         return value
-    return "item_name"
+    return "added_on"
 
 
-def _search_relevance_sql(label_expr: str, query_text: str) -> str:
-    if not query_text:
-        return "3"
-    quoted_query = _quote_sql_string(query_text)
-    return (
-        "multiIf("
-        f"lowerUTF8({label_expr}) = lowerUTF8({quoted_query}), 0, "
-        f"startsWith(lowerUTF8({label_expr}), lowerUTF8({quoted_query})), 1, "
-        f"positionCaseInsensitiveUTF8({label_expr}, {quoted_query}) > 0, 2, "
-        "3)"
-    )
-
-
-def _history_order_sql(sort: str, order: str, *, query_text: str | None = None) -> str:
-    direction = "ASC" if order == "asc" else "DESC"
-    if sort == "item_name":
-        if query_text:
-            return f"relevance_rank ASC, item_name {direction}, added_on DESC"
-        return f"item_name {direction}, added_on DESC"
-    if sort == "league":
-        return f"league {direction}, added_on DESC"
-    if sort == "listed_price":
-        return f"listed_price {direction}, added_on DESC"
-    return f"added_on {direction}"
+def _history_order_sql(sort: str, order: str) -> str:
+    column = {
+        "item_name": "item_name",
+        "league": "league",
+        "listed_price": "listed_price",
+        "added_on": "added_on",
+    }.get(sort, "added_on")
+    return f"{column} {order.upper()}"
 
 
 def _history_price_bucket_size(min_price: float | None, max_price: float | None) -> str:
@@ -1429,11 +1654,6 @@ def _history_time_bucket_seconds(
 
 def _normalize_outlier_sort(value: str) -> str:
     if value in {
-        "expected_profit",
-        "roi",
-        "underpriced_rate",
-        "entry_price",
-        "fair_value",
         "item_name",
         "affix_analyzed",
         "p10",
@@ -1443,51 +1663,20 @@ def _normalize_outlier_sort(value: str) -> str:
         "items_total",
     }:
         return value
-    return "expected_profit"
+    return "items_total"
 
 
 def _outlier_order_sql(sort: str, order: str) -> str:
-    stable_suffix = ", analysis_level ASC, base_type ASC, rarity ASC"
-    default_desc_chain = (
-        "expected_profit DESC, roi DESC, underpriced_rate DESC, items_total DESC, "
-        "item_name ASC, affix_analyzed ASC" + stable_suffix
-    )
-    if sort == "expected_profit":
-        direction = "ASC" if order == "asc" else "DESC"
-        return (
-            f"expected_profit {direction}, roi {direction}, underpriced_rate {direction}, "
-            f"items_total {direction}, item_name ASC, affix_analyzed ASC{stable_suffix}"
-        )
-    normalized_sort = "median" if sort == "fair_value" else sort
-    direction = "ASC" if order == "asc" else "DESC"
-    if normalized_sort == "entry_price":
-        return f"entry_price {direction}, {default_desc_chain}"
-    if normalized_sort == "roi":
-        return (
-            f"roi {direction}, expected_profit DESC, underpriced_rate DESC, items_total DESC, "
-            f"item_name ASC, affix_analyzed ASC{stable_suffix}"
-        )
-    if normalized_sort == "underpriced_rate":
-        return (
-            f"underpriced_rate {direction}, expected_profit DESC, roi DESC, items_total DESC, "
-            f"item_name ASC, affix_analyzed ASC{stable_suffix}"
-        )
-    if normalized_sort in {
-        "item_name",
-        "affix_analyzed",
-        "p10",
-        "median",
-        "p90",
-        "items_per_week",
-        "items_total",
-    }:
-        if normalized_sort == "items_total":
-            return (
-                f"items_total {direction}, expected_profit DESC, roi DESC, "
-                f"underpriced_rate DESC, item_name ASC, affix_analyzed ASC{stable_suffix}"
-            )
-        return f"{normalized_sort} {direction}, {default_desc_chain}"
-    return default_desc_chain
+    column = {
+        "item_name": "item_name",
+        "affix_analyzed": "affix_analyzed",
+        "p10": "p10",
+        "median": "median",
+        "p90": "p90",
+        "items_per_week": "items_per_week",
+        "items_total": "items_total",
+    }.get(sort, "items_total")
+    return f"{column} {order.upper()}, item_name ASC"
 
 
 def _outlier_league_clause(league: str | None) -> str:
@@ -1497,158 +1686,11 @@ def _outlier_league_clause(league: str | None) -> str:
     return f"d.league = {_quote_sql_string(compact_league)}"
 
 
-def _outlier_token_league_clause(league: str | None) -> str:
+def _outlier_token_league_clause(alias: str, league: str | None) -> str:
     compact_league = (league or "").strip()
     if not compact_league or compact_league.lower() == "all":
         return "1"
-    return f"t.league = {_quote_sql_string(compact_league)}"
-
-
-def _pricing_outlier_ctes(
-    *,
-    item_label_expr: str,
-    league_clause: str,
-    affix_token_league_clause: str,
-    minimum_support: int,
-    item_query_filter: str,
-    item_or_affix_query_filter: str,
-    summary_mode: bool,
-) -> list[str]:
-    base_ctes = [
-        "WITH base AS (",
-        "SELECT",
-        f"{item_label_expr} AS item_name,",
-        "d.base_type AS base_type,",
-        "ifNull(d.rarity, '') AS rarity,",
-        "d.item_id AS item_id,",
-        "d.as_of_ts AS as_of_ts,",
-        "toFloat64(d.normalized_price_chaos) AS listed_price",
-        "FROM poe_trade.ml_price_dataset_v1 AS d",
-        f"WHERE {league_clause}",
-        "AND d.normalized_price_chaos IS NOT NULL",
-        "AND d.normalized_price_chaos > 0",
-        "),",
-        "item_thresholds AS (",
-        "SELECT item_name, base_type, rarity,",
-        "quantileTDigest(0.1)(listed_price) AS p10,",
-    ]
-    if summary_mode:
-        base_ctes.extend(
-            [
-                "quantileTDigest(0.5)(listed_price) AS median,",
-                "quantileTDigest(0.9)(listed_price) AS p90,",
-            ]
-        )
-    base_ctes.extend(
-        [
-            "count() AS items_total",
-            "FROM base",
-            "GROUP BY item_name, base_type, rarity",
-            f"HAVING items_total >= {minimum_support}",
-            "),",
-        ]
-    )
-    if summary_mode:
-        base_ctes.extend(
-            [
-                "item_weekly AS (",
-                "SELECT t.item_name, t.base_type, t.rarity, toStartOfWeek(b.as_of_ts) AS week_start,",
-                "count() AS listings_count,",
-                "countIf(b.listed_price <= t.p10) AS too_cheap_count",
-                "FROM base AS b",
-                "INNER JOIN item_thresholds AS t ON b.item_name = t.item_name AND b.base_type = t.base_type AND b.rarity = t.rarity",
-                "GROUP BY t.item_name, t.base_type, t.rarity, week_start",
-                "),",
-                "item_rows AS (",
-                "SELECT t.item_name AS item_name, t.base_type AS base_type, t.rarity AS rarity, '' AS affix_analyzed, t.p10 AS p10, t.median AS median, t.p90 AS p90,",
-                "round(avg(w.listings_count), 4) AS items_per_week, t.items_total AS items_total, uniq(w.week_start) AS observed_weeks, countIf(w.too_cheap_count > 0) AS cheap_weeks, 'item' AS analysis_level",
-                "FROM item_thresholds AS t",
-                "LEFT JOIN item_weekly AS w ON t.item_name = w.item_name AND t.base_type = w.base_type AND t.rarity = w.rarity",
-                "GROUP BY t.item_name, t.base_type, t.rarity, t.p10, t.median, t.p90, t.items_total",
-                "),",
-            ]
-        )
-    else:
-        base_ctes.extend(
-            [
-                "item_rows AS (",
-                "SELECT t.item_name AS item_name, t.p10 AS p10, t.items_total AS items_total",
-                "FROM item_thresholds AS t",
-                "),",
-            ]
-        )
-    base_ctes.extend(
-        [
-            "affix_base AS (",
-            "SELECT b.item_name, b.base_type, b.rarity, b.as_of_ts, b.listed_price,",
-            "coalesce(nullIf(c.mod_text, ''), nullIf(t.mod_token, '')) AS affix_analyzed",
-            "FROM base AS b",
-            f"INNER JOIN poe_trade.ml_item_mod_tokens_v1 AS t ON assumeNotNull(b.item_id) = t.item_id AND {affix_token_league_clause}",
-            "LEFT JOIN poe_trade.ml_mod_catalog_v1 AS c ON c.mod_token = t.mod_token",
-            "WHERE b.item_id IS NOT NULL",
-            "),",
-            "affix_thresholds AS (",
-            "SELECT item_name, base_type, rarity, affix_analyzed,",
-            "quantileTDigest(0.1)(listed_price) AS p10,",
-        ]
-    )
-    if summary_mode:
-        base_ctes.extend(
-            [
-                "quantileTDigest(0.5)(listed_price) AS median,",
-                "quantileTDigest(0.9)(listed_price) AS p90,",
-            ]
-        )
-    base_ctes.extend(
-        [
-            "count() AS items_total",
-            "FROM affix_base",
-            "WHERE affix_analyzed IS NOT NULL",
-            "GROUP BY item_name, base_type, rarity, affix_analyzed",
-            f"HAVING items_total >= {minimum_support}",
-            "),",
-        ]
-    )
-    if summary_mode:
-        base_ctes.extend(
-            [
-                "affix_weekly AS (",
-                "SELECT t.item_name, t.base_type, t.rarity, t.affix_analyzed, toStartOfWeek(a.as_of_ts) AS week_start,",
-                "count() AS listings_count,",
-                "countIf(a.listed_price <= t.p10) AS too_cheap_count",
-                "FROM affix_base AS a",
-                "INNER JOIN affix_thresholds AS t ON a.item_name = t.item_name AND a.base_type = t.base_type AND a.rarity = t.rarity AND a.affix_analyzed = t.affix_analyzed",
-                "GROUP BY t.item_name, t.base_type, t.rarity, t.affix_analyzed, week_start",
-                "),",
-                "affix_rows AS (",
-                "SELECT t.item_name AS item_name, t.base_type AS base_type, t.rarity AS rarity, t.affix_analyzed AS affix_analyzed, t.p10 AS p10, t.median AS median, t.p90 AS p90,",
-                "round(avg(w.listings_count), 4) AS items_per_week, t.items_total AS items_total, uniq(w.week_start) AS observed_weeks, countIf(w.too_cheap_count > 0) AS cheap_weeks, 'affix' AS analysis_level",
-                "FROM affix_thresholds AS t",
-                "LEFT JOIN affix_weekly AS w ON t.item_name = w.item_name AND t.base_type = w.base_type AND t.rarity = w.rarity AND t.affix_analyzed = w.affix_analyzed",
-                "GROUP BY t.item_name, t.base_type, t.rarity, t.affix_analyzed, t.p10, t.median, t.p90, t.items_total",
-                "),",
-                "table_rows AS (",
-                f"SELECT * FROM item_rows WHERE {item_query_filter}",
-                "UNION ALL",
-                f"SELECT * FROM affix_rows WHERE {item_or_affix_query_filter}",
-                ")",
-            ]
-        )
-    else:
-        base_ctes.extend(
-            [
-                "affix_rows AS (",
-                "SELECT t.item_name AS item_name, t.p10 AS p10, t.items_total AS items_total, t.affix_analyzed AS affix_analyzed",
-                "FROM affix_thresholds AS t",
-                "),",
-                "table_rows AS (",
-                f"SELECT item_name, p10, items_total FROM item_rows WHERE {item_query_filter}",
-                "UNION ALL",
-                f"SELECT item_name, p10, items_total FROM affix_rows WHERE {item_or_affix_query_filter}",
-                "),",
-            ]
-        )
-    return base_ctes
+    return f"{alias}.league = {_quote_sql_string(compact_league)}"
 
 
 def _float_sql(value: float) -> str:
@@ -1714,6 +1756,12 @@ def _validate_scanner_sort(sort_by: str) -> dict[str, Any]:
     if key is None:
         raise ValueError(f"invalid sort field: {sort_by}")
     return key
+
+
+def _scanner_legacy_sort_spec(sort_spec: dict[str, Any]) -> dict[str, Any]:
+    if str(sort_spec.get("name")) == "expected_profit_per_operation_chaos":
+        return _SCANNER_SORT_SPECS["expected_profit_chaos"]
+    return sort_spec
 
 
 _SCANNER_CURSOR_TIE_BREAK_FIELDS = (
@@ -1799,6 +1847,26 @@ _SCANNER_SORT_SPECS: dict[str, dict[str, Any]] = {
         "order_by": [
             "if(isNull(expected_profit_per_minute_chaos), 0, 1) DESC",
             "expected_profit_per_minute_chaos DESC",
+            "recorded_at DESC",
+            "scanner_run_id DESC",
+            "strategy_id DESC",
+            "item_or_market_key DESC",
+            "buy_plan DESC",
+            "transform_plan DESC",
+            "exit_plan DESC",
+            "execution_venue DESC",
+        ],
+    },
+    "expected_profit_per_operation_chaos": {
+        "name": "expected_profit_per_operation_chaos",
+        "response_key": "expectedProfitPerOperationChaos",
+        "cursor_type": "float",
+        "sql_primary": "expected_profit_per_operation_chaos",
+        "sql_primary_rank": "if(isNull(expected_profit_per_operation_chaos), 0, 1)",
+        "sql_primary_value": "expected_profit_per_operation_chaos",
+        "order_by": [
+            "if(isNull(expected_profit_per_operation_chaos), 0, 1) DESC",
+            "expected_profit_per_operation_chaos DESC",
             "recorded_at DESC",
             "scanner_run_id DESC",
             "strategy_id DESC",
@@ -2071,6 +2139,44 @@ def _string_or_fallback(
     return fallback
 
 
+def _first_string(
+    row: Mapping[str, Any],
+    row_key: str,
+    evidence_snapshot: dict[str, Any] | str,
+    snapshot_key: str,
+) -> str | None:
+    row_value = _optional_string(row.get(row_key))
+    if row_value is not None:
+        return row_value
+    if not isinstance(evidence_snapshot, dict):
+        return None
+    return _optional_string(evidence_snapshot.get(snapshot_key))
+
+
+def _first_numeric(
+    row: Mapping[str, Any],
+    row_key: str,
+    evidence_snapshot: dict[str, Any] | str,
+    snapshot_key: str,
+) -> float | None:
+    row_value = _coerce_float(row.get(row_key))
+    if row_value is not None:
+        return row_value
+    return _first_number(evidence_snapshot, snapshot_key)
+
+
+def _first_int_value(
+    row: Mapping[str, Any],
+    row_key: str,
+    evidence_snapshot: dict[str, Any] | str,
+    snapshot_key: str,
+) -> int | None:
+    value = _first_numeric(row, row_key, evidence_snapshot, snapshot_key)
+    if value is None:
+        return None
+    return int(value)
+
+
 def _semantic_key(
     *,
     league: str,
@@ -2107,6 +2213,44 @@ def _first_number(evidence_snapshot: dict[str, Any] | str, key: str) -> float | 
     if not isinstance(evidence_snapshot, dict):
         return None
     return _coerce_float(evidence_snapshot.get(key))
+
+
+def _warnings_payload(
+    row_value: object,
+    evidence_snapshot: dict[str, Any] | str,
+) -> list[str]:
+    values = row_value
+    if values is None and isinstance(evidence_snapshot, dict):
+        values = evidence_snapshot.get("warnings")
+    if not isinstance(values, list):
+        return []
+    return [str(value) for value in values if str(value).strip()]
+
+
+def _evidence_payload_snapshot(
+    evidence_snapshot: dict[str, Any] | str,
+) -> dict[str, Any]:
+    if not isinstance(evidence_snapshot, dict):
+        return {}
+    nested = evidence_snapshot.get("evidence_snapshot")
+    if isinstance(nested, dict):
+        return nested
+    return evidence_snapshot
+
+
+def _parse_hold_minutes_text(value: str) -> float | None:
+    text = value.strip().lower()
+    if not text:
+        return None
+    match = re.search(r"([-+]?[0-9]+(?:\.[0-9]+)?)([mh])\s*$", text)
+    if match is None:
+        return None
+    amount = _coerce_float(match.group(1))
+    if amount is None or amount <= 0:
+        return None
+    if match.group(2) == "h":
+        return amount * 60.0
+    return amount
 
 
 def _ml_influence_from_snapshot(

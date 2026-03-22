@@ -9,6 +9,11 @@ import tomllib
 STRATEGY_ROOT = Path(__file__).resolve().parents[2] / "strategies"
 SQL_STRATEGY_ROOT = Path(__file__).resolve().parents[1] / "sql" / "strategy"
 
+DEFAULT_MAX_STALENESS_MINUTES = 15
+DEFAULT_MIN_LIQUIDITY_SCORE = 0.5
+DEFAULT_MAX_ESTIMATED_WHISPERS = 6
+DEFAULT_MAX_ESTIMATED_OPERATIONS = 3
+
 
 @dataclass(frozen=True)
 class StrategyPack:
@@ -25,6 +30,11 @@ class StrategyPack:
     min_sample_count: int | None
     cooldown_minutes: int
     requires_journal: bool
+    max_staleness_minutes: int
+    min_liquidity_score: float
+    max_estimated_whispers: int
+    max_estimated_operations: int
+    advanced_override_profit_per_operation_chaos: float | None
     metadata_path: Path
     notes_path: Path
     discover_sql_path: Path
@@ -75,6 +85,40 @@ def list_strategy_packs() -> list[StrategyPack]:
                     0, _as_int(params.get("cooldown_minutes"), default=0)
                 ),
                 requires_journal=bool(params.get("requires_journal", False)),
+                max_staleness_minutes=max(
+                    0,
+                    _as_int(
+                        params.get("max_staleness_minutes"),
+                        default=DEFAULT_MAX_STALENESS_MINUTES,
+                    ),
+                ),
+                min_liquidity_score=max(
+                    0.0,
+                    min(
+                        1.0,
+                        _as_float(
+                            params.get("min_liquidity_score"),
+                            default=DEFAULT_MIN_LIQUIDITY_SCORE,
+                        ),
+                    ),
+                ),
+                max_estimated_whispers=max(
+                    0,
+                    _as_int(
+                        params.get("max_estimated_whispers"),
+                        default=DEFAULT_MAX_ESTIMATED_WHISPERS,
+                    ),
+                ),
+                max_estimated_operations=max(
+                    1,
+                    _as_int(
+                        params.get("max_estimated_operations"),
+                        default=DEFAULT_MAX_ESTIMATED_OPERATIONS,
+                    ),
+                ),
+                advanced_override_profit_per_operation_chaos=_as_optional_float(
+                    params.get("advanced_override_profit_per_operation_chaos")
+                ),
                 metadata_path=metadata_path,
                 notes_path=notes_path,
                 discover_sql_path=discover_sql_path,
@@ -127,6 +171,11 @@ def _as_optional_int(value: object) -> int | None:
 
 def _as_int(value: object, *, default: int) -> int:
     parsed = _as_optional_int(value)
+    return parsed if parsed is not None else default
+
+
+def _as_float(value: object, *, default: float) -> float:
+    parsed = _as_optional_float(value)
     return parsed if parsed is not None else default
 
 

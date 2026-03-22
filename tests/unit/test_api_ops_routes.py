@@ -111,7 +111,7 @@ def test_ops_contract_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         "backendVersion": "0.1.0",
         "backendSha": None,
         "frontendBuildSha": None,
-        "recommendationContractVersion": 2,
+        "recommendationContractVersion": 3,
         "contractMatchState": "unknown",
     }
 
@@ -584,9 +584,6 @@ def test_start_private_stash_scan_deduplicates_pending_run(
         },
     )
     monkeypatch.setattr(
-        api_app_module, "resolve_account_name", lambda *_args, **_kwargs: "qa-exile"
-    )
-    monkeypatch.setattr(
         "poe_trade.stash_scan.fetch_active_scan", lambda *_args, **_kwargs: None
     )
 
@@ -611,6 +608,11 @@ def test_start_private_stash_scan_deduplicates_pending_run(
     monkeypatch.setattr(api_app_module, "PoeClient", _DummyPoeClient)
     monkeypatch.setattr(api_app_module, "StatusReporter", _DummyStatusReporter)
     monkeypatch.setattr(api_app_module, "AccountStashHarvester", _DummyHarvester)
+    monkeypatch.setattr(
+        api_app_module,
+        "resolve_account_name",
+        lambda _settings, *, poe_session_id: "qa-exile",
+    )
 
     settings = _settings_with_stash_enabled()
     clickhouse = ClickHouseClient(endpoint="http://ch")
@@ -726,6 +728,122 @@ def test_scanner_recommendations_route_invalid_cursor_maps_to_invalid_input(
         app.handle(
             method="GET",
             raw_path="/api/v1/ops/scanner/recommendations?cursor=bad-cursor",
+            headers=_auth_headers(),
+            body_reader=BytesIO(b""),
+        )
+
+    assert exc.value.status == 400
+    assert exc.value.code == "invalid_input"
+
+
+def test_scanner_recommendations_route_forwards_operation_sort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _payload(_client, **kwargs):
+        captured.update(kwargs)
+        return {"recommendations": [], "meta": {"source": "scanner_recommendations"}}
+
+    monkeypatch.setattr("poe_trade.api.app.scanner_recommendations_payload", _payload)
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+
+    response = app.handle(
+        method="GET",
+        raw_path=(
+            "/api/v1/ops/scanner/recommendations"
+            "?sort=expected_profit_per_operation_chaos"
+        ),
+        headers=_auth_headers(),
+        body_reader=BytesIO(b""),
+    )
+
+    assert response.status == 200
+    assert captured["sort_by"] == "expected_profit_per_operation_chaos"
+
+
+def test_scanner_recommendations_route_defaults_to_operation_aware_sort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _payload(_client, **kwargs):
+        captured.update(kwargs)
+        return {"recommendations": [], "meta": {"source": "scanner_recommendations"}}
+
+    monkeypatch.setattr("poe_trade.api.app.scanner_recommendations_payload", _payload)
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+
+    response = app.handle(
+        method="GET",
+        raw_path="/api/v1/ops/scanner/recommendations",
+        headers=_auth_headers(),
+        body_reader=BytesIO(b""),
+    )
+
+    assert response.status == 200
+    assert captured["sort_by"] == "expected_profit_per_operation_chaos"
+
+
+def test_ops_analytics_opportunities_route_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "poe_trade.api.app.analytics_opportunities",
+        lambda _client: {
+            "distributions": {
+                "opportunityType": [{"opportunity_type": "bulk_flip", "count": 1}],
+                "complexityTier": [{"complexity_tier": "medium", "count": 1}],
+            },
+            "decisionLog": {
+                "rejections": [
+                    {"decision_reason": "rejected_min_confidence", "count": 1}
+                ],
+                "suppressions": [],
+            },
+            "topOpportunities": [{"scannerRunId": "scan-1"}],
+        },
+    )
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+
+    response = app.handle(
+        method="GET",
+        raw_path="/api/v1/ops/analytics/opportunities",
+        headers=_auth_headers(),
+        body_reader=BytesIO(b""),
+    )
+
+    body = json.loads(response.body.decode("utf-8"))
+    assert response.status == 200
+    assert body["topOpportunities"][0]["scannerRunId"] == "scan-1"
+    assert (
+        body["decisionLog"]["rejections"][0]["decision_reason"]
+        == "rejected_min_confidence"
+    )
+
+
+def test_ops_analytics_search_history_route_rejects_invalid_filters() -> None:
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+
+    with pytest.raises(ApiError) as exc:
+        app.handle(
+            method="GET",
+            raw_path="/api/v1/ops/analytics/search-history?price_min=abc&time_from=bad",
+            headers=_auth_headers(),
+            body_reader=BytesIO(b""),
+        )
+
+    assert exc.value.status == 400
+    assert exc.value.code == "invalid_input"
+
+
+def test_ops_analytics_pricing_outliers_route_rejects_invalid_limit() -> None:
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+
+    with pytest.raises(ApiError) as exc:
+        app.handle(
+            method="GET",
+            raw_path="/api/v1/ops/analytics/pricing-outliers?limit=oops",
             headers=_auth_headers(),
             body_reader=BytesIO(b""),
         )

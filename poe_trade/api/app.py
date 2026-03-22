@@ -54,6 +54,7 @@ from .ops import (
     analytics_backtests,
     analytics_ingestion,
     analytics_ml,
+    analytics_opportunities,
     analytics_pricing_outliers,
     analytics_report,
     analytics_scanner,
@@ -90,9 +91,7 @@ _STASH_SCAN_START_LOCK = threading.Lock()
 _PENDING_STASH_SCANS: dict[tuple[str, str, str], dict[str, object]] = {}
 
 
-def _scan_price_item_factory(
-    clickhouse_client: ClickHouseClient, *, league: str
-):
+def _scan_price_item_factory(clickhouse_client: ClickHouseClient, *, league: str):
     def _price_item(item: dict[str, object]) -> dict[str, object]:
         from poe_trade.stash_scan import serialize_stash_item_to_clipboard
 
@@ -206,7 +205,9 @@ def start_private_stash_scan(
                 result = harvester.run_private_scan(
                     realm=realm,
                     league=league,
-                    price_item=_scan_price_item_factory(clickhouse_client, league=league),
+                    price_item=_scan_price_item_factory(
+                        clickhouse_client, league=league
+                    ),
                     scan_id=scan_id,
                     started_at=started_at,
                 )
@@ -591,7 +592,11 @@ class ApiApp:
 
     def _ops_scanner_recommendations(self, _context: Mapping[str, object]) -> Response:
         query_params = _query_params_from_context(_context)
-        sort_by = _first_query_param(query_params, "sort", default="recorded_at")
+        sort_by = _first_query_param(
+            query_params,
+            "sort",
+            default="expected_profit_per_operation_chaos",
+        )
         league = _optional_query_param(query_params, "league")
         strategy_id = _optional_query_param(query_params, "strategy_id")
         cursor = _optional_query_param(query_params, "cursor")
@@ -673,6 +678,8 @@ class ApiApp:
                 query_params=query_params,
                 default_league=league,
             )
+        except ValueError:
+            raise ApiError(status=400, code="invalid_input", message="invalid input")
         except OpsBackendUnavailable:
             raise ApiError(
                 status=503,
@@ -696,6 +703,8 @@ class ApiApp:
                 query_params=query_params,
                 default_league=league,
             )
+        except ValueError:
+            raise ApiError(status=400, code="invalid_input", message="invalid input")
         except OpsBackendUnavailable:
             raise ApiError(
                 status=503,
@@ -717,6 +726,8 @@ class ApiApp:
                 payload = analytics_ingestion(self.client)
             elif kind == "scanner":
                 payload = analytics_scanner(self.client)
+            elif kind == "opportunities":
+                payload = analytics_opportunities(self.client)
             elif kind == "alerts":
                 payload = analytics_alerts(self.client)
             elif kind == "backtests":

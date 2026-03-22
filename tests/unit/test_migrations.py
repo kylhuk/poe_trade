@@ -440,3 +440,75 @@ def test_private_stash_scan_migration_relies_on_existing_poe_rw_role_grants() ->
     sql = migration.read_text(encoding="utf-8")
 
     assert "GRANT " not in sql
+
+
+def test_scanner_opportunity_analytics_migration_adds_decision_storage() -> None:
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "schema"
+        / "migrations"
+        / "0057_scanner_opportunity_analytics_v1.sql"
+    )
+
+    sql = migration.read_text(encoding="utf-8")
+
+    expected_recommendation_columns = [
+        "ADD COLUMN IF NOT EXISTS complexity_tier Nullable(String)",
+        "ADD COLUMN IF NOT EXISTS required_capital_chaos Nullable(Float64)",
+        "ADD COLUMN IF NOT EXISTS opportunity_type Nullable(String)",
+        "ADD COLUMN IF NOT EXISTS estimated_operations Nullable(UInt16)",
+        "ADD COLUMN IF NOT EXISTS estimated_whispers Nullable(UInt16)",
+        "ADD COLUMN IF NOT EXISTS expected_profit_per_operation_chaos Nullable(Float64)",
+        "ADD COLUMN IF NOT EXISTS feasibility_score Nullable(Float64)",
+    ]
+    expected_decision_columns = [
+        "scanner_run_id String",
+        "accepted UInt8",
+        "decision_reason LowCardinality(String)",
+        "strategy_id String",
+        "league String",
+        "recommendation_source Nullable(String)",
+        "recommendation_contract_version Nullable(UInt32)",
+        "producer_version Nullable(String)",
+        "producer_run_id Nullable(String)",
+        "item_or_market_key String",
+        "complexity_tier Nullable(String)",
+        "required_capital_chaos Nullable(Float64)",
+        "estimated_operations Nullable(UInt16)",
+        "estimated_whispers Nullable(UInt16)",
+        "expected_profit_chaos Nullable(Float64)",
+        "expected_profit_per_operation_chaos Nullable(Float64)",
+        "feasibility_score Nullable(Float64)",
+        "evidence_snapshot String",
+        "recorded_at DateTime64(3, 'UTC')",
+    ]
+
+    assert "ALTER TABLE poe_trade.scanner_recommendations" in sql
+    for column in expected_recommendation_columns:
+        assert column in sql
+
+    assert "CREATE TABLE IF NOT EXISTS poe_trade.scanner_candidate_decisions" in sql
+    for column in expected_decision_columns:
+        assert column in sql
+
+    assert ") ENGINE = MergeTree()" in sql
+    assert "PARTITION BY toYYYYMMDD(recorded_at)" in sql
+    assert (
+        "ORDER BY (strategy_id, scanner_run_id, recorded_at, item_or_market_key)" in sql
+    )
+    assert "TTL recorded_at + INTERVAL 30 DAY" in sql
+
+    destructive_patterns = [
+        "DROP TABLE",
+        "DROP COLUMN",
+        "DROP VIEW",
+        "DROP DATABASE",
+        "RENAME TABLE",
+        "RENAME COLUMN",
+    ]
+    for pattern in destructive_patterns:
+        assert pattern not in sql
+
+    assert (
+        "GRANT SELECT ON poe_trade.scanner_candidate_decisions TO poe_api_reader" in sql
+    )

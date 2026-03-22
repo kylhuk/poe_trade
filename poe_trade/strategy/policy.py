@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import cast
 
+from .opportunity import OpportunityScoreInput, normalize_opportunity_metrics
+
 
 @dataclass(frozen=True)
 class StrategyPolicy:
@@ -15,6 +17,10 @@ class StrategyPolicy:
     min_sample_count: int | None = None
     cooldown_minutes: int = 0
     requires_journal: bool = False
+    max_staleness_minutes: int | None = None
+    min_liquidity_score: float | None = None
+    max_estimated_whispers: int | None = None
+    max_estimated_operations: int | None = None
 
 
 @dataclass(frozen=True)
@@ -28,6 +34,14 @@ class CandidateRow:
     confidence: float | None = None
     sample_count: int | None = None
     legacy_item_or_market_keys: tuple[str, ...] = ()
+    complexity_tier: str | None = None
+    required_capital_chaos: float | None = None
+    estimated_operations: int | None = None
+    estimated_whispers: int | None = None
+    staleness_minutes: int | None = None
+    liquidity_score: float | None = None
+    expected_profit_per_operation_chaos: float | None = None
+    feasibility_score: float | None = None
     evidence: Mapping[str, object] = field(
         default_factory=lambda: cast(dict[str, object], {})
     )
@@ -56,6 +70,11 @@ REJECTED_MIN_SAMPLE_COUNT = "below_min_sample_count"
 REJECTED_JOURNAL_REQUIRED = "journal_state_required"
 REJECTED_COOLDOWN_ACTIVE = "cooldown_active"
 REJECTED_DUPLICATE = "dedupe_loser"
+REJECTED_INVALID_SOURCE_ROW = "invalid_source_row"
+REJECTED_MAX_STALENESS = "above_max_staleness_minutes"
+REJECTED_MIN_LIQUIDITY = "below_min_liquidity_score"
+REJECTED_MAX_ESTIMATED_WHISPERS = "above_max_estimated_whispers"
+REJECTED_MAX_ESTIMATED_OPERATIONS = "above_max_estimated_operations"
 
 
 def policy_from_pack(pack: object) -> StrategyPolicy:
@@ -70,6 +89,18 @@ def policy_from_pack(pack: object) -> StrategyPolicy:
             0, as_optional_int(getattr(pack, "cooldown_minutes", 0)) or 0
         ),
         requires_journal=bool(getattr(pack, "requires_journal", False)),
+        max_staleness_minutes=as_optional_int(
+            getattr(pack, "max_staleness_minutes", None)
+        ),
+        min_liquidity_score=as_optional_float(
+            getattr(pack, "min_liquidity_score", None)
+        ),
+        max_estimated_whispers=as_optional_int(
+            getattr(pack, "max_estimated_whispers", None)
+        ),
+        max_estimated_operations=as_optional_int(
+            getattr(pack, "max_estimated_operations", None)
+        ),
     )
 
 
@@ -78,6 +109,9 @@ def candidate_from_source_row(
     source_row: Mapping[str, object],
     *,
     default_league: str | None = None,
+    default_estimated_operations: int | None = None,
+    default_estimated_whispers: int | None = None,
+    default_profit_per_operation_chaos: float | None = None,
 ) -> CandidateRow:
     source_row_dict = dict(source_row)
     source_row_json = _source_row_json(source_row_dict)
@@ -91,8 +125,11 @@ def candidate_from_source_row(
         source_row_dict.get("legacy_hashed_item_or_market_key") or ""
     ).strip()
     legacy_keys = _legacy_item_or_market_keys(source_row_dict)
+    historical_legacy_keys = _historical_legacy_item_or_market_keys(source_row_dict)
     if legacy_hashed_key:
         legacy_keys = normalize_compatibility_keys(legacy_hashed_key, legacy_keys)
+    if historical_legacy_keys:
+        legacy_keys = _append_compatibility_keys(legacy_keys, historical_legacy_keys)
     if source_item_or_market_key and source_item_or_market_key != semantic_key:
         legacy_keys = normalize_compatibility_keys(
             source_item_or_market_key, legacy_keys
@@ -104,21 +141,54 @@ def candidate_from_source_row(
         _ = evidence.setdefault("source_item_or_market_key", source_item_or_market_key)
     if legacy_hashed_key:
         _ = evidence.setdefault("legacy_hashed_item_or_market_key", legacy_hashed_key)
+    if historical_legacy_keys:
+        _ = evidence.setdefault(
+            "historical_legacy_hashed_item_or_market_keys", list(historical_legacy_keys)
+        )
+
+    expected_profit_chaos = as_optional_float(
+        source_row_dict.get("expected_profit_chaos")
+    )
+    normalized_opportunity = normalize_opportunity_metrics(
+        OpportunityScoreInput(
+            expected_profit_chaos=expected_profit_chaos,
+            estimated_operations=as_optional_int(
+                source_row_dict.get("estimated_operations")
+            ),
+            estimated_whispers=as_optional_int(
+                source_row_dict.get("estimated_whispers")
+            ),
+            expected_profit_per_operation_chaos=as_optional_float(
+                source_row_dict.get("expected_profit_per_operation_chaos")
+            ),
+        ),
+        default_estimated_operations=default_estimated_operations,
+        default_estimated_whispers=default_estimated_whispers,
+        default_profit_per_operation_chaos=default_profit_per_operation_chaos,
+    )
 
     return CandidateRow(
         strategy_id=strategy_id,
         league=str(source_row_dict.get("league") or default_league or ""),
         item_or_market_key=semantic_key,
         candidate_ts=parse_candidate_ts(source_row_dict.get("time_bucket")),
-        expected_profit_chaos=as_optional_float(
-            source_row_dict.get("expected_profit_chaos")
-        ),
+        expected_profit_chaos=expected_profit_chaos,
         expected_roi=as_optional_float(source_row_dict.get("expected_roi")),
         confidence=as_optional_float(source_row_dict.get("confidence")),
         sample_count=candidate_sample_count(source_row_dict),
         legacy_item_or_market_keys=tuple(
             key for key in legacy_keys if key and key != semantic_key
         ),
+        complexity_tier=_as_optional_text(source_row_dict.get("complexity_tier")),
+        required_capital_chaos=as_optional_float(
+            source_row_dict.get("required_capital_chaos")
+        ),
+        estimated_operations=normalized_opportunity.estimated_operations,
+        estimated_whispers=normalized_opportunity.estimated_whispers,
+        staleness_minutes=as_optional_int(source_row_dict.get("staleness_minutes")),
+        liquidity_score=as_optional_float(source_row_dict.get("liquidity_score")),
+        expected_profit_per_operation_chaos=normalized_opportunity.expected_profit_per_operation_chaos,
+        feasibility_score=as_optional_float(source_row_dict.get("feasibility_score")),
         evidence=evidence,
     )
 
@@ -202,6 +272,14 @@ def candidate_cooldown_keys(candidate: CandidateRow) -> tuple[str, ...]:
     )
 
 
+def _append_compatibility_keys(
+    existing_keys: Sequence[str],
+    additional_keys: Sequence[str],
+) -> tuple[str, ...]:
+    appended = tuple(key for key in additional_keys if key and key not in existing_keys)
+    return tuple(existing_keys) + appended
+
+
 def candidate_meets_minima(
     candidate: CandidateRow, policy: StrategyPolicy
 ) -> tuple[bool, str | None]:
@@ -225,6 +303,33 @@ def candidate_meets_minima(
             or candidate.sample_count < policy.min_sample_count
         ):
             return False, REJECTED_MIN_SAMPLE_COUNT
+    if policy.max_staleness_minutes is not None and policy.max_staleness_minutes >= 0:
+        if (
+            candidate.staleness_minutes is None
+            or candidate.staleness_minutes > policy.max_staleness_minutes
+        ):
+            return False, REJECTED_MAX_STALENESS
+    if policy.min_liquidity_score is not None:
+        if (
+            candidate.liquidity_score is None
+            or candidate.liquidity_score < policy.min_liquidity_score
+        ):
+            return False, REJECTED_MIN_LIQUIDITY
+    if policy.max_estimated_whispers is not None and policy.max_estimated_whispers >= 0:
+        if (
+            candidate.estimated_whispers is None
+            or candidate.estimated_whispers > policy.max_estimated_whispers
+        ):
+            return False, REJECTED_MAX_ESTIMATED_WHISPERS
+    if (
+        policy.max_estimated_operations is not None
+        and policy.max_estimated_operations > 0
+    ):
+        if (
+            candidate.estimated_operations is None
+            or candidate.estimated_operations > policy.max_estimated_operations
+        ):
+            return False, REJECTED_MAX_ESTIMATED_OPERATIONS
     return True, None
 
 
@@ -278,22 +383,11 @@ def evaluate_candidates(
     journal_active_keys: set[str] | None = None,
     last_alerted_at_by_key: Mapping[str, datetime] | None = None,
 ) -> PolicyEvaluation:
-    winner_entries = _dedupe_winner_entries(candidates)
-    dedupe_winners = [entry[2] for entry in winner_entries.values()]
-    dedupe_winners.sort(key=lambda row: _candidate_rank(row, 0))
-    winner_indexes = {entry[0] for entry in winner_entries.values()}
     decisions: list[CandidateDecision] = []
     eligible: list[CandidateRow] = []
 
+    league_filtered_candidates: list[tuple[int, CandidateRow]] = []
     for index, candidate in enumerate(candidates):
-        if index not in winner_indexes:
-            decisions.append(
-                CandidateDecision(
-                    candidate=candidate, accepted=False, reason=REJECTED_DUPLICATE
-                )
-            )
-
-    for candidate in dedupe_winners:
         if candidate.league != requested_league:
             decisions.append(
                 CandidateDecision(
@@ -301,6 +395,26 @@ def evaluate_candidates(
                 )
             )
             continue
+        league_filtered_candidates.append((index, candidate))
+
+    winner_entries = _dedupe_winner_entries(
+        [candidate for _, candidate in league_filtered_candidates]
+    )
+    dedupe_winners = [entry[2] for entry in winner_entries.values()]
+    dedupe_winners.sort(key=lambda row: _candidate_rank(row, 0))
+    winner_indexes = {
+        league_filtered_candidates[entry[0]][0] for entry in winner_entries.values()
+    }
+
+    for index, candidate in enumerate(candidates):
+        if candidate.league == requested_league and index not in winner_indexes:
+            decisions.append(
+                CandidateDecision(
+                    candidate=candidate, accepted=False, reason=REJECTED_DUPLICATE
+                )
+            )
+
+    for candidate in dedupe_winners:
         meets_minima, minima_reason = candidate_meets_minima(candidate, policy)
         if not meets_minima:
             decisions.append(
@@ -344,6 +458,14 @@ def evaluate_candidates(
 
 def build_evidence_snapshot(candidate: CandidateRow) -> dict[str, object]:
     snapshot = dict(candidate.evidence)
+    for identity_field in (
+        "legacy_item_or_market_keys",
+        "source_item_or_market_key",
+        "legacy_hashed_item_or_market_key",
+        "historical_legacy_hashed_item_or_market_key",
+        "historical_legacy_hashed_item_or_market_keys",
+    ):
+        snapshot.pop(identity_field, None)
     _ = snapshot.setdefault("strategy_id", candidate.strategy_id)
     _ = snapshot.setdefault("league", candidate.league)
     snapshot["item_or_market_key"] = candidate.item_or_market_key
@@ -352,6 +474,45 @@ def build_evidence_snapshot(candidate: CandidateRow) -> dict[str, object]:
     _ = snapshot.setdefault("expected_roi", candidate.expected_roi)
     _ = snapshot.setdefault("confidence", candidate.confidence)
     _ = snapshot.setdefault("sample_count", candidate.sample_count)
+    _ = snapshot.setdefault("complexity_tier", candidate.complexity_tier)
+    _ = snapshot.setdefault("required_capital_chaos", candidate.required_capital_chaos)
+    _ = snapshot.setdefault("estimated_operations", candidate.estimated_operations)
+    _ = snapshot.setdefault("estimated_whispers", candidate.estimated_whispers)
+    _ = snapshot.setdefault("staleness_minutes", candidate.staleness_minutes)
+    _ = snapshot.setdefault("liquidity_score", candidate.liquidity_score)
+    _ = snapshot.setdefault(
+        "expected_profit_per_operation_chaos",
+        candidate.expected_profit_per_operation_chaos,
+    )
+    _ = snapshot.setdefault("feasibility_score", candidate.feasibility_score)
+    source_item_or_market_key = str(
+        candidate.evidence.get("source_item_or_market_key") or ""
+    ).strip()
+    if (
+        source_item_or_market_key
+        and source_item_or_market_key != candidate.item_or_market_key
+        and source_item_or_market_key in candidate.legacy_item_or_market_keys
+    ):
+        snapshot["source_item_or_market_key"] = source_item_or_market_key
+
+    legacy_hashed_item_or_market_key = str(
+        candidate.evidence.get("legacy_hashed_item_or_market_key") or ""
+    ).strip()
+    if (
+        legacy_hashed_item_or_market_key
+        and legacy_hashed_item_or_market_key in candidate.legacy_item_or_market_keys
+    ):
+        snapshot["legacy_hashed_item_or_market_key"] = legacy_hashed_item_or_market_key
+
+    historical_legacy_keys = _historical_legacy_item_or_market_keys(candidate.evidence)
+    if historical_legacy_keys:
+        snapshot["historical_legacy_hashed_item_or_market_keys"] = list(
+            key
+            for key in historical_legacy_keys
+            if key in candidate.legacy_item_or_market_keys
+        )
+        if not snapshot["historical_legacy_hashed_item_or_market_keys"]:
+            snapshot.pop("historical_legacy_hashed_item_or_market_keys", None)
     if candidate.legacy_item_or_market_keys:
         snapshot["legacy_item_or_market_keys"] = list(
             candidate.legacy_item_or_market_keys
@@ -361,12 +522,24 @@ def build_evidence_snapshot(candidate: CandidateRow) -> dict[str, object]:
 
 def _candidate_rank(candidate: CandidateRow, index: int) -> tuple[object, ...]:
     return (
+        _sort_numeric_desc(candidate.feasibility_score),
+        _sort_numeric_desc(candidate.expected_profit_per_operation_chaos),
         _sort_numeric_desc(candidate.expected_profit_chaos),
         _sort_numeric_desc(candidate.expected_roi),
         _sort_numeric_desc(candidate.confidence),
         _sort_numeric_desc(
             float(candidate.sample_count)
             if candidate.sample_count is not None
+            else None
+        ),
+        _sort_numeric_asc(
+            float(candidate.estimated_operations)
+            if candidate.estimated_operations is not None
+            else None
+        ),
+        _sort_numeric_asc(
+            float(candidate.estimated_whispers)
+            if candidate.estimated_whispers is not None
             else None
         ),
         -candidate.candidate_ts.timestamp(),
@@ -381,15 +554,27 @@ def _sort_numeric_desc(value: float | None) -> tuple[int, float]:
     return (0, -float(value))
 
 
+def _sort_numeric_asc(value: float | None) -> tuple[int, float]:
+    if value is None:
+        return (1, 0.0)
+    return (0, float(value))
+
+
+def _as_optional_text(value: object) -> str | None:
+    cleaned = str(value or "").strip()
+    return cleaned if cleaned else None
+
+
 def _dedupe_winner_entries(
     candidates: Sequence[CandidateRow],
-) -> dict[str, tuple[int, tuple[object, ...], CandidateRow]]:
-    winners: dict[str, tuple[int, tuple[object, ...], CandidateRow]] = {}
+) -> dict[tuple[str, str], tuple[int, tuple[object, ...], CandidateRow]]:
+    winners: dict[tuple[str, str], tuple[int, tuple[object, ...], CandidateRow]] = {}
     for index, candidate in enumerate(candidates):
         rank = _candidate_rank(candidate, index)
-        current = winners.get(candidate.item_or_market_key)
+        dedupe_key = (candidate.league, candidate.item_or_market_key)
+        current = winners.get(dedupe_key)
         if current is None or rank < current[1]:
-            winners[candidate.item_or_market_key] = (index, rank, candidate)
+            winners[dedupe_key] = (index, rank, candidate)
     return winners
 
 
@@ -412,6 +597,24 @@ def _legacy_item_or_market_keys(source_row: Mapping[str, object]) -> tuple[str, 
         items = cast(list[object] | tuple[object, ...], value)
         return tuple(str(item).strip() for item in items if str(item).strip())
     return ()
+
+
+def _historical_legacy_item_or_market_keys(
+    source_row: Mapping[str, object],
+) -> tuple[str, ...]:
+    single = str(
+        source_row.get("historical_legacy_hashed_item_or_market_key") or ""
+    ).strip()
+    multiple = _legacy_item_or_market_keys(
+        {
+            "legacy_item_or_market_keys": source_row.get(
+                "historical_legacy_hashed_item_or_market_keys"
+            )
+        }
+    )
+    if single:
+        return normalize_compatibility_keys(single, multiple)
+    return multiple
 
 
 def _source_row_json(source_row: Mapping[str, object]) -> str:
