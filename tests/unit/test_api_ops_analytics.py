@@ -7,14 +7,18 @@ import pytest
 from poe_trade.api.ops import (
     analytics_backtests,
     analytics_gold_diagnostics,
+    analytics_opportunities,
+    analytics_pricing_outliers,
     analytics_report,
     analytics_scanner,
+    analytics_search_history,
     dashboard_payload,
     scanner_recommendations_payload,
     scanner_summary_payload,
 )
 from poe_trade.api.service_control import ServiceSnapshot
 from poe_trade.db import ClickHouseClient
+from poe_trade.db.clickhouse import ClickHouseClientError
 
 
 class _RecordingClickHouse(ClickHouseClient):
@@ -62,17 +66,247 @@ class _SequentialFixtureClickHouse(ClickHouseClient):
         return ""
 
 
+class _LegacyFallbackClickHouse(ClickHouseClient):
+    def __init__(self, legacy_response: str) -> None:
+        super().__init__(endpoint="http://clickhouse")
+        self.legacy_response = legacy_response
+        self.queries: list[str] = []
+
+    def execute(  # pyright: ignore[reportImplicitOverride]
+        self, query: str, settings: Mapping[str, str] | None = None
+    ) -> str:
+        del settings
+        self.queries.append(query)
+        if "complexity_tier" in query:
+            raise ClickHouseClientError("Unknown column complexity_tier")
+        return self.legacy_response
+
+
+class _LegacyFallbackSequentialClickHouse(ClickHouseClient):
+    def __init__(self, legacy_responses: list[str]) -> None:
+        super().__init__(endpoint="http://clickhouse")
+        self.legacy_responses = list(legacy_responses)
+        self.queries: list[str] = []
+
+    def execute(  # pyright: ignore[reportImplicitOverride]
+        self, query: str, settings: Mapping[str, str] | None = None
+    ) -> str:
+        del settings
+        self.queries.append(query)
+        if "complexity_tier" in query:
+            raise ClickHouseClientError("Unknown column complexity_tier")
+        if self.legacy_responses:
+            return self.legacy_responses.pop(0)
+        return ""
+
+
+class _AnalyticsCompatibilityClickHouse(ClickHouseClient):
+    def __init__(self, responses: dict[str, str]) -> None:
+        super().__init__(endpoint="http://clickhouse")
+        self.responses = responses
+        self.queries: list[str] = []
+
+    def execute(  # pyright: ignore[reportImplicitOverride]
+        self, query: str, settings: Mapping[str, str] | None = None
+    ) -> str:
+        del settings
+        self.queries.append(query)
+        lowered = query.lower()
+        if "from poe_trade.scanner_candidate_decisions" in lowered:
+            raise ClickHouseClientError(
+                "Table poe_trade.scanner_candidate_decisions doesn't exist"
+            )
+        if "ifnull(opportunity_type" in lowered:
+            raise ClickHouseClientError(
+                "Unknown column opportunity_type in table scanner_recommendations"
+            )
+        if (
+            "select complexity_tier, count() as tier_count" in lowered
+            or "ifnull(complexity_tier, '') as complexity_tier" in lowered
+        ):
+            raise ClickHouseClientError(
+                "Unknown column complexity_tier in table scanner_recommendations"
+            )
+        for needle, response in self.responses.items():
+            if needle in query:
+                return response
+        return ""
+
+
 def test_analytics_scanner_query_does_not_require_status_column() -> None:
-    client = _RecordingClickHouse()
+    client = _FixtureClickHouse(
+        {
+            "count() AS recommendation_count": '{"strategy_id":"bulk_essence","recommendation_count":4}\n',
+            "count() AS rejection_count": '{"decision_reason":"rejected_min_confidence","rejection_count":2}\n',
+            "count() AS tier_count": '{"complexity_tier":"medium","tier_count":3}\n',
+        }
+    )
 
     result = analytics_scanner(client)
 
-    assert result == {"rows": []}
-    assert len(client.queries) == 1
+    assert result["rows"] == [
+        {"strategy_id": "bulk_essence", "recommendation_count": 4}
+    ]
+    assert result["gateRejections"] == [
+        {"decision_reason": "rejected_min_confidence", "rejection_count": 2}
+    ]
+    assert result["complexityTiers"] == [{"complexity_tier": "medium", "tier_count": 3}]
+    assert len(client.queries) == 3
     assert "scanner_recommendations.status" not in client.queries[0]
     assert "GROUP BY status" not in client.queries[0]
     assert "GROUP BY strategy_id" in client.queries[0]
     assert "recommendation_count" in client.queries[0]
+
+
+def test_analytics_opportunities_includes_distributions_and_decision_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FixtureClickHouse(
+        {
+            "AS opportunity_type": '{"opportunity_type":"bulk_flip","count":5}\n',
+            "AS complexity_tier": '{"complexity_tier":"medium","count":4}\n',
+            "WHERE accepted = 0": (
+                '{"decision_reason":"rejected_cooldown_active","count":3}\n'
+                '{"decision_reason":"suppressed_duplicate","count":2}\n'
+            ),
+        }
+    )
+    captured: dict[str, object] = {}
+
+    def _mock_scanner_recommendations(
+        _client: ClickHouseClient, **kwargs: object
+    ) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "recommendations": [
+                {"scannerRunId": "scan-1", "expectedProfitPerOperationChaos": 9.0}
+            ],
+            "meta": {"hasMore": False, "nextCursor": None},
+        }
+
+    monkeypatch.setattr(
+        "poe_trade.api.ops.scanner_recommendations_payload",
+        _mock_scanner_recommendations,
+    )
+
+    result = analytics_opportunities(client)
+
+    assert result["distributions"] == {
+        "opportunityType": [{"opportunity_type": "bulk_flip", "count": 5}],
+        "complexityTier": [{"complexity_tier": "medium", "count": 4}],
+    }
+    assert result["decisionLog"] == {
+        "rejections": [{"decision_reason": "rejected_cooldown_active", "count": 3}],
+        "suppressions": [{"decision_reason": "suppressed_duplicate", "count": 2}],
+    }
+    assert result["topOpportunities"] == [
+        {"scannerRunId": "scan-1", "expectedProfitPerOperationChaos": 9.0}
+    ]
+    assert captured == {
+        "limit": 20,
+        "sort_by": "expected_profit_per_operation_chaos",
+    }
+
+
+def test_analytics_scanner_remains_compatible_before_0057() -> None:
+    client = _AnalyticsCompatibilityClickHouse(
+        {
+            "count() AS recommendation_count": '{"strategy_id":"bulk_essence","recommendation_count":4}\n',
+            "JSONExtractString(evidence_snapshot, 'complexity_tier')": '{"complexity_tier":"medium","tier_count":3}\n',
+        }
+    )
+
+    result = analytics_scanner(client)
+
+    assert result == {
+        "rows": [{"strategy_id": "bulk_essence", "recommendation_count": 4}],
+        "gateRejections": [],
+        "complexityTiers": [{"complexity_tier": "medium", "tier_count": 3}],
+    }
+
+
+def test_analytics_opportunities_remains_compatible_before_0057(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _AnalyticsCompatibilityClickHouse(
+        {
+            "JSONExtractString(evidence_snapshot, 'opportunity_type')": '{"opportunity_type":"bulk_flip","count":5}\n',
+            "JSONExtractString(evidence_snapshot, 'complexity_tier')": '{"complexity_tier":"medium","count":4}\n',
+        }
+    )
+
+    monkeypatch.setattr(
+        "poe_trade.api.ops.scanner_recommendations_payload",
+        lambda _client, **_kwargs: {
+            "recommendations": [
+                {"scannerRunId": "scan-1", "expectedProfitPerOperationChaos": 9.0}
+            ],
+            "meta": {"hasMore": False, "nextCursor": None},
+        },
+    )
+
+    result = analytics_opportunities(client)
+
+    assert result["distributions"] == {
+        "opportunityType": [{"opportunity_type": "bulk_flip", "count": 5}],
+        "complexityTier": [{"complexity_tier": "medium", "count": 4}],
+    }
+    assert result["decisionLog"] == {"rejections": [], "suppressions": []}
+    assert result["topOpportunities"] == [
+        {"scannerRunId": "scan-1", "expectedProfitPerOperationChaos": 9.0}
+    ]
+
+
+def test_analytics_pricing_outliers_league_all_does_not_pin_affix_join_league() -> None:
+    client = _FixtureClickHouse({})
+
+    analytics_pricing_outliers(
+        client,
+        query_params={"league": ["all"]},
+        default_league="Mirage",
+    )
+
+    assert len(client.queries) == 2
+    assert "t.league = 'all'" not in client.queries[0]
+
+
+def test_analytics_search_history_rejects_invalid_price_min() -> None:
+    client = _FixtureClickHouse({})
+
+    with pytest.raises(ValueError, match="price_min"):
+        analytics_search_history(
+            client,
+            query_params={"price_min": ["abc"]},
+            default_league="Mirage",
+        )
+
+    assert client.queries == []
+
+
+def test_analytics_search_history_rejects_invalid_time_from() -> None:
+    client = _FixtureClickHouse({})
+
+    with pytest.raises(ValueError, match="time_from"):
+        analytics_search_history(
+            client,
+            query_params={"time_from": ["bad"]},
+            default_league="Mirage",
+        )
+
+    assert client.queries == []
+
+
+def test_analytics_pricing_outliers_rejects_invalid_limit() -> None:
+    client = _FixtureClickHouse({})
+
+    with pytest.raises(ValueError, match="limit"):
+        analytics_pricing_outliers(
+            client,
+            query_params={"limit": ["oops"]},
+            default_league="Mirage",
+        )
+
+    assert client.queries == []
 
 
 def test_analytics_backtests_returns_truthful_empty_payload() -> None:
@@ -304,19 +538,70 @@ def test_scanner_recommendations_payload_exposes_contract_fields() -> None:
     assert recommendation["mlInfluenceReason"] is None
 
 
-def test_scanner_recommendations_payload_keeps_legacy_rows_readable() -> None:
+def test_scanner_recommendations_payload_exposes_opportunity_fields() -> None:
     client = _FixtureClickHouse(
         {
             "FROM poe_trade.scanner_recommendations": (
-                '{"scanner_run_id":"scan-legacy","strategy_id":"bulk_essence","league":"Mirage",'
+                '{"scanner_run_id":"scan-opportunity","strategy_id":"bulk_essence","league":"Mirage",'
+                '"recommendation_source":"ml_anomaly","recommendation_contract_version":2,'
+                '"producer_version":"mirage-model-v2","producer_run_id":"train-42",'
                 '"item_or_market_key":"legacy-key","why_it_fired":"spread>10",'
-                '"buy_plan":"buy <= 10c","max_buy":10.0,"transform_plan":"none",'
+                '"buy_plan":"buy <= 10c","max_buy":10.0,"transform_plan":"upgrade to Deafening",'
                 '"exit_plan":"list @ 15c","execution_venue":"manual_trade",'
-                '"expected_profit_chaos":5.0,"expected_roi":0.5,"expected_hold_time":"~20m",'
-                '"confidence":0.7,"evidence_snapshot":"{}",'
+                '"expected_profit_chaos":24.0,"expected_profit_per_operation_chaos":8.0,'
+                '"expected_roi":0.5,"expected_hold_time":"~20m",'
+                '"expected_hold_minutes":20.0,"expected_profit_per_minute_chaos":1.2,'
+                '"confidence":0.7,"complexity_tier":"medium","required_capital_chaos":36.0,'
+                '"estimated_operations":3,"estimated_whispers":5,"feasibility_score":0.81,'
+                '"evidence_snapshot":"{\\"search_hint\\":\\"Screaming Essence of Greed\\",\\"item_name\\":\\"Screaming Essence of Greed\\",\\"opportunity_type\\":\\"bulk_flip\\",\\"estimated_searches\\":2,\\"freshness_minutes\\":3,\\"estimated_time_to_acquire_minutes\\":12,\\"estimated_time_to_exit_minutes\\":8,\\"estimated_total_cycle_minutes\\":20,\\"liquidity_score\\":0.8,\\"risk_score\\":0.2,\\"competition_score\\":0.35,\\"why_now\\":\\"spread widened after reset\\",\\"warnings\\":[\\"thin supply\\"],\\"evidence_snapshot\\":{\\"supply\\":\\"tight\\"}}",'
                 '"recorded_at":"2026-03-14 10:00:00"}\n'
             )
         }
+    )
+
+    payload = scanner_recommendations_payload(client)
+
+    recommendation = payload["recommendations"][0]
+    assert recommendation["opportunityType"] == "bulk_flip"
+    assert recommendation["complexityTier"] == "medium"
+    assert recommendation["requiredCapitalChaos"] == 36.0
+    assert recommendation["estimatedOperations"] == 3
+    assert recommendation["estimatedSearches"] == 2
+    assert recommendation["estimatedWhispers"] == 5
+    assert recommendation["freshnessMinutes"] == 3
+    assert recommendation["estimatedTimeToAcquireMinutes"] == 12
+    assert recommendation["estimatedTimeToExitMinutes"] == 8
+    assert recommendation["estimatedTotalCycleMinutes"] == 20
+    assert recommendation["expectedProfitPerOperationChaos"] == 8.0
+    assert recommendation["feasibilityScore"] == 0.81
+    assert recommendation["liquidityScore"] == 0.8
+    assert recommendation["riskScore"] == 0.2
+    assert recommendation["competitionScore"] == 0.35
+    assert recommendation["whyNow"] == "spread widened after reset"
+    assert recommendation["warnings"] == ["thin supply"]
+    assert recommendation["executionPlan"] == {
+        "buyPlan": "buy <= 10c",
+        "transformPlan": "upgrade to Deafening",
+        "exitPlan": "list @ 15c",
+        "executionVenue": "manual_trade",
+    }
+    assert recommendation["evidence"] == {
+        "searchHint": "Screaming Essence of Greed",
+        "itemName": "Screaming Essence of Greed",
+        "whyItFired": "spread>10",
+        "snapshot": {"supply": "tight"},
+    }
+
+
+def test_scanner_recommendations_payload_keeps_legacy_rows_readable() -> None:
+    client = _LegacyFallbackClickHouse(
+        '{"scanner_run_id":"scan-legacy","strategy_id":"bulk_essence","league":"Mirage",'
+        '"item_or_market_key":"legacy-key","why_it_fired":"spread>10",'
+        '"buy_plan":"buy <= 10c","max_buy":10.0,"transform_plan":"none",'
+        '"exit_plan":"list @ 15c","execution_venue":"manual_trade",'
+        '"expected_profit_chaos":5.0,"expected_roi":0.5,"expected_hold_time":"~20m",'
+        '"confidence":0.7,"evidence_snapshot":"{}",'
+        '"recorded_at":"2026-03-14 10:00:00"}\n'
     )
 
     payload = scanner_recommendations_payload(client)
@@ -326,6 +611,129 @@ def test_scanner_recommendations_payload_keeps_legacy_rows_readable() -> None:
     assert recommendation["contractVersion"] == 1
     assert recommendation["producerVersion"] is None
     assert recommendation["producerRunId"] == "scan-legacy"
+    assert recommendation["opportunityType"] is None
+    assert recommendation["complexityTier"] is None
+    assert recommendation["requiredCapitalChaos"] is None
+    assert recommendation["estimatedOperations"] is None
+    assert recommendation["estimatedSearches"] is None
+    assert recommendation["estimatedWhispers"] is None
+    assert recommendation["estimatedTimeToAcquireMinutes"] is None
+    assert recommendation["estimatedTimeToExitMinutes"] is None
+    assert recommendation["estimatedTotalCycleMinutes"] == 20
+    assert recommendation["expectedProfitPerOperationChaos"] is None
+    assert recommendation["feasibilityScore"] is None
+    assert recommendation["liquidityScore"] is None
+    assert recommendation["riskScore"] is None
+    assert recommendation["competitionScore"] is None
+    assert recommendation["whyNow"] == "spread>10"
+    assert recommendation["warnings"] == []
+    assert recommendation["executionPlan"] == {
+        "buyPlan": "buy <= 10c",
+        "transformPlan": "none",
+        "exitPlan": "list @ 15c",
+        "executionVenue": "manual_trade",
+    }
+    assert recommendation["evidence"] == {
+        "searchHint": "legacy-key",
+        "itemName": "legacy-key",
+        "whyItFired": "spread>10",
+        "snapshot": {},
+    }
+    assert len(client.queries) == 2
+    assert "complexity_tier" in client.queries[0]
+    assert "complexity_tier" not in client.queries[1]
+
+
+def test_scanner_recommendations_payload_legacy_fallback_supports_operation_sort() -> (
+    None
+):
+    client = _LegacyFallbackClickHouse(
+        '{"scanner_run_id":"scan-legacy","strategy_id":"bulk_essence","league":"Mirage",'
+        '"item_or_market_key":"legacy-key","why_it_fired":"spread>10",'
+        '"buy_plan":"buy <= 10c","max_buy":10.0,"transform_plan":"none",'
+        '"exit_plan":"list @ 15c","execution_venue":"manual_trade",'
+        '"expected_profit_chaos":5.0,"expected_roi":0.5,"expected_hold_time":"~20m",'
+        '"confidence":0.7,"evidence_snapshot":"{}",'
+        '"recorded_at":"2026-03-14 10:00:00"}\n'
+    )
+
+    payload = scanner_recommendations_payload(
+        client,
+        sort_by="expected_profit_per_operation_chaos",
+    )
+
+    assert payload["recommendations"][0]["scannerRunId"] == "scan-legacy"
+    assert len(client.queries) == 2
+    assert "expected_profit_per_operation_chaos DESC" in client.queries[0]
+    assert "expected_profit_per_operation_chaos" not in client.queries[1]
+    assert "expected_profit_chaos DESC" in client.queries[1]
+
+
+def test_scanner_recommendations_payload_legacy_fallback_supports_operation_sort_cursor() -> (
+    None
+):
+    client = _LegacyFallbackSequentialClickHouse(
+        legacy_responses=[
+            (
+                '{"scanner_run_id":"scan-1","strategy_id":"bulk_essence","league":"Mirage",'
+                '"item_or_market_key":"k1","why_it_fired":"spread",'
+                '"buy_plan":"buy <= 1c","max_buy":1.0,"transform_plan":"none",'
+                '"exit_plan":"list @ 11c","execution_venue":"manual_trade",'
+                '"expected_profit_chaos":11.0,"expected_roi":1.1,"expected_hold_time":"~10m",'
+                '"confidence":0.9,"evidence_snapshot":"{}",'
+                '"recorded_at":"2026-03-15 12:00:00"}\n'
+                '{"scanner_run_id":"scan-2","strategy_id":"bulk_essence","league":"Mirage",'
+                '"item_or_market_key":"k2","why_it_fired":"spread",'
+                '"buy_plan":"buy <= 2c","max_buy":2.0,"transform_plan":"none",'
+                '"exit_plan":"list @ 10c","execution_venue":"manual_trade",'
+                '"expected_profit_chaos":10.0,"expected_roi":1.0,"expected_hold_time":"~10m",'
+                '"confidence":0.8,"evidence_snapshot":"{}",'
+                '"recorded_at":"2026-03-15 11:00:00"}\n'
+                '{"scanner_run_id":"scan-3","strategy_id":"bulk_essence","league":"Mirage",'
+                '"item_or_market_key":"k3","why_it_fired":"spread",'
+                '"buy_plan":"buy <= 3c","max_buy":3.0,"transform_plan":"none",'
+                '"exit_plan":"list @ 9c","execution_venue":"manual_trade",'
+                '"expected_profit_chaos":9.0,"expected_roi":0.9,"expected_hold_time":"~10m",'
+                '"confidence":0.7,"evidence_snapshot":"{}",'
+                '"recorded_at":"2026-03-15 10:00:00"}\n'
+            ),
+            (
+                '{"scanner_run_id":"scan-3","strategy_id":"bulk_essence","league":"Mirage",'
+                '"item_or_market_key":"k3","why_it_fired":"spread",'
+                '"buy_plan":"buy <= 3c","max_buy":3.0,"transform_plan":"none",'
+                '"exit_plan":"list @ 9c","execution_venue":"manual_trade",'
+                '"expected_profit_chaos":9.0,"expected_roi":0.9,"expected_hold_time":"~10m",'
+                '"confidence":0.7,"evidence_snapshot":"{}",'
+                '"recorded_at":"2026-03-15 10:00:00"}\n'
+            ),
+        ]
+    )
+
+    first_payload = scanner_recommendations_payload(
+        client,
+        limit=2,
+        sort_by="expected_profit_per_operation_chaos",
+        league="Mirage",
+    )
+
+    second_payload = scanner_recommendations_payload(
+        client,
+        limit=2,
+        sort_by="expected_profit_per_operation_chaos",
+        league="Mirage",
+        cursor=first_payload["meta"]["nextCursor"],
+    )
+
+    assert first_payload["meta"]["hasMore"] is True
+    assert second_payload["meta"]["hasMore"] is False
+    assert [row["scannerRunId"] for row in second_payload["recommendations"]] == [
+        "scan-3"
+    ]
+    assert "expected_profit_per_operation_chaos" in client.queries[0]
+    assert "expected_profit_per_operation_chaos" not in client.queries[1]
+    assert "expected_profit_per_operation_chaos" in client.queries[2]
+    assert "expected_profit_per_operation_chaos" not in client.queries[3]
+    assert "expected_profit_chaos" in client.queries[3]
 
 
 def test_scanner_recommendations_payload_nulls_invalid_hold_minutes() -> None:
@@ -656,14 +1064,14 @@ def test_dashboard_payload_sources_from_scanner(
         "backendVersion": "0.1.0",
         "backendSha": None,
         "frontendBuildSha": None,
-        "recommendationContractVersion": 2,
+        "recommendationContractVersion": 3,
         "contractMatchState": "unknown",
     }
     assert result["summary"]["criticalAlerts"] == 1
     assert all("message" not in opt for opt in result["topOpportunities"])
     assert captured_kwargs == {
         "limit": 3,
-        "sort_by": "expected_profit_per_minute_chaos",
+        "sort_by": "expected_profit_per_operation_chaos",
     }
 
 

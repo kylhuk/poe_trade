@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 import importlib
 
@@ -49,6 +50,113 @@ def test_list_strategy_packs_discovers_initial_packs() -> None:
     assert bulk_essence.requires_journal is False
 
 
+def test_list_strategy_packs_loads_safe_default_opportunity_gates() -> None:
+    registry = importlib.import_module("poe_trade.strategy.registry")
+
+    bulk_essence = next(
+        pack
+        for pack in registry.list_strategy_packs()
+        if pack.strategy_id == "bulk_essence"
+    )
+
+    assert bulk_essence.max_staleness_minutes == 15
+    assert bulk_essence.min_liquidity_score == 0.72
+    assert bulk_essence.max_estimated_whispers == 6
+    assert bulk_essence.max_estimated_operations == 3
+    assert bulk_essence.advanced_override_profit_per_operation_chaos is None
+
+
+def test_all_strategy_packs_define_opportunity_gate_params_in_metadata() -> None:
+    registry = importlib.import_module("poe_trade.strategy.registry")
+    required_params = (
+        "max_staleness_minutes",
+        "min_liquidity_score",
+        "max_estimated_whispers",
+        "max_estimated_operations",
+        "advanced_override_profit_per_operation_chaos",
+    )
+
+    for pack in registry.list_strategy_packs():
+        metadata = tomllib.loads(pack.metadata_path.read_text(encoding="utf-8"))
+        params = metadata.get("params", {})
+        assert isinstance(params, dict)
+        for param in required_params:
+            assert param in params
+
+
+def test_list_strategy_packs_applies_override_and_clamp_rules(
+    tmp_path, monkeypatch
+) -> None:
+    registry = importlib.import_module("poe_trade.strategy.registry")
+
+    strategies_root = tmp_path / "strategies"
+    sql_root = tmp_path / "sql"
+
+    def write_strategy(name: str, params: str) -> None:
+        strategy_dir = strategies_root / name
+        strategy_dir.mkdir(parents=True)
+        (strategy_dir / "strategy.toml").write_text(
+            (
+                f'id = "{name}"\n'
+                f'name = "{name}"\n'
+                "enabled = true\n"
+                "\n[minima]\n"
+                "expected_profit_chaos = 1\n"
+                "\n[params]\n"
+                f"{params}"
+            ),
+            encoding="utf-8",
+        )
+        (strategy_dir / "notes.md").write_text("notes\n", encoding="utf-8")
+        sql_dir = sql_root / name
+        sql_dir.mkdir(parents=True)
+        (sql_dir / "discover.sql").write_text("SELECT 1\n", encoding="utf-8")
+        (sql_dir / "backtest.sql").write_text("SELECT 1\n", encoding="utf-8")
+
+    write_strategy(
+        "explicit_override",
+        "max_staleness_minutes = 42\n"
+        "min_liquidity_score = 0.75\n"
+        "max_estimated_whispers = 8\n"
+        "max_estimated_operations = 5\n"
+        "advanced_override_profit_per_operation_chaos = 18.5\n",
+    )
+    write_strategy(
+        "clamped_invalid_override",
+        "max_staleness_minutes = -7\n"
+        'min_liquidity_score = "not-a-number"\n'
+        "max_estimated_whispers = -3\n"
+        "max_estimated_operations = -2\n"
+        'advanced_override_profit_per_operation_chaos = "bad"\n',
+    )
+    write_strategy(
+        "liquidity_cap_override",
+        "min_liquidity_score = 1.5\n",
+    )
+
+    monkeypatch.setattr(registry, "STRATEGY_ROOT", strategies_root)
+    monkeypatch.setattr(registry, "SQL_STRATEGY_ROOT", sql_root)
+
+    packs = {pack.strategy_id: pack for pack in registry.list_strategy_packs()}
+
+    explicit_override = packs["explicit_override"]
+    assert explicit_override.max_staleness_minutes == 42
+    assert explicit_override.min_liquidity_score == 0.75
+    assert explicit_override.max_estimated_whispers == 8
+    assert explicit_override.max_estimated_operations == 5
+    assert explicit_override.advanced_override_profit_per_operation_chaos == 18.5
+
+    clamped_invalid_override = packs["clamped_invalid_override"]
+    assert clamped_invalid_override.max_staleness_minutes == 0
+    assert clamped_invalid_override.min_liquidity_score == 0.5
+    assert clamped_invalid_override.max_estimated_whispers == 0
+    assert clamped_invalid_override.max_estimated_operations == 1
+    assert clamped_invalid_override.advanced_override_profit_per_operation_chaos is None
+
+    liquidity_cap_override = packs["liquidity_cap_override"]
+    assert liquidity_cap_override.min_liquidity_score == 1.0
+
+
 def test_set_strategy_enabled_updates_metadata(tmp_path, monkeypatch) -> None:
     registry = importlib.import_module("poe_trade.strategy.registry")
     metadata_path = tmp_path / "strategy.toml"
@@ -70,6 +178,11 @@ def test_set_strategy_enabled_updates_metadata(tmp_path, monkeypatch) -> None:
         min_sample_count=5,
         cooldown_minutes=60,
         requires_journal=False,
+        max_staleness_minutes=15,
+        min_liquidity_score=0.5,
+        max_estimated_whispers=6,
+        max_estimated_operations=3,
+        advanced_override_profit_per_operation_chaos=None,
         metadata_path=metadata_path,
         notes_path=Path("notes.md"),
         discover_sql_path=Path("discover.sql"),
@@ -105,6 +218,11 @@ def test_candidate_sql_helper_prefers_canonical_path_when_present(tmp_path) -> N
         min_sample_count=5,
         cooldown_minutes=60,
         requires_journal=False,
+        max_staleness_minutes=15,
+        min_liquidity_score=0.5,
+        max_estimated_whispers=6,
+        max_estimated_operations=3,
+        advanced_override_profit_per_operation_chaos=None,
         metadata_path=tmp_path / "strategy.toml",
         notes_path=tmp_path / "notes.md",
         discover_sql_path=tmp_path / "discover.sql",
@@ -135,6 +253,11 @@ def test_candidate_sql_helper_falls_back_to_backtest_path(tmp_path) -> None:
         min_sample_count=5,
         cooldown_minutes=60,
         requires_journal=False,
+        max_staleness_minutes=15,
+        min_liquidity_score=0.5,
+        max_estimated_whispers=6,
+        max_estimated_operations=3,
+        advanced_override_profit_per_operation_chaos=None,
         metadata_path=tmp_path / "strategy.toml",
         notes_path=tmp_path / "notes.md",
         discover_sql_path=tmp_path / "discover.sql",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,13 @@ from .service_control import ServiceSnapshot
 
 class OpsBackendUnavailable(RuntimeError):
     pass
+
+
+_MISSING_TABLE_ERROR_PATTERNS = (
+    re.compile(r"table\s+([a-z0-9_.]+)\s+does(?:n't| not)\s+exist"),
+    re.compile(r"unknown\s+table\s+(?:expression|identifier)?\s*([a-z0-9_.]+)"),
+    re.compile(r"table\s+([a-z0-9_.]+)\s+not\s+found"),
+)
 
 
 def contract_payload(
@@ -48,6 +56,7 @@ def contract_payload(
             "ops_scanner_recommendations": "/api/v1/ops/scanner/recommendations",
             "ops_alert_ack": "/api/v1/ops/alerts/{alert_id}/ack",
             "ops_analytics": "/api/v1/ops/analytics/{kind}",
+            "ops_analytics_opportunities": "/api/v1/ops/analytics/opportunities",
             "ops_search_suggestions": "/api/v1/ops/analytics/search-suggestions",
             "ops_search_history": "/api/v1/ops/analytics/search-history",
             "ops_pricing_outliers": "/api/v1/ops/analytics/pricing-outliers",
@@ -104,7 +113,7 @@ def dashboard_payload(
     opportunities = scanner_recommendations_payload(
         client,
         limit=3,
-        sort_by="expected_profit_per_minute_chaos",
+        sort_by="expected_profit_per_operation_chaos",
     )["recommendations"]
     summary_snapshots = [
         snapshot
@@ -203,7 +212,87 @@ def analytics_scanner(client: ClickHouseClient) -> dict[str, Any]:
         "FROM poe_trade.scanner_recommendations "
         "GROUP BY strategy_id ORDER BY strategy_id FORMAT JSONEachRow",
     )
-    return {"rows": rows}
+    gate_rejections = _safe_json_rows_optional_compat(
+        client,
+        "SELECT decision_reason, count() AS rejection_count "
+        "FROM poe_trade.scanner_candidate_decisions "
+        "WHERE accepted = 0 "
+        "GROUP BY decision_reason "
+        "ORDER BY rejection_count DESC, decision_reason ASC FORMAT JSONEachRow",
+    )
+    complexity_tiers, _ = _safe_json_rows_with_legacy_fallback(
+        client,
+        "SELECT complexity_tier, count() AS tier_count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY tier_count DESC, complexity_tier ASC FORMAT JSONEachRow",
+        "SELECT ifNull(JSONExtractString(evidence_snapshot, 'complexity_tier'), '') AS complexity_tier, count() AS tier_count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY tier_count DESC, complexity_tier ASC FORMAT JSONEachRow",
+    )
+    return {
+        "rows": rows,
+        "gateRejections": gate_rejections,
+        "complexityTiers": complexity_tiers,
+    }
+
+
+def analytics_opportunities(client: ClickHouseClient) -> dict[str, Any]:
+    opportunity_type_distribution, _ = _safe_json_rows_with_legacy_fallback(
+        client,
+        "SELECT ifNull(opportunity_type, '') AS opportunity_type, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY opportunity_type "
+        "ORDER BY count DESC, opportunity_type ASC FORMAT JSONEachRow",
+        "SELECT ifNull(JSONExtractString(evidence_snapshot, 'opportunity_type'), '') AS opportunity_type, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY opportunity_type "
+        "ORDER BY count DESC, opportunity_type ASC FORMAT JSONEachRow",
+    )
+    complexity_tier_distribution, _ = _safe_json_rows_with_legacy_fallback(
+        client,
+        "SELECT ifNull(complexity_tier, '') AS complexity_tier, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY count DESC, complexity_tier ASC FORMAT JSONEachRow",
+        "SELECT ifNull(JSONExtractString(evidence_snapshot, 'complexity_tier'), '') AS complexity_tier, count() AS count "
+        "FROM poe_trade.scanner_recommendations "
+        "GROUP BY complexity_tier "
+        "ORDER BY count DESC, complexity_tier ASC FORMAT JSONEachRow",
+    )
+    decision_rows = _safe_json_rows_optional_compat(
+        client,
+        "SELECT decision_reason, count() AS count "
+        "FROM poe_trade.scanner_candidate_decisions "
+        "WHERE accepted = 0 "
+        "GROUP BY decision_reason "
+        "ORDER BY count DESC, decision_reason ASC FORMAT JSONEachRow",
+    )
+    top_opportunities = scanner_recommendations_payload(
+        client,
+        limit=20,
+        sort_by="expected_profit_per_operation_chaos",
+    )["recommendations"]
+    suppressions: list[dict[str, Any]] = []
+    rejections: list[dict[str, Any]] = []
+    for row in decision_rows:
+        reason = str(row.get("decision_reason") or "")
+        if reason.startswith("suppressed_"):
+            suppressions.append(row)
+        else:
+            rejections.append(row)
+    return {
+        "distributions": {
+            "opportunityType": opportunity_type_distribution,
+            "complexityTier": complexity_tier_distribution,
+        },
+        "decisionLog": {
+            "rejections": rejections,
+            "suppressions": suppressions,
+        },
+        "topOpportunities": top_opportunities,
+    }
 
 
 def scanner_summary_payload(client: ClickHouseClient) -> dict[str, Any]:
@@ -250,6 +339,7 @@ def scanner_recommendations_payload(
     cursor: str | None = None,
 ) -> dict[str, Any]:
     sort_spec = _validate_scanner_sort(sort_by)
+    legacy_sort_spec = _scanner_legacy_sort_spec(sort_spec)
     if min_confidence is not None and min_confidence > 1:
         if min_confidence <= 100:
             min_confidence = min_confidence / 100.0
@@ -267,22 +357,41 @@ def scanner_recommendations_payload(
     )
 
     filters: list[str] = []
+    legacy_filters: list[str] = []
     if league:
-        filters.append(f"league = {_quote_sql_string(league)}")
+        league_filter = f"league = {_quote_sql_string(league)}"
+        filters.append(league_filter)
+        legacy_filters.append(league_filter)
     if strategy_id:
-        filters.append(f"strategy_id = {_quote_sql_string(strategy_id)}")
+        strategy_filter = f"strategy_id = {_quote_sql_string(strategy_id)}"
+        filters.append(strategy_filter)
+        legacy_filters.append(strategy_filter)
     if min_confidence is not None:
-        filters.append(f"isNotNull(confidence) AND confidence >= {min_confidence!r}")
+        confidence_filter = (
+            f"isNotNull(confidence) AND confidence >= {min_confidence!r}"
+        )
+        filters.append(confidence_filter)
+        legacy_filters.append(confidence_filter)
     if cursor:
         cursor_payload = _decode_scanner_cursor(cursor)
         _validate_scanner_cursor_signature(cursor_payload.get("signature"), signature)
         filters.append(_scanner_seek_predicate(sort_spec, cursor_payload.get("tuple")))
+        legacy_filters.append(
+            _scanner_seek_predicate(legacy_sort_spec, cursor_payload.get("tuple"))
+        )
 
     where_clause = ""
     if filters:
         where_clause = " WHERE " + " AND ".join(f"({part})" for part in filters)
 
+    legacy_where_clause = ""
+    if legacy_filters:
+        legacy_where_clause = " WHERE " + " AND ".join(
+            f"({part})" for part in legacy_filters
+        )
+
     order_clause = ", ".join(sort_spec["order_by"])
+    legacy_order_clause = ", ".join(legacy_sort_spec["order_by"])
     query_limit = page_limit + 1
     expected_hold_minutes_sql = _scanner_expected_hold_minutes_sql(
         evidence_snapshot_expr="evidence_snapshot",
@@ -292,7 +401,7 @@ def scanner_recommendations_payload(
         expected_profit_expr="expected_profit_chaos",
         expected_hold_minutes_expr=expected_hold_minutes_sql,
     )
-    rows = _safe_json_rows_with_legacy_fallback(
+    rows, used_legacy_fallback = _safe_json_rows_with_legacy_fallback(
         client,
         _scanner_recommendations_query(
             include_metadata=True,
@@ -306,8 +415,8 @@ def scanner_recommendations_payload(
             include_metadata=False,
             expected_hold_minutes_sql=expected_hold_minutes_sql,
             expected_profit_per_minute_sql=expected_profit_per_minute_sql,
-            where_clause=where_clause,
-            order_clause=order_clause,
+            where_clause=legacy_where_clause,
+            order_clause=legacy_order_clause,
             query_limit=query_limit,
         ),
     )
@@ -338,6 +447,42 @@ def scanner_recommendations_payload(
         transform_plan = str(row.get("transform_plan") or "")
         exit_plan = str(row.get("exit_plan") or "")
         execution_venue = str(row.get("execution_venue") or "")
+        opportunity_type = _first_string(
+            row,
+            "opportunity_type",
+            evidence_snapshot,
+            "opportunity_type",
+        )
+        complexity_tier = _first_string(
+            row,
+            "complexity_tier",
+            evidence_snapshot,
+            "complexity_tier",
+        )
+        required_capital_chaos = _first_numeric(
+            row,
+            "required_capital_chaos",
+            evidence_snapshot,
+            "required_capital_chaos",
+        )
+        estimated_operations = _first_int_value(
+            row,
+            "estimated_operations",
+            evidence_snapshot,
+            "estimated_operations",
+        )
+        estimated_searches = _first_int_value(
+            row,
+            "estimated_searches",
+            evidence_snapshot,
+            "estimated_searches",
+        )
+        estimated_whispers = _first_int_value(
+            row,
+            "estimated_whispers",
+            evidence_snapshot,
+            "estimated_whispers",
+        )
         max_buy = row.get("max_buy")
         semantic_key = _semantic_key(
             league=row_league,
@@ -352,12 +497,79 @@ def scanner_recommendations_payload(
         )
         expected_hold_time = str(row.get("expected_hold_time") or "")
         expected_hold_minutes = _coerce_float(row.get("expected_hold_minutes"))
+        if expected_hold_minutes is not None and expected_hold_minutes <= 0:
+            expected_hold_minutes = None
+        if expected_hold_minutes is None:
+            expected_hold_minutes = _first_number(
+                evidence_snapshot,
+                "expected_hold_minutes",
+            )
+        if expected_hold_minutes is not None and expected_hold_minutes <= 0:
+            expected_hold_minutes = None
+        if expected_hold_minutes is None:
+            expected_hold_minutes = _parse_hold_minutes_text(expected_hold_time)
+        estimated_time_to_acquire_minutes = _first_numeric(
+            row,
+            "estimated_time_to_acquire_minutes",
+            evidence_snapshot,
+            "estimated_time_to_acquire_minutes",
+        )
+        estimated_time_to_exit_minutes = _first_numeric(
+            row,
+            "estimated_time_to_exit_minutes",
+            evidence_snapshot,
+            "estimated_time_to_exit_minutes",
+        )
+        estimated_total_cycle_minutes = _first_numeric(
+            row,
+            "estimated_total_cycle_minutes",
+            evidence_snapshot,
+            "estimated_total_cycle_minutes",
+        )
+        if estimated_total_cycle_minutes is None:
+            estimated_total_cycle_minutes = expected_hold_minutes
+        expected_profit_per_operation_chaos = _first_numeric(
+            row,
+            "expected_profit_per_operation_chaos",
+            evidence_snapshot,
+            "expected_profit_per_operation_chaos",
+        )
         expected_profit_per_minute_chaos = _coerce_float(
             row.get("expected_profit_per_minute_chaos")
         )
+        feasibility_score = _first_numeric(
+            row,
+            "feasibility_score",
+            evidence_snapshot,
+            "feasibility_score",
+        )
+        liquidity_score = _first_numeric(
+            row,
+            "liquidity_score",
+            evidence_snapshot,
+            "liquidity_score",
+        )
+        risk_score = _first_numeric(
+            row,
+            "risk_score",
+            evidence_snapshot,
+            "risk_score",
+        )
+        competition_score = _first_numeric(
+            row,
+            "competition_score",
+            evidence_snapshot,
+            "competition_score",
+        )
         freshness_minutes = _first_number(evidence_snapshot, "freshness_minutes")
         if freshness_minutes is None:
+            freshness_minutes = _coerce_float(row.get("freshness_minutes"))
+        if freshness_minutes is None:
             freshness_minutes = _freshness_minutes(recorded_at_iso)
+        why_now = _first_string(row, "why_now", evidence_snapshot, "why_now") or str(
+            row.get("why_it_fired") or ""
+        )
+        warnings = _warnings_payload(row.get("warnings"), evidence_snapshot)
 
         mapped.append(
             {
@@ -379,7 +591,17 @@ def scanner_recommendations_payload(
                 "exitPlan": exit_plan,
                 "executionVenue": execution_venue,
                 "expectedProfitChaos": row.get("expected_profit_chaos"),
+                "opportunityType": opportunity_type,
+                "complexityTier": complexity_tier,
+                "requiredCapitalChaos": required_capital_chaos,
+                "estimatedOperations": estimated_operations,
+                "estimatedSearches": estimated_searches,
+                "estimatedWhispers": estimated_whispers,
                 "expectedProfitPerMinuteChaos": expected_profit_per_minute_chaos,
+                "estimatedTimeToAcquireMinutes": estimated_time_to_acquire_minutes,
+                "estimatedTimeToExitMinutes": estimated_time_to_exit_minutes,
+                "estimatedTotalCycleMinutes": estimated_total_cycle_minutes,
+                "expectedProfitPerOperationChaos": expected_profit_per_operation_chaos,
                 "expectedRoi": row.get("expected_roi"),
                 "expectedHoldTime": expected_hold_time,
                 "expectedHoldMinutes": expected_hold_minutes,
@@ -387,8 +609,25 @@ def scanner_recommendations_payload(
                 "effectiveConfidence": effective_confidence,
                 "mlInfluenceScore": ml_influence_score,
                 "mlInfluenceReason": ml_influence_reason,
-                "liquidityScore": _first_number(evidence_snapshot, "liquidity_score"),
+                "feasibilityScore": feasibility_score,
+                "liquidityScore": liquidity_score,
+                "riskScore": risk_score,
+                "competitionScore": competition_score,
                 "freshnessMinutes": freshness_minutes,
+                "whyNow": why_now,
+                "warnings": warnings,
+                "executionPlan": {
+                    "buyPlan": buy_plan,
+                    "transformPlan": transform_plan,
+                    "exitPlan": exit_plan,
+                    "executionVenue": execution_venue,
+                },
+                "evidence": {
+                    "searchHint": search_hint,
+                    "itemName": item_name,
+                    "whyItFired": str(row.get("why_it_fired") or ""),
+                    "snapshot": _evidence_payload_snapshot(evidence_snapshot),
+                },
                 "goldCost": _first_number(evidence_snapshot, "gold_cost"),
                 "evidenceSnapshot": evidence_snapshot,
                 "recordedAt": recorded_at_iso,
@@ -399,7 +638,8 @@ def scanner_recommendations_payload(
     next_cursor: str | None = None
     if has_more and recommendations:
         last_recommendation = recommendations[-1]
-        cursor_tuple = _scanner_cursor_tuple(sort_spec, last_recommendation)
+        cursor_sort_spec = legacy_sort_spec if used_legacy_fallback else sort_spec
+        cursor_tuple = _scanner_cursor_tuple(cursor_sort_spec, last_recommendation)
         next_cursor = _encode_scanner_cursor(
             {
                 "signature": signature,
@@ -1010,7 +1250,7 @@ def analytics_pricing_outliers(
                 "SELECT b.item_name, b.base_type, b.rarity, b.as_of_ts, b.listed_price,",
                 "coalesce(nullIf(c.mod_text, ''), nullIf(t.mod_token, '')) AS affix_analyzed",
                 "FROM base AS b",
-                f"INNER JOIN poe_trade.ml_item_mod_tokens_v1 AS t ON assumeNotNull(b.item_id) = t.item_id AND t.league = {_quote_sql_string(league)}",
+                f"INNER JOIN poe_trade.ml_item_mod_tokens_v1 AS t ON assumeNotNull(b.item_id) = t.item_id AND {_outlier_token_league_clause('t', league)}",
                 "LEFT JOIN poe_trade.ml_mod_catalog_v1 AS c ON c.mod_token = t.mod_token",
                 "WHERE b.item_id IS NOT NULL",
                 "),",
@@ -1176,16 +1416,31 @@ def _safe_json_rows_with_legacy_fallback(
     client: ClickHouseClient,
     query: str,
     legacy_query: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     try:
-        return _safe_json_rows(client, query)
+        return _safe_json_rows(client, query), False
     except OpsBackendUnavailable as exc:
         cause = exc.__cause__
         if not isinstance(
             cause, ClickHouseClientError
         ) or not _is_missing_metadata_column_error(cause):
             raise
-        return _safe_json_rows(client, legacy_query)
+        return _safe_json_rows(client, legacy_query), True
+
+
+def _safe_json_rows_optional_compat(
+    client: ClickHouseClient,
+    query: str,
+) -> list[dict[str, Any]]:
+    try:
+        return _safe_json_rows(client, query)
+    except OpsBackendUnavailable as exc:
+        cause = exc.__cause__
+        if isinstance(cause, ClickHouseClientError) and _is_schema_compatibility_error(
+            cause
+        ):
+            return []
+        raise
 
 
 def _scanner_recommendations_query(
@@ -1199,7 +1454,14 @@ def _scanner_recommendations_query(
 ) -> str:
     metadata_columns = ""
     if include_metadata:
-        metadata_columns = "recommendation_source, recommendation_contract_version, producer_version, producer_run_id, "
+        metadata_columns = (
+            "recommendation_source, recommendation_contract_version, producer_version, producer_run_id, "
+            "opportunity_type, complexity_tier, required_capital_chaos, estimated_operations, "
+            "estimated_searches, estimated_whispers, freshness_minutes, "
+            "estimated_time_to_acquire_minutes, estimated_time_to_exit_minutes, "
+            "estimated_total_cycle_minutes, expected_profit_per_operation_chaos, "
+            "feasibility_score, liquidity_score, risk_score, competition_score, why_now, warnings, "
+        )
     return (
         "SELECT scanner_run_id, strategy_id, league, "
         + metadata_columns
@@ -1223,6 +1485,13 @@ def _scanner_recommendations_query(
 def _is_missing_metadata_column_error(exc: ClickHouseClientError) -> bool:
     message = str(exc).lower()
     return "column" in message and ("unknown" in message or "missing" in message)
+
+
+def _is_schema_compatibility_error(exc: ClickHouseClientError) -> bool:
+    message = str(exc).lower()
+    if _is_missing_metadata_column_error(exc):
+        return True
+    return any(pattern.search(message) for pattern in _MISSING_TABLE_ERROR_PATTERNS)
 
 
 def _as_int(value: object) -> int:
@@ -1257,7 +1526,7 @@ def _query_param_float(query_params: Mapping[str, list[str]], key: str) -> float
     try:
         return float(raw)
     except ValueError:
-        return None
+        raise ValueError(key) from None
 
 
 def _query_param_int(
@@ -1274,7 +1543,7 @@ def _query_param_int(
     try:
         parsed = int(raw)
     except ValueError:
-        return default
+        raise ValueError(key) from None
     return max(minimum, min(maximum, parsed))
 
 
@@ -1286,7 +1555,7 @@ def _query_param_datetime(
         return None
     parsed = _parse_iso_utc(raw)
     if parsed is None:
-        return None
+        raise ValueError(key)
     return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -1417,6 +1686,13 @@ def _outlier_league_clause(league: str | None) -> str:
     return f"d.league = {_quote_sql_string(compact_league)}"
 
 
+def _outlier_token_league_clause(alias: str, league: str | None) -> str:
+    compact_league = (league or "").strip()
+    if not compact_league or compact_league.lower() == "all":
+        return "1"
+    return f"{alias}.league = {_quote_sql_string(compact_league)}"
+
+
 def _float_sql(value: float) -> str:
     text = f"{value:.6f}".rstrip("0").rstrip(".")
     return text or "0"
@@ -1480,6 +1756,12 @@ def _validate_scanner_sort(sort_by: str) -> dict[str, Any]:
     if key is None:
         raise ValueError(f"invalid sort field: {sort_by}")
     return key
+
+
+def _scanner_legacy_sort_spec(sort_spec: dict[str, Any]) -> dict[str, Any]:
+    if str(sort_spec.get("name")) == "expected_profit_per_operation_chaos":
+        return _SCANNER_SORT_SPECS["expected_profit_chaos"]
+    return sort_spec
 
 
 _SCANNER_CURSOR_TIE_BREAK_FIELDS = (
@@ -1565,6 +1847,26 @@ _SCANNER_SORT_SPECS: dict[str, dict[str, Any]] = {
         "order_by": [
             "if(isNull(expected_profit_per_minute_chaos), 0, 1) DESC",
             "expected_profit_per_minute_chaos DESC",
+            "recorded_at DESC",
+            "scanner_run_id DESC",
+            "strategy_id DESC",
+            "item_or_market_key DESC",
+            "buy_plan DESC",
+            "transform_plan DESC",
+            "exit_plan DESC",
+            "execution_venue DESC",
+        ],
+    },
+    "expected_profit_per_operation_chaos": {
+        "name": "expected_profit_per_operation_chaos",
+        "response_key": "expectedProfitPerOperationChaos",
+        "cursor_type": "float",
+        "sql_primary": "expected_profit_per_operation_chaos",
+        "sql_primary_rank": "if(isNull(expected_profit_per_operation_chaos), 0, 1)",
+        "sql_primary_value": "expected_profit_per_operation_chaos",
+        "order_by": [
+            "if(isNull(expected_profit_per_operation_chaos), 0, 1) DESC",
+            "expected_profit_per_operation_chaos DESC",
             "recorded_at DESC",
             "scanner_run_id DESC",
             "strategy_id DESC",
@@ -1837,6 +2139,44 @@ def _string_or_fallback(
     return fallback
 
 
+def _first_string(
+    row: Mapping[str, Any],
+    row_key: str,
+    evidence_snapshot: dict[str, Any] | str,
+    snapshot_key: str,
+) -> str | None:
+    row_value = _optional_string(row.get(row_key))
+    if row_value is not None:
+        return row_value
+    if not isinstance(evidence_snapshot, dict):
+        return None
+    return _optional_string(evidence_snapshot.get(snapshot_key))
+
+
+def _first_numeric(
+    row: Mapping[str, Any],
+    row_key: str,
+    evidence_snapshot: dict[str, Any] | str,
+    snapshot_key: str,
+) -> float | None:
+    row_value = _coerce_float(row.get(row_key))
+    if row_value is not None:
+        return row_value
+    return _first_number(evidence_snapshot, snapshot_key)
+
+
+def _first_int_value(
+    row: Mapping[str, Any],
+    row_key: str,
+    evidence_snapshot: dict[str, Any] | str,
+    snapshot_key: str,
+) -> int | None:
+    value = _first_numeric(row, row_key, evidence_snapshot, snapshot_key)
+    if value is None:
+        return None
+    return int(value)
+
+
 def _semantic_key(
     *,
     league: str,
@@ -1873,6 +2213,44 @@ def _first_number(evidence_snapshot: dict[str, Any] | str, key: str) -> float | 
     if not isinstance(evidence_snapshot, dict):
         return None
     return _coerce_float(evidence_snapshot.get(key))
+
+
+def _warnings_payload(
+    row_value: object,
+    evidence_snapshot: dict[str, Any] | str,
+) -> list[str]:
+    values = row_value
+    if values is None and isinstance(evidence_snapshot, dict):
+        values = evidence_snapshot.get("warnings")
+    if not isinstance(values, list):
+        return []
+    return [str(value) for value in values if str(value).strip()]
+
+
+def _evidence_payload_snapshot(
+    evidence_snapshot: dict[str, Any] | str,
+) -> dict[str, Any]:
+    if not isinstance(evidence_snapshot, dict):
+        return {}
+    nested = evidence_snapshot.get("evidence_snapshot")
+    if isinstance(nested, dict):
+        return nested
+    return evidence_snapshot
+
+
+def _parse_hold_minutes_text(value: str) -> float | None:
+    text = value.strip().lower()
+    if not text:
+        return None
+    match = re.search(r"([-+]?[0-9]+(?:\.[0-9]+)?)([mh])\s*$", text)
+    if match is None:
+        return None
+    amount = _coerce_float(match.group(1))
+    if amount is None or amount <= 0:
+        return None
+    if match.group(2) == "h":
+        return amount * 60.0
+    return amount
 
 
 def _ml_influence_from_snapshot(
