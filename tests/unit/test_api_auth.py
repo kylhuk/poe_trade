@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from poe_trade.api.app import ApiApp
-from poe_trade.api.auth_session import load_credential_state
+from poe_trade.api.auth_session import create_session, load_credential_state
 from poe_trade.api.responses import ApiError
 from poe_trade.config.settings import Settings
 from poe_trade.db import ClickHouseClient
@@ -18,6 +18,7 @@ from poe_trade.db import ClickHouseClient
 def _settings(
     *,
     trusted_origin_bypass: bool = False,
+    auth_cookie_secure: bool = False,
     auth_state_dir: str | None = None,
 ) -> Settings:
     env = {
@@ -26,6 +27,7 @@ def _settings(
         "POE_API_MAX_BODY_BYTES": "32768",
         "POE_API_LEAGUE_ALLOWLIST": "Mirage",
         "POE_API_TRUSTED_ORIGIN_BYPASS": "true" if trusted_origin_bypass else "false",
+        "POE_AUTH_COOKIE_SECURE": "true" if auth_cookie_secure else "false",
     }
     if auth_state_dir is not None:
         env["POE_AUTH_STATE_DIR"] = auth_state_dir
@@ -157,61 +159,16 @@ def test_auth_session_route_is_public_and_returns_disconnected() -> None:
     assert response.status == 200
 
 
-def test_auth_session_bootstrap_sets_cookie_and_returns_connected(
-    tmp_path,
-) -> None:
-    settings = _settings(auth_state_dir=str(tmp_path / "auth-state"))
-    app = ApiApp(settings, clickhouse_client=ClickHouseClient(endpoint="http://ch"))
-    payload = json.dumps(
+def test_auth_session_rejects_legacy_poesessid_bootstrap() -> None:
+    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+    raw = json.dumps(
         {
             "poeSessionId": "POESESSID-123",
             "cf_clearance": "cf-clearance-123",
         }
     ).encode("utf-8")
 
-    with mock.patch("poe_trade.api.app.resolve_account_name", return_value="qa-exile"):
-        response = app.handle(
-            method="POST",
-            raw_path="/api/v1/auth/session",
-            headers={
-                "Origin": "https://app.example.com",
-                "Content-Type": "application/json",
-                "Content-Length": str(len(payload)),
-            },
-            body_reader=BytesIO(payload),
-        )
-
-    body = cast(dict[str, object], json.loads(response.body.decode("utf-8")))
-    credential_state = load_credential_state(settings)
-    assert response.status == 200
-    assert body["status"] == "connected"
-    assert body["accountName"] == "qa-exile"
-    assert "poeSessionId" not in body
-    assert "Set-Cookie" in response.headers
-    assert "poe_session=" in response.headers["Set-Cookie"]
-    assert "POESESSID=" not in response.headers["Set-Cookie"]
-    assert credential_state["account_name"] == "qa-exile"
-    assert credential_state["status"] == "bootstrap_connected"
-    assert credential_state["poe_session_id"] == "POESESSID-123"
-    assert credential_state["cf_clearance"] == "cf-clearance-123"
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {},
-        {"poeSessionId": ""},
-        {"poeSessionId": "   "},
-        {"poeSessionId": 12345},
-    ],
-)
-def test_auth_session_bootstrap_rejects_invalid_input(
-    payload: dict[str, object],
-) -> None:
-    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
-    raw = json.dumps(payload).encode("utf-8")
-
-    with pytest.raises(ApiError) as exc:
+    with pytest.raises(ApiError, match="OAuth-only") as exc:
         _ = app.handle(
             method="POST",
             raw_path="/api/v1/auth/session",
@@ -227,47 +184,19 @@ def test_auth_session_bootstrap_rejects_invalid_input(
     assert exc.value.code == "invalid_input"
 
 
-def test_auth_session_bootstrap_rejects_unresolvable_account() -> None:
-    app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
-    payload = json.dumps({"poeSessionId": "POESESSID-123"}).encode("utf-8")
-
-    with mock.patch(
-        "poe_trade.api.app.resolve_account_name", side_effect=ValueError("invalid")
-    ):
-        with pytest.raises(ApiError) as exc:
-            _ = app.handle(
-                method="POST",
-                raw_path="/api/v1/auth/session",
-                headers={
-                    "Origin": "https://app.example.com",
-                    "Content-Type": "application/json",
-                    "Content-Length": str(len(payload)),
-                },
-                body_reader=BytesIO(payload),
-            )
-
-    assert exc.value.status == 400
-    assert exc.value.code == "invalid_input"
-
-
-def test_auth_logout_clears_session_and_returns_disconnected_on_next_read(
+def test_auth_logout_clears_secure_session_cookie_and_returns_disconnected_on_next_read(
     tmp_path,
 ) -> None:
-    settings = _settings(auth_state_dir=str(tmp_path / "auth-state"))
+    settings = _settings(
+        auth_cookie_secure=True,
+        auth_state_dir=str(tmp_path / "auth-state"),
+    )
     app = ApiApp(settings, clickhouse_client=ClickHouseClient(endpoint="http://ch"))
-    payload = json.dumps({"poeSessionId": "POESESSID-123"}).encode("utf-8")
-    with mock.patch("poe_trade.api.app.resolve_account_name", return_value="qa-exile"):
-        bootstrap = app.handle(
-            method="POST",
-            raw_path="/api/v1/auth/session",
-            headers={
-                "Origin": "https://app.example.com",
-                "Content-Type": "application/json",
-                "Content-Length": str(len(payload)),
-            },
-            body_reader=BytesIO(payload),
-        )
-    set_cookie = bootstrap.headers.get("Set-Cookie", "")
+    session = create_session(settings, account_name="qa-exile")
+    set_cookie = (
+        f"{settings.auth_cookie_name}={session['session_id']}; Path=/; HttpOnly; "
+        "SameSite=Lax; Secure"
+    )
     cookie_pair = set_cookie.split(";", maxsplit=1)[0]
 
     logout = app.handle(
@@ -278,6 +207,10 @@ def test_auth_logout_clears_session_and_returns_disconnected_on_next_read(
     )
     assert logout.status == 200
     assert "Max-Age=0" in logout.headers.get("Set-Cookie", "")
+    assert "Secure" in logout.headers.get("Set-Cookie", "")
+    assert "HttpOnly" in logout.headers.get("Set-Cookie", "")
+    assert "SameSite=Lax" in logout.headers.get("Set-Cookie", "")
+    assert "Path=/" in logout.headers.get("Set-Cookie", "")
 
     follow_up = app.handle(
         method="GET",
@@ -294,8 +227,43 @@ def test_auth_logout_clears_session_and_returns_disconnected_on_next_read(
     assert credential_state["poe_session_id"] == ""
 
 
-def test_auth_session_expired_clears_cookie() -> None:
+def test_auth_session_session_expired_clears_cookie() -> None:
     app = ApiApp(_settings(), clickhouse_client=ClickHouseClient(endpoint="http://ch"))
+
+    with mock.patch(
+        "poe_trade.api.app.get_session",
+        return_value={
+            "session_id": "session-1",
+            "account_name": "qa-exile",
+            "status": "session_expired",
+            "expires_at": "2026-01-01T00:00:00Z",
+        },
+    ):
+        response = app.handle(
+            method="GET",
+            raw_path="/api/v1/auth/session",
+            headers={
+                "Origin": "https://app.example.com",
+                "Cookie": "poe_session=session-1",
+            },
+            body_reader=BytesIO(b""),
+        )
+
+    body = cast(dict[str, object], json.loads(response.body.decode("utf-8")))
+    assert response.status == 200
+    assert body["status"] == "session_expired"
+    assert "Set-Cookie" in response.headers
+    assert "Max-Age=0" in response.headers["Set-Cookie"]
+    assert "HttpOnly" in response.headers["Set-Cookie"]
+    assert "SameSite=Lax" in response.headers["Set-Cookie"]
+    assert "Path=/" in response.headers["Set-Cookie"]
+
+
+def test_auth_session_expired_clears_secure_cookie() -> None:
+    app = ApiApp(
+        _settings(auth_cookie_secure=True),
+        clickhouse_client=ClickHouseClient(endpoint="http://ch"),
+    )
 
     with mock.patch(
         "poe_trade.api.app.get_session",
@@ -322,3 +290,7 @@ def test_auth_session_expired_clears_cookie() -> None:
     assert body["status"] == "session_expired"
     assert "Set-Cookie" in response.headers
     assert "Max-Age=0" in response.headers["Set-Cookie"]
+    assert "Secure" in response.headers["Set-Cookie"]
+    assert "HttpOnly" in response.headers["Set-Cookie"]
+    assert "SameSite=Lax" in response.headers["Set-Cookie"]
+    assert "Path=/" in response.headers["Set-Cookie"]

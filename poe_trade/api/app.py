@@ -18,9 +18,13 @@ from poe_trade.db import ClickHouseClient
 from .auth import cors_headers, parse_bearer_token, validate_bearer_token
 from .auth_session import (
     AccountResolutionError,
+    OAuthExchangeError,
     build_private_stash_cookie_header,
     clear_credential_state,
     clear_session,
+    authorize_redirect,
+    begin_login,
+    exchange_oauth_code,
     create_session,
     get_session,
     load_credential_state,
@@ -310,10 +314,10 @@ class ApiApp:
             ("GET", "OPTIONS"),
             self._stash_item_history,
         )
-        self.router.add("/api/v1/auth/login", ("GET", "OPTIONS"), self._auth_login)
+        self.router.add("/api/v1/auth/login", ("POST", "OPTIONS"), self._auth_login)
         self.router.add(
             "/api/v1/auth/callback",
-            ("GET", "OPTIONS"),
+            ("POST", "OPTIONS"),
             self._auth_callback,
         )
         self.router.add(
@@ -1068,31 +1072,119 @@ class ApiApp:
         return account_name, league, realm
 
     def _auth_login(self, _context: Mapping[str, object]) -> Response:
-        raise ApiError(
-            status=501,
-            code="oauth_disabled",
-            message="OAuth login is temporarily disabled; use POESESSID login instead",
-        )
+        tx = begin_login(self.settings)
+        return json_response({"authorizeUrl": authorize_redirect(self.settings, tx)})
 
     def _auth_callback(self, context: Mapping[str, object]) -> Response:
-        _ = context
-        raise ApiError(
-            status=501,
-            code="oauth_disabled",
-            message="OAuth callback is temporarily disabled; use POESESSID login instead",
+        cors = _cors_from_context(context)
+        try:
+            body = _read_json_body(
+                _headers_from_context(context),
+                _body_reader_from_context(context),
+                max_body_bytes=self.settings.api_max_body_bytes,
+            )
+        except ApiError as exc:
+            if not exc.headers:
+                exc.headers = dict(cors)
+            raise
+
+        error = str(body.get("error") or "").strip()
+        if error:
+            description = str(body.get("error_description") or "").strip()
+            if error == "access_denied":
+                raise ApiError(
+                    status=401,
+                    code="oauth_access_denied",
+                    message=description or "oauth access denied",
+                    headers=cors,
+                )
+            raise ApiError(
+                status=400,
+                code="oauth_callback_failed",
+                message=description or error,
+                headers=cors,
+            )
+
+        code = str(body.get("code") or "").strip()
+        state = str(body.get("state") or "").strip()
+        if not code:
+            raise ApiError(
+                status=400,
+                code="invalid_input",
+                message="code is required",
+                headers=cors,
+            )
+        if not state:
+            raise ApiError(
+                status=400,
+                code="invalid_state",
+                message="invalid state",
+                headers=cors,
+            )
+        try:
+            exchange = exchange_oauth_code(self.settings, code=code, state=state)
+        except OAuthExchangeError as exc:
+            raise ApiError(
+                status=exc.status,
+                code=exc.code,
+                message=str(exc),
+                headers=cors,
+            ) from None
+
+        _ = save_credential_state(
+            self.settings,
+            account_name=exchange.account_name,
+            poe_session_id="",
+            cf_clearance="",
+            status="oauth_connected",
+        )
+        previous_session_id = _session_cookie_from_headers(
+            _headers_from_context(context),
+            cookie_name=self.settings.auth_cookie_name,
+        )
+        session = create_session(self.settings, account_name=exchange.account_name)
+        clear_session(self.settings, session_id=previous_session_id)
+        cookie = _session_set_cookie(
+            self.settings.auth_cookie_name,
+            str(session.get("session_id") or ""),
+            secure=self.settings.auth_cookie_secure,
+        )
+        return json_response(
+            {
+                "status": "connected",
+                "accountName": str(session.get("account_name") or ""),
+                "expiresAt": session.get("expires_at"),
+                "scope": session.get("scope") or [],
+            },
+            headers={"Set-Cookie": cookie},
         )
 
     def _auth_session(self, context: Mapping[str, object]) -> Response:
         if str(context.get("method") or "") == "POST":
-            return self._auth_session_bootstrap(context)
+            raise ApiError(
+                status=400,
+                code="invalid_input",
+                message="OAuth-only login; POESESSID bootstrap is not supported",
+                headers=_cors_from_context(context),
+            )
         session_id = _session_cookie_from_headers(
             _headers_from_context(context),
             cookie_name=self.settings.auth_cookie_name,
         )
         session = get_session(self.settings, session_id=session_id)
         if session is None:
-            return json_response({"status": "disconnected", "accountName": None})
-        if str(session.get("status") or "") == "session_expired":
+            headers: dict[str, str] = {}
+            if session_id:
+                headers = {
+                    "Set-Cookie": _session_clear_cookie(
+                        self.settings.auth_cookie_name,
+                        secure=self.settings.auth_cookie_secure,
+                    )
+                }
+            return json_response(
+                {"status": "disconnected", "accountName": None}, headers=headers
+            )
+        if str(session.get("status") or "") in {"disconnected", "session_expired"}:
             clear_session(self.settings, session_id=session_id)
             clear_cookie = _session_clear_cookie(
                 self.settings.auth_cookie_name,

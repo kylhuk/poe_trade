@@ -28,8 +28,6 @@ _PRICE_NOTE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_PRIVATE_STASH_ITEMS_URL = "https://www.pathofexile.com/character-window/get-stash-items"
-
 
 def stash_endpoint(realm: str, league: str, tab_id: str | None = None) -> str:
     normalized_realm = realm.strip().lower()
@@ -125,33 +123,19 @@ class AccountStashHarvester:
         try:
             tabs_payload = self._client.request(
                 "GET",
-                _PRIVATE_STASH_ITEMS_URL,
-                params=_private_stash_params(
-                    account_name=account_name,
-                    realm=realm,
-                    league=league,
-                    tabs="1",
-                    tab_index="0",
-                ),
+                stash_endpoint(realm, league),
                 headers=self._request_headers,
             )
             tabs = _ordered_private_tabs_from_payload(tabs_payload)
             tabs_total = len(tabs)
 
             for tab_number, tab in enumerate(tabs, start=1):
-                tab_index = int(tab.get("tab_index") or 0)
                 payload = self._client.request(
                     "GET",
-                    _PRIVATE_STASH_ITEMS_URL,
-                    params=_private_stash_params(
-                        account_name=account_name,
-                        realm=realm,
-                        league=league,
-                        tabs="0",
-                        tab_index=str(tab_index),
-                    ),
+                    stash_endpoint(realm, league, tab_id=str(tab.get("id") or "")),
                     headers=self._request_headers,
                 )
+                tab_index = int(tab.get("tab_index") or 0)
                 current_tab_row = {
                     "scan_id": effective_scan_id,
                     "account_name": account_name,
@@ -179,7 +163,9 @@ class AccountStashHarvester:
                     prediction = normalize_stash_prediction(price_payload)
                     listed = parse_listed_price(str(raw_item.get("note") or ""))
                     listed_price = listed[0] if listed else None
-                    currency = str(prediction.currency or (listed[1] if listed else "chaos"))
+                    currency = str(
+                        prediction.currency or (listed[1] if listed else "chaos")
+                    )
                     current_item_rows.append(
                         {
                             "scan_id": effective_scan_id,
@@ -202,7 +188,9 @@ class AccountStashHarvester:
                                 or "Unknown"
                             ),
                             "item_class": str(raw_item.get("itemClass") or "Unknown"),
-                            "rarity": _rarity_from_frame_type(raw_item.get("frameType")),
+                            "rarity": _rarity_from_frame_type(
+                                raw_item.get("frameType")
+                            ),
                             "x": int(raw_item.get("x") or 0),
                             "y": int(raw_item.get("y") or 0),
                             "w": int(raw_item.get("w") or 1),
@@ -673,7 +661,11 @@ def _bool_to_uint8(value: bool) -> int:
 def _friendly_scan_error_message(exc: Exception) -> str:
     message = str(exc)
     if "PoE client error 401" in message or "PoE client error 403" in message:
-        return "invalid POESESSID or stash access denied"
+        return "invalid account access or stash access denied"
+    if "PoE client error 429" in message:
+        return "upstream_rate_limited"
+    if "PoE client error 5" in message:
+        return "upstream_stash_unavailable"
     return message
 
 

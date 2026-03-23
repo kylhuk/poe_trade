@@ -24,15 +24,11 @@ class _StubClient(PoeClient):
         ] = []
 
     def request(self, method, path, params=None, data=None, headers=None):
-        copied_headers = dict(headers) if isinstance(headers, dict) else headers
+        copied_headers = self._build_headers(headers)
         copied_params = dict(params) if isinstance(params, dict) else params
         self.calls.append((method, path, copied_headers, copied_params))
         if copied_params and copied_params.get("tabs") == "1":
-            return {
-                "tabs": [
-                    {"id": "t1", "i": 0, "n": "Trade 1", "type": "normal"}
-                ]
-            }
+            return {"tabs": [{"id": "t1", "i": 0, "n": "Trade 1", "type": "normal"}]}
         if path.endswith("/Mirage"):
             return [{"id": "t1", "n": "Trade 1", "type": "normal"}]
         return {
@@ -140,38 +136,44 @@ def test_harvest_writes_account_name_in_rows() -> None:
     assert '"account_name": "qa-exile"' in clickhouse.queries[1]
 
 
-def test_harvest_uses_server_side_cookie_header() -> None:
+def test_harvest_uses_oauth_bearer_header_and_account_paths() -> None:
     client = _StubClient()
+    client.set_bearer_token("access-token-123")
     clickhouse = _StubClickHouse()
     status = _StubStatus(clickhouse)
     harvester = AccountStashHarvester(
         client,
         clickhouse,
         status,
-        request_headers={"Cookie": "POESESSID=POESESSID-123"},
+        request_headers={},
     )
 
     harvester.run(realm="pc", league="Mirage", interval=0.0, dry_run=True, once=True)
 
     assert len(client.calls) == 2
-    assert client.calls[0][2] == {"Cookie": "POESESSID=POESESSID-123"}
-    assert client.calls[1][2] == {"Cookie": "POESESSID=POESESSID-123"}
+    assert client.calls[0][1] == "stash/Mirage"
+    assert client.calls[1][1] == "stash/Mirage/t1"
+    assert client.calls[0][2]["Authorization"] == "Bearer access-token-123"
+    assert "Cookie" not in client.calls[0][2]
+    assert "Cookie" not in client.calls[1][2]
 
 
-def test_private_scan_fetches_tab_list_with_tabs_flag_and_preserves_upstream_order() -> None:
+def test_private_scan_fetches_tab_list_with_tabs_flag_and_preserves_upstream_order() -> (
+    None
+):
     class _PrivateScanClient(_StubClient):
         def request(self, method, path, params=None, data=None, headers=None):
-            copied_headers = dict(headers) if isinstance(headers, dict) else headers
+            copied_headers = self._build_headers(headers)
             copied_params = dict(params) if isinstance(params, dict) else params
             self.calls.append((method, path, copied_headers, copied_params))
-            if copied_params and copied_params.get("tabs") == "1":
+            if path == "stash/Mirage":
                 return {
                     "tabs": [
                         {"id": "tab-2", "i": 0, "n": "Currency", "type": "currency"},
                         {"id": "tab-9", "i": 1, "n": "Dump", "type": "quad"},
                     ]
                 }
-            tab_index = str((copied_params or {}).get("tabIndex") or "0")
+            tab_index = "0" if path.endswith("/tab-2") else "1"
             return {
                 "items": [
                     {
@@ -189,6 +191,7 @@ def test_private_scan_fetches_tab_list_with_tabs_flag_and_preserves_upstream_ord
             }
 
     client = _PrivateScanClient()
+    client.set_bearer_token("access-token-123")
     clickhouse = _StubClickHouse()
     status = _StubStatus(clickhouse)
     harvester = AccountStashHarvester(
@@ -196,7 +199,7 @@ def test_private_scan_fetches_tab_list_with_tabs_flag_and_preserves_upstream_ord
         clickhouse,
         status,
         account_name="qa-exile",
-        request_headers={"Cookie": "POESESSID=POESESSID-123"},
+        request_headers={},
     )
 
     harvester.run_private_scan(
@@ -210,23 +213,29 @@ def test_private_scan_fetches_tab_list_with_tabs_flag_and_preserves_upstream_ord
         },
     )
 
-    assert client.calls[0][1] == "https://www.pathofexile.com/character-window/get-stash-items"
-    assert client.calls[0][3] == {
-        "accountName": "qa-exile",
-        "realm": "pc",
-        "league": "Mirage",
-        "tabs": "1",
-        "tabIndex": "0",
-    }
-    assert client.calls[1][3]["tabIndex"] == "0"
-    assert client.calls[2][3]["tabIndex"] == "1"
-    tab_queries = [query for query in clickhouse.queries if "account_stash_scan_tabs" in query]
-    assert any('"tab_index": 0' in query and '"tab_name": "Currency"' in query for query in tab_queries)
-    assert any('"tab_index": 1' in query and '"tab_name": "Dump"' in query for query in tab_queries)
+    assert client.calls[0][1] == "stash/Mirage"
+    assert client.calls[1][1] == "stash/Mirage/tab-2"
+    assert client.calls[2][1] == "stash/Mirage/tab-9"
+    assert client.calls[0][2]["Authorization"] == "Bearer access-token-123"
+    assert "Cookie" not in client.calls[0][2]
+    tab_queries = [
+        query for query in clickhouse.queries if "account_stash_scan_tabs" in query
+    ]
+    assert any(
+        '"tab_index": 0' in query and '"tab_name": "Currency"' in query
+        for query in tab_queries
+    )
+    assert any(
+        '"tab_index": 1' in query and '"tab_name": "Dump"' in query
+        for query in tab_queries
+    )
 
 
-def test_private_scan_preserves_pricing_metadata_and_publishes_only_after_item_rows() -> None:
+def test_private_scan_preserves_pricing_metadata_and_publishes_only_after_item_rows() -> (
+    None
+):
     client = _StubClient()
+    client.set_bearer_token("access-token-123")
     clickhouse = _StubClickHouse()
     status = _StubStatus(clickhouse)
     harvester = AccountStashHarvester(
@@ -234,7 +243,7 @@ def test_private_scan_preserves_pricing_metadata_and_publishes_only_after_item_r
         clickhouse,
         status,
         account_name="qa-exile",
-        request_headers={"Cookie": "POESESSID=POESESSID-123"},
+        request_headers={},
     )
 
     harvester.run_private_scan(
@@ -252,8 +261,14 @@ def test_private_scan_preserves_pricing_metadata_and_publishes_only_after_item_r
         },
     )
 
-    item_queries = [query for query in clickhouse.queries if "account_stash_item_valuations" in query]
-    assert any('"price_recommendation_eligible": true' in query for query in item_queries)
+    item_queries = [
+        query
+        for query in clickhouse.queries
+        if "account_stash_item_valuations" in query
+    ]
+    assert any(
+        '"price_recommendation_eligible": true' in query for query in item_queries
+    )
     assert any('"estimate_trust": "normal"' in query for query in item_queries)
     assert "account_stash_published_scans" in clickhouse.queries[-1]
 
@@ -261,17 +276,17 @@ def test_private_scan_preserves_pricing_metadata_and_publishes_only_after_item_r
 def test_private_scan_updates_running_progress_before_publish() -> None:
     class _ProgressClient(_StubClient):
         def request(self, method, path, params=None, data=None, headers=None):
-            copied_headers = dict(headers) if isinstance(headers, dict) else headers
+            copied_headers = self._build_headers(headers)
             copied_params = dict(params) if isinstance(params, dict) else params
             self.calls.append((method, path, copied_headers, copied_params))
-            if copied_params and copied_params.get("tabs") == "1":
+            if path == "stash/Mirage":
                 return {
                     "tabs": [
                         {"id": "tab-1", "i": 0, "n": "Currency", "type": "currency"},
                         {"id": "tab-2", "i": 1, "n": "Dump", "type": "quad"},
                     ]
                 }
-            tab_index = str((copied_params or {}).get("tabIndex") or "0")
+            tab_index = "0" if path.endswith("/tab-1") else "1"
             return {
                 "items": [
                     {
@@ -296,7 +311,7 @@ def test_private_scan_updates_running_progress_before_publish() -> None:
         clickhouse,
         status,
         account_name="qa-exile",
-        request_headers={"Cookie": "POESESSID=POESESSID-123"},
+        request_headers={},
     )
 
     harvester.run_private_scan(
@@ -310,24 +325,32 @@ def test_private_scan_updates_running_progress_before_publish() -> None:
         },
     )
 
-    assert any('"status": "running"' in query and '"tabs_processed": 1' in query for query in clickhouse.queries)
-    assert any('"status": "running"' in query and '"tabs_processed": 2' in query for query in clickhouse.queries)
+    assert any(
+        '"status": "running"' in query and '"tabs_processed": 1' in query
+        for query in clickhouse.queries
+    )
+    assert any(
+        '"status": "running"' in query and '"tabs_processed": 2' in query
+        for query in clickhouse.queries
+    )
 
 
-def test_private_scan_marks_failed_and_skips_publish_when_item_lacks_concrete_value() -> None:
+def test_private_scan_marks_failed_and_skips_publish_when_item_lacks_concrete_value() -> (
+    None
+):
     class _FailureProgressClient(_StubClient):
         def request(self, method, path, params=None, data=None, headers=None):
-            copied_headers = dict(headers) if isinstance(headers, dict) else headers
+            copied_headers = self._build_headers(headers)
             copied_params = dict(params) if isinstance(params, dict) else params
             self.calls.append((method, path, copied_headers, copied_params))
-            if copied_params and copied_params.get("tabs") == "1":
+            if path == "stash/Mirage":
                 return {
                     "tabs": [
                         {"id": "tab-1", "i": 0, "n": "Currency", "type": "currency"},
                         {"id": "tab-2", "i": 1, "n": "Dump", "type": "quad"},
                     ]
                 }
-            tab_index = str((copied_params or {}).get("tabIndex") or "0")
+            tab_index = "0" if path.endswith("/tab-1") else "1"
             return {
                 "items": [
                     {
@@ -352,7 +375,7 @@ def test_private_scan_marks_failed_and_skips_publish_when_item_lacks_concrete_va
         clickhouse,
         status,
         account_name="qa-exile",
-        request_headers={"Cookie": "POESESSID=POESESSID-123"},
+        request_headers={},
     )
 
     seen = {"count": 0}
@@ -368,16 +391,28 @@ def test_private_scan_marks_failed_and_skips_publish_when_item_lacks_concrete_va
             }
         return {"confidence": 0.0}
 
-    result = harvester.run_private_scan(realm="pc", league="Mirage", price_item=_price_item)
+    result = harvester.run_private_scan(
+        realm="pc", league="Mirage", price_item=_price_item
+    )
 
     assert result["status"] == "failed"
     assert any('"status": "failed"' in query for query in clickhouse.queries)
-    assert any('"status": "failed"' in query and '"tabs_processed": 1' in query for query in clickhouse.queries)
-    assert any('"status": "failed"' in query and '"items_processed": 1' in query for query in clickhouse.queries)
-    assert not any("account_stash_published_scans" in query for query in clickhouse.queries)
+    assert any(
+        '"status": "failed"' in query and '"tabs_processed": 1' in query
+        for query in clickhouse.queries
+    )
+    assert any(
+        '"status": "failed"' in query and '"items_processed": 1' in query
+        for query in clickhouse.queries
+    )
+    assert not any(
+        "account_stash_published_scans" in query for query in clickhouse.queries
+    )
 
 
-def test_private_scan_maps_upstream_auth_error_to_invalid_poe_session_message() -> None:
+def test_private_scan_maps_upstream_auth_error_to_invalid_account_access_message() -> (
+    None
+):
     class _InvalidSessionClient(_StubClient):
         def request(self, method, path, params=None, data=None, headers=None):
             raise RuntimeError("PoE client error 401: unauthorized")
@@ -390,7 +425,7 @@ def test_private_scan_maps_upstream_auth_error_to_invalid_poe_session_message() 
         clickhouse,
         status,
         account_name="qa-exile",
-        request_headers={"Cookie": "POESESSID=POESESSID-123"},
+        request_headers={},
     )
 
     result = harvester.run_private_scan(
@@ -400,4 +435,4 @@ def test_private_scan_maps_upstream_auth_error_to_invalid_poe_session_message() 
     )
 
     assert result["status"] == "failed"
-    assert result["error"] == "invalid POESESSID or stash access denied"
+    assert result["error"] == "invalid account access or stash access denied"
