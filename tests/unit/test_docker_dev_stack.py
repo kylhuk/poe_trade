@@ -37,14 +37,20 @@ def test_makefile_up_uses_dev_overlay_without_build() -> None:
 
 def test_dev_overlay_mounts_source_and_sets_pythonpath() -> None:
     dev_compose = repo_read("docker-compose.dev.yml")
-    assert "/app" in dev_compose
+    assert (
+        "- .:/app" in dev_compose or "./:/app" in dev_compose or ".:/app" in dev_compose
+    )
     assert "PYTHONPATH=/app" in dev_compose
 
 
 def test_qa_up_stays_on_base_compose_files() -> None:
     makefile = repo_read("Makefile")
     qa_up_block = make_target_block(makefile, "qa-up")
-    assert "QA_COMPOSE" in makefile
+    qa_compose_line = next(
+        line for line in makefile.splitlines() if line.startswith("QA_COMPOSE :=")
+    )
+    assert "docker-compose.yml" in qa_compose_line
+    assert "docker-compose.qa.yml" in qa_compose_line
     assert "docker-compose.dev.yml" not in qa_up_block
 
 
