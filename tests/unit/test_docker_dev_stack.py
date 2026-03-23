@@ -66,7 +66,7 @@ def test_dockerfile_uses_separate_runtime_dependency_manifest() -> None:
 
 def test_dockerignore_excludes_dev_noise() -> None:
     dockerignore = repo_read(".dockerignore")
-    for entry in [".venv", ".sisyphus", "docs", "tests", "*.md", "!README.md"]:
+    for entry in [".venv", ".sisyphus/", "docs", "tests", "*.md", "!README.md"]:
         assert entry in dockerignore
 
 
@@ -75,4 +75,7 @@ def test_readme_documents_docker_dev_workflow() -> None:
     assert "`make up` = fast dev start, no `--build`" in readme
     assert "`make build` = explicit image refresh" in readme
     assert "`make rebuild` = refresh images, then restart the stack if needed" in readme
-    assert "repo-root source edits no longer force Docker rebuilds" in readme
+    assert (
+        "repo-root edits under the mounted source tree no longer force Docker rebuilds"
+        in readme
+    )

@@ -1,7 +1,7 @@
 .git
 .worktrees
 .state
-.sisyphus
+.sisyphus/
 artifacts
 logs
 .venv
