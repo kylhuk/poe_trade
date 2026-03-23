@@ -2,7 +2,7 @@
 
 COMPOSE := docker compose
 QA_COMPOSE := $(COMPOSE) -f docker-compose.yml -f docker-compose.qa.yml --env-file .env.qa
-SERVICES := clickhouse schema_migrator market_harvester scanner_worker ml_trainer poeninja_snapshot api ml_v3_ops
+SERVICES := clickhouse schema_migrator market_harvester scanner_worker ml_trainer poeninja_snapshot api
 APP_SERVICES := schema_migrator market_harvester account_stash_harvester scanner_worker ml_trainer poeninja_snapshot api ml_v3_ops
 PYTHON := .venv/bin/python
 BACKTEST_LEAGUE ?= Mirage
