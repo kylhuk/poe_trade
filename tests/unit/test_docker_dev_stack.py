@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -6,6 +7,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def repo_read(*parts: str) -> str:
     return (REPO_ROOT.joinpath(*parts)).read_text(encoding="utf-8")
+
+
+def repo_lines(*parts: str) -> list[str]:
+    return repo_read(*parts).splitlines()
 
 
 def make_target_block(makefile: str, target: str) -> str:
@@ -67,6 +72,18 @@ def test_dockerfile_uses_separate_runtime_dependency_manifest() -> None:
     assert dockerfile.index("COPY README.md ./") < dockerfile.index(
         "pip install --no-cache-dir --no-deps ."
     )
+
+
+def test_runtime_dependency_manifest_matches_pyproject() -> None:
+    pyproject = tomllib.loads(repo_read("pyproject.toml"))
+    project_dependencies = pyproject["project"]["dependencies"]
+    runtime_requirements = [
+        line
+        for line in repo_lines("requirements-runtime.txt")
+        if line and not line.lstrip().startswith("#")
+    ]
+
+    assert runtime_requirements == project_dependencies
 
 
 def test_dockerignore_excludes_dev_noise() -> None:

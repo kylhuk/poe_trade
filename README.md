@@ -23,7 +23,7 @@
 - `docker compose logs --follow clickhouse schema_migrator market_harvester scanner_worker ml_trainer poeninja_snapshot api` to tail the logs.
 - `docker compose exec clickhouse clickhouse-client --query "SELECT 1"` to verify ClickHouse accepts connections.
 - `make down` to stop every container while keeping the ClickHouse data volume intact for the next `make up`.
-- `docker compose up --detach account_stash_harvester` to start the optional, credential-gated private stash sync.
+- `docker compose up --detach account_stash_harvester` to start the optional, credential-gated private stash sync as a base-compose one-off.
 - `account_stash_harvester` stays optional and is not part of the default `make up` or `make build` paths.
 - Refer to `docs/ops-runbook.md` for queue-based telemetry, checkpoint history, and failure patterns.
 
