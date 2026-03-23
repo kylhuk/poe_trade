@@ -103,6 +103,35 @@ def _feature_dict(row: dict[str, Any]) -> dict[str, float]:
     return merged
 
 
+def apply_residual_cap(
+    *,
+    anchor_price: float,
+    confidence: float,
+    fair_residual: float,
+    fast_residual: float,
+) -> dict[str, float]:
+    anchor = max(0.1, float(anchor_price))
+    conf = max(0.0, min(1.0, float(confidence)))
+
+    if conf <= 0.20:
+        fair_cap_pct = 0.08
+        fast_cap_pct = 0.06
+    elif conf <= 0.50:
+        fair_cap_pct = 0.12
+        fast_cap_pct = 0.10
+    else:
+        fair_cap_pct = 0.18
+        fast_cap_pct = 0.14
+
+    fair_delta = max(-anchor * fair_cap_pct, min(anchor * fair_cap_pct, fair_residual))
+    fast_delta = max(-anchor * fast_cap_pct, min(anchor * fast_cap_pct, fast_residual))
+
+    return {
+        "fair_value": max(0.1, anchor + fair_delta),
+        "fast_sale": max(0.1, anchor + fast_delta),
+    }
+
+
 def _register_route_model(
     client: ClickHouseClient,
     *,
@@ -381,11 +410,19 @@ def train_route_v3(
             "fast_sale_24h": model_fast_sale,
             "sale_probability": sale_model,
         },
+        "search_config": {
+            "max_candidates": 64,
+            "stage_support_targets": {"1": 8, "2": 12, "3": 18, "4": 24},
+        },
+        "route_family_priors": {},
+        "fair_value_residual_model": model_p50,
+        "fast_sale_residual_model": model_fast_sale,
         "fallback_fast_sale_multiplier": fallback_multiplier,
         "metadata": {
             "league": league,
             "route": route,
             "row_count": len(rows),
+            "has_fast_sale_target": bool((fast_sale_targets > 0).any()),
             "feature_schema": {
                 "fields": sorted(vectorizer.feature_names_),
                 "field_count": len(vectorizer.feature_names_),

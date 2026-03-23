@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any, Mapping
+
+from .routes import route_sql_expression, select_route as _select_route
 
 OBSERVATIONS_TABLE = "poe_trade.silver_v3_item_observations"
 SNAPSHOTS_TABLE = "poe_trade.silver_v3_stash_snapshots"
 EVENTS_TABLE = "poe_trade.silver_v3_item_events"
 SALE_LABELS_TABLE = "poe_trade.ml_v3_sale_proxy_labels"
 TRAINING_TABLE = "poe_trade.ml_v3_training_examples"
-RETRIEVAL_CANDIDATES_TABLE = "poe_trade.ml_v3_retrieval_candidates"
 
 
 def _quote(value: str) -> str:
@@ -15,17 +17,24 @@ def _quote(value: str) -> str:
 
 
 def _route_sql() -> str:
+    return route_sql_expression()
+
+
+def _item_state_sql(
+    *, rarity_expr: str, corrupted_expr: str, fractured_expr: str, synthesised_expr: str
+) -> str:
     return (
-        "multiIf("
-        "category IN ('essence'), 'fallback_abstain', "
-        "category IN ('fossil','scarab','logbook'), 'fungible_reference', "
-        "rarity = 'Unique' AND category IN ('ring','amulet','belt','jewel'), 'structured_boosted_other', "
-        "rarity = 'Unique', 'structured_boosted', "
-        "category = 'cluster_jewel', 'cluster_jewel_retrieval', "
-        "rarity = 'Rare', 'sparse_retrieval', "
-        "'fallback_abstain'"
+        "concat("
+        f"lowerUTF8(ifNull({rarity_expr}, '')),"
+        "'|corrupted=', toString(toUInt8(ifNull(" + corrupted_expr + ", 0) != 0)),"
+        "'|fractured=', toString(toUInt8(ifNull(" + fractured_expr + ", 0) != 0)),"
+        "'|synthesised=', toString(toUInt8(ifNull(" + synthesised_expr + ", 0) != 0))"
         ")"
     )
+
+
+def select_route(parsed: Mapping[str, Any]) -> str:
+    return _select_route(parsed)
 
 
 def disk_usage_query() -> str:
@@ -156,6 +165,12 @@ def build_training_examples_insert_query(*, league: str, day: date) -> str:
     day_sql = _quote(day.isoformat())
     league_sql = _quote(league)
     route_expr = _route_sql()
+    item_state_expr = _item_state_sql(
+        rarity_expr="obs.rarity",
+        corrupted_expr="obs.corrupted",
+        fractured_expr="obs.fractured",
+        synthesised_expr="obs.synthesised",
+    )
     return " ".join(
         [
             f"INSERT INTO {TRAINING_TABLE}",
@@ -177,6 +192,7 @@ def build_training_examples_insert_query(*, league: str, day: date) -> str:
             "obs.corrupted AS corrupted,",
             "obs.fractured AS fractured,",
             "obs.synthesised AS synthesised,",
+            f"{item_state_expr} AS item_state_key,",
             "toUInt32(count() OVER (PARTITION BY obs.league, obs.base_type)) AS support_count_recent,",
             "toJSONString(map('ilvl', toFloat64(obs.ilvl), 'stack_size', toFloat64(obs.stack_size), 'corrupted', toFloat64(obs.corrupted), 'fractured', toFloat64(obs.fractured), 'synthesised', toFloat64(obs.synthesised))) AS feature_vector_json,",
             "obs.affix_payload_json AS mod_features_json,",
@@ -206,29 +222,52 @@ def build_retrieval_candidate_query(
     *,
     league: str,
     route: str,
-    target_identity_key: str | None = None,
-    limit: int = 64,
+    item_state_key: str,
+    limit: int = 2000,
 ) -> str:
-    conditions: list[str] = [
-        f"WHERE league = {_quote(league)}",
-        f"AND route = {_quote(route)}",
-    ]
-    if target_identity_key:
-        conditions.append(f"AND target_identity_key = {_quote(target_identity_key)}")
+    league_sql = _quote(league)
+    route_sql = _quote(route)
+    item_state_key_sql = _quote(item_state_key)
+    safe_limit = max(1, int(limit))
     return " ".join(
         [
-            f"SELECT",
-            "candidate_identity_key AS candidate_identity_key,",
-            "candidate_base_type AS candidate_base_type,",
-            "candidate_rarity AS candidate_rarity,",
-            "candidate_price_chaos AS candidate_price_chaos,",
-            "distance_score AS distance_score,",
-            "support_rank AS support_rank,",
-            "as_of_ts AS as_of_ts",
-            f"FROM {RETRIEVAL_CANDIDATES_TABLE}",
-            *conditions,
-            "ORDER BY distance_score ASC, support_rank ASC",
-            f"LIMIT {max(1, int(limit))}",
+            "SELECT",
+            "as_of_ts,",
+            "league,",
+            "route,",
+            "identity_key,",
+            "item_state_key,",
+            "base_type,",
+            "rarity,",
+            "target_price_chaos,",
+            "target_fast_sale_24h_price,",
+            "target_sale_probability_24h,",
+            "support_count_recent,",
+            "mod_features_json",
+            "FROM (",
+            "SELECT",
+            "as_of_ts,",
+            "league,",
+            "route,",
+            "identity_key,",
+            "item_state_key,",
+            "base_type,",
+            "rarity,",
+            "target_price_chaos,",
+            "target_fast_sale_24h_price,",
+            "target_sale_probability_24h,",
+            "support_count_recent,",
+            "mod_features_json,",
+            "row_number() OVER (",
+            "PARTITION BY league, route, item_state_key",
+            "ORDER BY as_of_ts DESC, identity_key ASC",
+            ") AS candidate_rank",
+            f"FROM {TRAINING_TABLE}",
+            f"WHERE league = {league_sql}",
+            f"AND route = {route_sql}",
+            f"AND item_state_key = {item_state_key_sql}",
+            ")",
+            f"WHERE candidate_rank <= {safe_limit}",
             "FORMAT JSONEachRow",
         ]
     )
