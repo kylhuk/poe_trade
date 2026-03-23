@@ -10,20 +10,21 @@
 4. `.venv/bin/pip install -e .`
 5. `python -m poe_trade.cli --help` to inspect the CLI router and available service names.
 6. `docker compose config` to validate the ClickHouse + ingestion topology.
-7. `make up` to start the core product stack (ClickHouse, schema_migrator, market_harvester, scanner_worker, ml_trainer, and api) in one command.
+7. `make up` to start the core product stack (ClickHouse, schema_migrator, market_harvester, scanner_worker, ml_trainer, poeninja_snapshot, and api) in one command.
 
 ## Docker dev workflow
-- `make up` = fast dev start, no `--build`
-- `make build` = explicit image refresh
+- `make up` = fast dev start for the core stack, no `--build`
+- `make build` = explicit image refresh for app services
 - `make rebuild` = refresh images, then restart the stack if needed
 - repo-root edits under the mounted source tree no longer force Docker rebuilds
 
 ## After Docker is running
 - `docker compose ps` to confirm the core services are healthy.
-- `docker compose logs --follow clickhouse schema_migrator market_harvester scanner_worker ml_trainer api` to tail the logs.
+- `docker compose logs --follow clickhouse schema_migrator market_harvester scanner_worker ml_trainer poeninja_snapshot api` to tail the logs.
 - `docker compose exec clickhouse clickhouse-client --query "SELECT 1"` to verify ClickHouse accepts connections.
 - `make down` to stop every container while keeping the ClickHouse data volume intact for the next `make up`.
 - `docker compose up --detach account_stash_harvester` to start the optional, credential-gated private stash sync.
+- `account_stash_harvester` stays optional and is not part of the default `make up` or `make build` paths.
 - Refer to `docs/ops-runbook.md` for queue-based telemetry, checkpoint history, and failure patterns.
 
 ## ML Quick Start (Single Pricing System)

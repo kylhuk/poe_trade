@@ -8,10 +8,7 @@ logs
 .env
 .env.*
 !.env.example
-node_modules
-frontend/node_modules
-frontend/dist
-frontend/.vite
+frontend/
 __pycache__
 *.pyc
 .pytest_cache

@@ -31,8 +31,13 @@ def make_target_block(makefile: str, target: str) -> str:
 def test_makefile_up_uses_dev_overlay_without_build() -> None:
     makefile = repo_read("Makefile")
     up_block = make_target_block(makefile, "up")
+    app_services_line = next(
+        line for line in makefile.splitlines() if line.startswith("APP_SERVICES :=")
+    )
     assert "docker-compose.dev.yml" in up_block
     assert "up --build" not in up_block
+    assert "account_stash_harvester" not in app_services_line
+    assert "poeninja_snapshot" in app_services_line
 
 
 def test_dev_overlay_mounts_source_and_sets_pythonpath() -> None:
@@ -66,16 +71,32 @@ def test_dockerfile_uses_separate_runtime_dependency_manifest() -> None:
 
 def test_dockerignore_excludes_dev_noise() -> None:
     dockerignore = repo_read(".dockerignore")
-    for entry in [".venv", ".sisyphus/", "docs", "tests", "*.md", "!README.md"]:
+    for entry in [
+        ".venv",
+        ".sisyphus/",
+        "frontend/",
+        "docs",
+        "tests",
+        "*.md",
+        "!README.md",
+    ]:
         assert entry in dockerignore
+    for entry in ["frontend/node_modules", "frontend/dist", "frontend/.vite"]:
+        assert entry not in dockerignore
 
 
 def test_readme_documents_docker_dev_workflow() -> None:
     readme = repo_read("README.md")
-    assert "`make up` = fast dev start, no `--build`" in readme
-    assert "`make build` = explicit image refresh" in readme
+    assert "`make up` = fast dev start for the core stack, no `--build`" in readme
+    assert "`make build` = explicit image refresh for app services" in readme
     assert "`make rebuild` = refresh images, then restart the stack if needed" in readme
     assert (
         "repo-root edits under the mounted source tree no longer force Docker rebuilds"
+        in readme
+    )
+    assert "poeninja_snapshot" in readme
+    assert "account_stash_harvester" in readme
+    assert (
+        "ClickHouse, schema_migrator, market_harvester, scanner_worker, ml_trainer, poeninja_snapshot, and api"
         in readme
     )
