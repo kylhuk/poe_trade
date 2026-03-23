@@ -1,5 +1,11 @@
 name: poe_trade
 
+x-poe-app: &poe-app
+  image: poe_trade-app:${POE_APP_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+
 services:
   clickhouse:
     image: clickhouse/clickhouse-server:latest
@@ -27,7 +33,7 @@ services:
       - lama-lan_backend
 
   schema_migrator:
-    build: .
+    <<: *poe-app
     entrypoint: ["poe-migrate"]
     command: ["--apply"]
     env_file:
@@ -44,7 +50,7 @@ services:
       - default
 
   market_harvester:
-    build: .
+    <<: *poe-app
     command: ["service", "--name", "market_harvester"]
     depends_on:
       clickhouse:
@@ -61,7 +67,7 @@ services:
       - default
 
   account_stash_harvester:
-    build: .
+    <<: *poe-app
     command: ["service", "--name", "account_stash_harvester"]
     depends_on:
       clickhouse:
@@ -83,7 +89,7 @@ services:
       - default
 
   scanner_worker:
-    build: .
+    <<: *poe-app
     command: ["service", "--name", "scanner_worker"]
     depends_on:
       clickhouse:
@@ -100,7 +106,7 @@ services:
       - default
 
   ml_trainer:
-    build: .
+    <<: *poe-app
     command: ["service", "--name", "ml_trainer"]
     depends_on:
       clickhouse:
@@ -125,7 +131,7 @@ services:
       - default
 
   poeninja_snapshot:
-    build: .
+    <<: *poe-app
     command: ["service", "--name", "poeninja_snapshot"]
     depends_on:
       clickhouse:
@@ -145,7 +151,7 @@ services:
       - default
 
   api:
-    build: .
+    <<: *poe-app
     command: ["service", "--name", "api"]
     depends_on:
       clickhouse:
@@ -171,7 +177,7 @@ services:
     restart: unless-stopped
 
   ml_v3_ops:
-    build: .
+    <<: *poe-app
     profiles: ["ml-v3"]
     entrypoint: ["poe-ml"]
     command: ["v3-disk-usage", "--league", "Mirage"]

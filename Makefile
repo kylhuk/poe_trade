@@ -1,8 +1,9 @@
-.PHONY: up down qa-up qa-down qa-seed qa-fault-scanner qa-fault-stash-empty qa-fault-api-unavailable qa-fault-service-action-failure qa-fault-clear qa-frontend qa-verify-product ci-deterministic ci-deterministic-ml-evidence ci-smoke-cli ci-api-contract backtest-all
+.PHONY: up down build rebuild qa-up qa-down qa-seed qa-fault-scanner qa-fault-stash-empty qa-fault-api-unavailable qa-fault-service-action-failure qa-fault-clear qa-frontend qa-verify-product ci-deterministic ci-deterministic-ml-evidence ci-smoke-cli ci-api-contract backtest-all
 
 COMPOSE := docker compose
 QA_COMPOSE := $(COMPOSE) -f docker-compose.yml -f docker-compose.qa.yml --env-file .env.qa
-SERVICES := clickhouse schema_migrator market_harvester scanner_worker ml_trainer poeninja_snapshot api
+SERVICES := clickhouse schema_migrator market_harvester scanner_worker ml_trainer poeninja_snapshot api ml_v3_ops
+APP_SERVICES := schema_migrator market_harvester account_stash_harvester scanner_worker ml_trainer poeninja_snapshot api ml_v3_ops
 PYTHON := .venv/bin/python
 BACKTEST_LEAGUE ?= Mirage
 BACKTEST_DAYS ?= 14
@@ -11,7 +12,13 @@ ML_EVIDENCE_ROOT ?= .sisyphus/evidence
 ML_EVIDENCE_LOG ?= .sisyphus/evidence/task-12-deterministic-pack.log
 
 up:
-	$(COMPOSE) up --build --detach $(SERVICES)
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml up --detach $(SERVICES)
+
+build:
+	$(COMPOSE) build $(APP_SERVICES)
+
+rebuild: build
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml up --detach $(SERVICES)
 
 down:
 	$(COMPOSE) down --remove-orphans

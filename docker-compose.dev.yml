@@ -1,0 +1,48 @@
+services:
+  schema_migrator:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+
+  market_harvester:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+
+  account_stash_harvester:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+
+  scanner_worker:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+
+  ml_trainer:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+
+  poeninja_snapshot:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+
+  api:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+
+  ml_v3_ops:
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
