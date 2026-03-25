@@ -1,7 +1,0 @@
-{
-  "cursor": "",
-  "error": "Code: 216. DB::Exception: Query with id = task3-legacy-5d5d2dd345fe is already running. (QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING) (version 26.2.4.23 (official build))\n",
-  "league": "Mirage",
-  "page_size": 5000,
-  "status": "query_error"
-}

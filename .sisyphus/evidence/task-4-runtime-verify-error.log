@@ -1,5 +1,0 @@
-Observed failure prior to the fix:
-```
-ClickHouse HTTPError 400: Cannot parse input: expected '"' before: '+00:00', sample_time_utc string surfaced with timezone offset.
-```
-Re-running the service with a malformed timestamp reproduces the fatal parse assertion.

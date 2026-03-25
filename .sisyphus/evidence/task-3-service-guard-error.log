@@ -1,1 +1,0 @@
-Service failure reproduction: before the fix, `snapshot_poeninja` would raise `TypeError` or ClickHouse `Cannot parse input` when `_insert_json_rows` fed `sample_time_utc` containing `+00:00`. This log references the production stack trace emitted by poeninja_snapshot (see incident message) as proof of regression.

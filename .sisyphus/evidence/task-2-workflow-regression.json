@@ -1,6 +1,0 @@
-{
-  "status": "ok",
-  "tests": "tests/unit/test_ml_workflows_snapshot.py",
-  "description": "Captures emitted JSONEachRow row and confirms ClickHouse-safe sample_time_utc",
-  "captured_timestamp": "2026-03-19 12:34:56.123"
-}

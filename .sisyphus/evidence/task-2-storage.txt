@@ -1,6 +1,0 @@
-schema/migrations/0028_research_backtests.sql:CREATE TABLE IF NOT EXISTS poe_trade.research_backtest_results (
-schema/migrations/0028_research_backtests.sql:GRANT SELECT ON poe_trade.research_backtest_results TO poe_api_reader;
-schema/migrations/0031_research_backtest_summary_detail.sql:CREATE TABLE IF NOT EXISTS poe_trade.research_backtest_summary (
-schema/migrations/0031_research_backtest_summary_detail.sql:CREATE TABLE IF NOT EXISTS poe_trade.research_backtest_detail (
-schema/migrations/0031_research_backtest_summary_detail.sql:GRANT SELECT ON poe_trade.research_backtest_summary TO poe_api_reader;
-schema/migrations/0031_research_backtest_summary_detail.sql:GRANT SELECT ON poe_trade.research_backtest_detail TO poe_api_reader;

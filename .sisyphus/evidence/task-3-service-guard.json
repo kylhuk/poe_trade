@@ -1,7 +1,0 @@
-{
-  "status": "ok",
-  "service": "poeninja_snapshot",
-  "command": "poeninja_snapshot --once --league Mirage",
-  "captured_timestamp": "2026-03-19 10:00:00.000",
-  "message": "No `sample_time_utc` parse failure observed during service-level regression run."
-}

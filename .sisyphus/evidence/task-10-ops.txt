@@ -1,5 +1,0 @@
-9:- After services start, `docker compose exec clickhouse clickhouse-client --query "SELECT 1"` to verify connectivity, and check `poe_ingest_status` for the newest `market_harvester` heartbeats.
-15:- ClickHouse health matters: use `system.metrics`/`system.events` plus the `clickhouse-client` query above to catch authentication or resource pressure before ingestion fails.
-36:- `poe-ledger-cli research backtest --strategy bulk_essence --league Mirage --days 14` to print `run_id\tstrategy_id\tleague\tlookback_days\tstatus\topportunity_count\texpected_profit_chaos\texpected_roi\tconfidence\tsummary`; `no_data` means no source rows for the window, `no_opportunities` means source rows existed but strategy rows did not.
-43:- `clickhouse-client --query "SELECT * FROM poe_trade.bronze_ingest_checkpoints ORDER BY retrieved_at DESC LIMIT 5"` for the freshest checkpoint metadata.
-44:- `clickhouse-client --query "SELECT status, count() FROM poe_trade.research_backtest_summary GROUP BY status ORDER BY status"` to verify typed backtest summary outcomes.

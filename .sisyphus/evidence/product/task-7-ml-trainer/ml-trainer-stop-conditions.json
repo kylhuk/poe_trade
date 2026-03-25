@@ -1,1 +1,0 @@
-ml_trainer-1  | 2026-03-14 10:25:11 INFO poe_trade.services.ml_trainer ml trainer cycle status=stopped_budget stop_reason=iteration_budget_exhausted

@@ -1,7 +1,0 @@
-{
-  "max_bytes_before_external_group_by": "268435456",
-  "max_bytes_before_external_sort": "268435456",
-  "max_execution_time": "180",
-  "max_memory_usage": "1610612736",
-  "max_threads": "4"
-}

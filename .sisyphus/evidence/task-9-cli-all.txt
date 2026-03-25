@@ -1,7 +1,0 @@
-run_id	strategy_id	league	lookback_days	status	opportunity_count	expected_profit_chaos	expected_roi	confidence	summary
-f2957ce92a7c495786620820d3010c0b	bulk_essence	Mirage	14	dry_run					dry run only
-85d5bd90e40247d998620c054efa8780	bulk_fossils	Mirage	14	dry_run					dry run only
-2b7b790f17a84b199dfc7db164d19a5a	cluster_basic	Mirage	14	dry_run					dry run only
-87f0896b78f94848a0cad7d9ca8f3c3f	flask_basic	Mirage	14	dry_run					dry run only
-d450185c561a4dbeb275ad3910859517	fragment_sets	Mirage	14	dry_run					dry run only
-472a45378fa74b448f09445bfb1de2f5	map_logbook_packages	Mirage	14	dry_run					dry run only

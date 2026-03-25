@@ -1,1 +1,0 @@
-ERROR: no system.query_log rows found for filters: query_ids=nonexistent-task1-query-id limit=1

@@ -1,7 +1,0 @@
-Commands:
-```
-.venv/bin/pytest tests/unit/test_ml_workflows_snapshot.py tests/unit/test_service_poeninja_snapshot.py tests/unit/test_poeninja_snapshot.py
-.venv/bin/pytest tests/unit/test_poeninja_snapshot.py tests/unit/test_service_poeninja_snapshot.py tests/unit/test_ml_cli.py
-.venv/bin/pytest tests/unit/test_ml_workflows_snapshot.py tests/unit/test_service_poeninja_snapshot.py tests/unit/test_poeninja_snapshot.py
-```
-Result: Both targeted regression suites passed (timestamp normalization + service integration + ML CLI smoke coverage).

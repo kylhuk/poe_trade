@@ -1,8 +1,0 @@
-{
-  "status": "ok",
-  "policy": {
-    "minimum_support_count": 50,
-    "eligible_support_buckets": ["medium", "high"]
-  },
-  "result": "pass"
-}

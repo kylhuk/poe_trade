@@ -1,5 +1,0 @@
-Traceback (most recent call last):
-  File "<string>", line 1, in <module>
-    tokens=['+55 to strength','+55 to strength','+96 to maximum life']; assert tokens == list(reversed(tokens)), 'intentional parity-order failure sentinel'
-                                                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: intentional parity-order failure sentinel

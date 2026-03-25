@@ -1,6 +1,0 @@
-HTTP/1.0 302 Found
-Server: BaseHTTP/0.6 Python/3.12.13
-Date: Sat, 14 Mar 2026 10:39:52 GMT
-Location: http://127.0.0.1:4173/auth/callback?status=success
-Set-Cookie: poe_session=c7l6zCJHO0ajMhrOpcDsyXCt2zxfdOr5s05oJ62OyUQ; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800
-

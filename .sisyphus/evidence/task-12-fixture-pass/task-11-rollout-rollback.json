@@ -1,1 +1,0 @@
-{"status":"ok","rollout":{"cutover":false},"effectiveServingModelVersion":"mirage-v1","lastAction":"rollback_to_incumbent"}

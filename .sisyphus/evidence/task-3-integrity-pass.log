@@ -1,4 +1,0 @@
-integrity_gate: pass
-leakage_detected: false
-freshness_stale: false
-result: eligible

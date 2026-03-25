@@ -1,4 +1,0 @@
-ClickHouse HTTPError 500: Code: 216. DB::Exception: Query with id = task3-legacy-5d5d2dd345fe is already running. (QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING) (version 26.2.4.23 (official build))
-
-ERROR: failed to compare paths: Code: 216. DB::Exception: Query with id = task3-legacy-5d5d2dd345fe is already running. (QUERY_WITH_SAME_ID_IS_ALREADY_RUNNING) (version 26.2.4.23 (official build))
-

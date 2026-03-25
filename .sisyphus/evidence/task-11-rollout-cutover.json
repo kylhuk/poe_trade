@@ -1,9 +1,0 @@
-{
-  "status": "ok",
-  "rollout": {
-    "shadowMode": true,
-    "cutoverEnabled": true
-  },
-  "effectiveServingModelVersion": "mirage-v2",
-  "lastAction": "enable_cutover"
-}

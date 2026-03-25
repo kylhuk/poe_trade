@@ -1,8 +1,0 @@
-{
-  "code_challenge": "1UtDwOUt6UPcifJXg2lR-akYjCzrfZzh2_QKBdBT7XA",
-  "code_verifier": "KVdk4iNqQ5mt9G0A9ZrTJVWgowvRZT6zLQgRk-sfHvXuIqaPt2hlgYFtrYTRwlYu",
-  "created_at": "2026-03-23T15:11:06.531694Z",
-  "expires_at": "2026-03-23T15:21:06.531694Z",
-  "redirect_uri": "https://app.example.com/auth/callback",
-  "state": "M1Lr60X1yoA2zffHOGPD5k-wnX9jRplY"
-}

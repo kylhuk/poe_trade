@@ -1,1 +1,0 @@
-invalid clipboard text: expected at least 3 non-empty lines

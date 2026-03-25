@@ -1,9 +1,0 @@
-{
-  "status": "ok",
-  "failure_matrix": [
-    "hold_shadow_mdape_improvement",
-    "hold_protected_cohort_regression",
-    "hold_eval_integrity_leakage",
-    "hold_eval_integrity_stale_watermarks"
-  ]
-}

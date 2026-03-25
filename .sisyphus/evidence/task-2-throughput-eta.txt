@@ -1,6 +1,0 @@
-Observed throughput from legacy mod feature pagination (500 rows per ~10.4 seconds) => ~48 items/sec.
-Total distinct items in ml_item_mod_tokens_v1: 18,760,335.
-Estimated remaining time at current throughput: 18,760,335 / 48 ≈ 391,674 seconds (~108.8 hours, 4.5 days).
-Target throughput for 5h completion: 18,760,335 / (5 * 3600) ≈ 1042 items/sec.
-Required speedup: 1042 / 48 ≈ 21.7× faster.
-Formula: ETA_hours = remaining_items / throughput / 3600.
