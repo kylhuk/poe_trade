@@ -75,6 +75,7 @@ from .stash import (
     StashBackendUnavailable,
     fetch_stash_item_history,
     fetch_stash_tabs,
+    stash_scan_valuations_payload,
     stash_scan_status_payload,
     stash_status_payload,
 )
@@ -458,6 +459,11 @@ class ApiApp:
             "/api/v1/stash/scan",
             ("POST", "OPTIONS"),
             self._stash_scan_start,
+        )
+        self.router.add(
+            "/api/v1/stash/scan/valuations",
+            ("POST", "OPTIONS"),
+            self._stash_scan_valuations,
         )
         self.router.add(
             "/api/v1/stash/scan/status",
@@ -1004,7 +1010,7 @@ class ApiApp:
                 league=league,
                 item_text=raw_text,
             )
-        except (BackendUnavailable, ValueError):
+        except (BackendUnavailable, OpsBackendUnavailable, ValueError):
             raise ApiError(
                 status=503,
                 code="backend_unavailable",
@@ -1126,6 +1132,129 @@ class ApiApp:
             realm=realm,
         )
         return json_response(result, status=202)
+
+    def _stash_scan_valuations(self, context: Mapping[str, object]) -> Response:
+        if not self.settings.enable_account_stash:
+            raise ApiError(
+                status=503,
+                code="feature_unavailable",
+                message="stash feature is unavailable; set POE_ENABLE_ACCOUNT_STASH=true",
+            )
+        account_name, league, realm = self._stash_account_scope(context)
+        try:
+            body = _read_json_body(
+                _headers_from_context(context),
+                _body_reader_from_context(context),
+                max_body_bytes=self.settings.api_max_body_bytes,
+            )
+        except ApiError as exc:
+            if not exc.headers:
+                exc.headers = dict(_cors_from_context(context))
+            raise
+
+        def _require_string(field: str) -> str:
+            value = body.get(field)
+            text = str(value or "").strip()
+            if not text:
+                raise ApiError(
+                    status=400,
+                    code="invalid_input",
+                    message="invalid input",
+                )
+            return text
+
+        def _require_float(field: str) -> float:
+            value = body.get(field)
+            if isinstance(value, bool) or value is None:
+                raise ApiError(
+                    status=400,
+                    code="invalid_input",
+                    message="invalid input",
+                )
+            try:
+                return float(str(value))
+            except (TypeError, ValueError) as exc:
+                raise ApiError(
+                    status=400,
+                    code="invalid_input",
+                    message="invalid input",
+                ) from exc
+
+        def _require_int(field: str) -> int:
+            value = body.get(field)
+            if isinstance(value, bool) or value is None:
+                raise ApiError(
+                    status=400,
+                    code="invalid_input",
+                    message="invalid input",
+                )
+            try:
+                parsed = float(str(value))
+            except (TypeError, ValueError) as exc:
+                raise ApiError(
+                    status=400,
+                    code="invalid_input",
+                    message="invalid input",
+                ) from exc
+            if not parsed.is_integer():
+                raise ApiError(
+                    status=400,
+                    code="invalid_input",
+                    message="invalid input",
+                )
+            return int(parsed)
+
+        scan_id = _require_string("scanId")
+        structured_mode = body.get("structuredMode", False)
+        if not isinstance(structured_mode, bool):
+            raise ApiError(
+                status=400,
+                code="invalid_input",
+                message="invalid input",
+            )
+        item_id = str(body.get("itemId") or "").strip()
+        if not structured_mode and not item_id:
+            raise ApiError(
+                status=400,
+                code="invalid_input",
+                message="invalid input",
+            )
+        min_threshold = _require_float("minThreshold")
+        max_threshold = _require_float("maxThreshold")
+        max_age_days = _require_int("maxAgeDays")
+        if min_threshold > max_threshold or max_age_days <= 0:
+            raise ApiError(
+                status=400,
+                code="invalid_input",
+                message="invalid input",
+            )
+
+        try:
+            payload = stash_scan_valuations_payload(
+                self.client,
+                account_name=account_name,
+                league=league,
+                realm=realm,
+                scan_id=scan_id,
+                item_id=item_id or None,
+                structured_mode=structured_mode,
+                min_threshold=min_threshold,
+                max_threshold=max_threshold,
+                max_age_days=max_age_days,
+            )
+        except LookupError:
+            raise ApiError(
+                status=404,
+                code="item_not_found",
+                message="item not found",
+            ) from None
+        except StashBackendUnavailable:
+            raise ApiError(
+                status=503,
+                code="backend_unavailable",
+                message="backend unavailable",
+            ) from None
+        return json_response(payload)
 
     def _stash_scan_status(self, context: Mapping[str, object]) -> Response:
         account_name, league, realm = self._stash_account_scope(context)

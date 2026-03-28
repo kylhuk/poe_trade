@@ -12,6 +12,11 @@ from poe_trade.stash_scan import (
     fetch_published_tabs,
 )
 
+from .valuation import (
+    ValuationBackendUnavailable,
+    build_stash_scan_valuations_payload,
+)
+
 
 class StashBackendUnavailable(RuntimeError):
     pass
@@ -254,3 +259,33 @@ def fetch_stash_item_history(
         )
     except StashScanBackendUnavailable as exc:
         raise StashBackendUnavailable("stash history backend unavailable") from exc
+
+
+def stash_scan_valuations_payload(
+    client: ClickHouseClient,
+    *,
+    account_name: str,
+    league: str,
+    realm: str,
+    scan_id: str,
+    item_id: str | None,
+    structured_mode: bool,
+    min_threshold: float,
+    max_threshold: float,
+    max_age_days: int,
+) -> dict[str, Any]:
+    try:
+        return build_stash_scan_valuations_payload(
+            client,
+            account_name=account_name,
+            league=league,
+            realm=realm,
+            scan_id=scan_id,
+            item_id=item_id,
+            structured_mode=structured_mode,
+            min_threshold=min_threshold,
+            max_threshold=max_threshold,
+            max_age_days=max_age_days,
+        )
+    except ValuationBackendUnavailable as exc:
+        raise StashBackendUnavailable("stash valuations backend unavailable") from exc

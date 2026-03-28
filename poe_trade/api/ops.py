@@ -13,11 +13,17 @@ from poe_trade.config import constants
 from poe_trade.config.settings import Settings
 from poe_trade.db import ClickHouseClient
 from poe_trade.db.clickhouse import ClickHouseClientError
-from poe_trade.ml import workflows as ml_workflows
 from poe_trade.strategy.alerts import ack_alert, list_alerts
 
 from .ml import fetch_predict_one, fetch_status
 from .service_control import ServiceSnapshot
+from .valuation import (
+    ValuationBackendUnavailable,
+    price_check_comparables,
+    pricing_outlier_row_payload,
+    pricing_outlier_weekly_payload,
+    safe_json_rows,
+)
 
 
 class OpsBackendUnavailable(RuntimeError):
@@ -64,6 +70,7 @@ def contract_payload(
             "ml_predict_one": "/api/v1/ml/leagues/{league}/predict-one",
             "stash_tabs": "/api/v1/stash/tabs?league={league}&realm={realm}",
             "stash_status": "/api/v1/stash/status?league={league}&realm={realm}",
+            "stash_scan_valuations": "/api/v1/stash/scan/valuations",
             "auth_login": "/api/v1/auth/login",
             "auth_callback": "/api/v1/auth/callback",
             "auth_session": "/api/v1/auth/session",
@@ -1334,27 +1341,13 @@ def analytics_pricing_outliers(
             "sort": sort,
             "order": order,
             "minTotal": minimum_support,
+            "weeklyAggregation": {
+                "level": "item_name",
+                "scope": "deduped_filtered_rows",
+            },
         },
-        "rows": [
-            {
-                "itemName": str(row.get("item_name") or ""),
-                "affixAnalyzed": str(row.get("affix_analyzed") or ""),
-                "p10": _coerce_float(row.get("p10")) or 0.0,
-                "median": _coerce_float(row.get("median")) or 0.0,
-                "p90": _coerce_float(row.get("p90")) or 0.0,
-                "itemsPerWeek": _coerce_float(row.get("items_per_week")) or 0.0,
-                "itemsTotal": _as_int(row.get("items_total")),
-                "analysisLevel": str(row.get("analysis_level") or "item"),
-            }
-            for row in summary_rows
-        ],
-        "weekly": [
-            {
-                "weekStart": _as_iso_utc(row.get("week_start")),
-                "tooCheapCount": _as_int(row.get("too_cheap_count")),
-            }
-            for row in weekly_rows
-        ],
+        "rows": [pricing_outlier_row_payload(row) for row in summary_rows],
+        "weekly": [pricing_outlier_weekly_payload(row) for row in weekly_rows],
     }
 
 
@@ -1365,61 +1358,16 @@ def _price_check_comparables(
     item_text: str,
 ) -> list[dict[str, Any]]:
     try:
-        parsed = ml_workflows._parse_clipboard_item(item_text)
-    except ValueError:
-        return []
-    base_type = str(parsed.get("base_type") or "").strip()
-    if not base_type:
-        return []
-    clauses = [
-        f"league = {_quote_sql_string(league)}",
-        "target_price_chaos IS NOT NULL",
-        "target_price_chaos > 0",
-        f"base_type = {_quote_sql_string(base_type)}",
-    ]
-    rarity = str(parsed.get("rarity") or "").strip()
-    if rarity:
-        clauses.append(f"ifNull(rarity, '') = {_quote_sql_string(rarity)}")
-    item_name = str(parsed.get("item_name") or "").strip()
-    if rarity == "Unique" and item_name:
-        clauses.append(f"nullIf(item_name, '') = {_quote_sql_string(item_name)}")
-    label_expr = _search_item_label_sql()
-    rows = _safe_json_rows(
-        client,
-        " ".join(
-            [
-                "SELECT",
-                f"{label_expr} AS item_name,",
-                "league,",
-                "target_price_chaos AS listed_price,",
-                "as_of_ts AS added_on",
-                "FROM poe_trade.ml_v3_training_examples",
-                "WHERE " + " AND ".join(clauses),
-                "ORDER BY as_of_ts DESC",
-                "LIMIT 8 FORMAT JSONEachRow",
-            ]
-        ),
-    )
-    return [
-        {
-            "name": str(row.get("item_name") or base_type),
-            "price": _coerce_float(row.get("listed_price")) or 0.0,
-            "currency": "chaos",
-            "league": str(row.get("league") or league),
-            "addedOn": _as_iso_utc(row.get("added_on")),
-        }
-        for row in rows
-    ]
+        return price_check_comparables(client, league=league, item_text=item_text)
+    except ValuationBackendUnavailable as exc:
+        raise OpsBackendUnavailable("analytics backend unavailable") from exc
 
 
 def _safe_json_rows(client: ClickHouseClient, query: str) -> list[dict[str, Any]]:
     try:
-        payload = client.execute(query).strip()
-    except ClickHouseClientError as exc:
+        return safe_json_rows(client, query)
+    except ValuationBackendUnavailable as exc:
         raise OpsBackendUnavailable("analytics backend unavailable") from exc
-    if not payload:
-        return []
-    return [json.loads(line) for line in payload.splitlines() if line.strip()]
 
 
 def _safe_json_rows_with_legacy_fallback(
