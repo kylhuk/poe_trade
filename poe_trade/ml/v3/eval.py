@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any
+from importlib import import_module
+from typing import Any, cast
 
 from poe_trade.db import ClickHouseClient
 
@@ -93,6 +94,22 @@ def _derive_stable_model_version(rows: list[dict[str, Any]], fallback: str) -> s
         weighted_versions.items(),
         key=lambda item: (item[1], item[0]),
     )[0]
+
+
+def _serving_path_parity_ok(
+    rows: list[dict[str, Any]], *, stable_model_version: str
+) -> bool:
+    if not rows:
+        return False
+    if not stable_model_version or stable_model_version == "ml_v3_unknown_engine":
+        return False
+    observed_versions: set[str] = set()
+    for row in rows:
+        raw_engine_version = str(row.get("engine_version") or "").strip()
+        if not raw_engine_version or raw_engine_version == "ml_v3_unknown_engine":
+            return False
+        observed_versions.add(raw_engine_version)
+    return observed_versions == {stable_model_version}
 
 
 def _consecutive_pass_windows(
@@ -201,6 +218,7 @@ def promotion_gate(
     incumbent_abstain_rate: float | None = None,
     consecutive_pass_windows: int | None = None,
     worst_slice_mdape: float | None,
+    serving_path_parity_ok: bool | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     abstain_absolute_cap = 0.05
@@ -239,6 +257,9 @@ def promotion_gate(
         reasons.append("consecutive_windows_required")
     elif consecutive_pass_windows < 3:
         reasons.append("insufficient_consecutive_windows")
+
+    if serving_path_parity_ok is False:
+        reasons.append("serving_path_parity")
 
     if global_fair_value_mdape is not None and incumbent_fair_value_mdape is not None:
         if incumbent_fair_value_mdape <= 0:
@@ -352,7 +373,7 @@ def evaluate_run(
     *,
     league: str,
     run_id: str,
-    split_kind: str = "rolling",
+    split_kind: str = "forward",
 ) -> dict[str, Any]:
     strategy_expr = (
         "ifNull(nullIf(nullIf(pred.strategy_family, ''), '__legacy_missing_strategy_family__'), "
@@ -543,6 +564,9 @@ def evaluate_run(
         incumbent_abstain_rate=incumbent_baseline["incumbent_abstain_rate"],
         consecutive_pass_windows=consecutive_windows,
         worst_slice_mdape=worst_slice,
+        serving_path_parity_ok=_serving_path_parity_ok(
+            rows, stable_model_version=stable_model_version
+        ),
     )
 
     eval_row = {
@@ -557,7 +581,9 @@ def evaluate_run(
         "global_confidence_calibration_error": global_conf_calibration,
         "worst_slice_mdape": worst_slice,
         "worst_slice_route": worst_slice_route,
-        "serving_path_parity_ok": 1,
+        "serving_path_parity_ok": 1
+        if _serving_path_parity_ok(rows, stable_model_version=stable_model_version)
+        else 0,
         "gate_passed": 1 if gate["passed"] else 0,
         "gate_reason": gate["reason"],
         "recorded_at": now,
@@ -576,3 +602,17 @@ def evaluate_run(
             "global_confidence_calibration_error": global_conf_calibration,
         },
     }
+
+
+def format_pricing_benchmark_report(report: dict[str, Any]) -> str:
+    benchmark_module = cast(Any, import_module("poe_trade.ml.v3.benchmark"))
+    _format_benchmark_report = benchmark_module.format_benchmark_report
+
+    return _format_benchmark_report(report)
+
+
+def rank_pricing_benchmark_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
+    ranking = report.get("ranking")
+    if isinstance(ranking, list):
+        return [row for row in ranking if isinstance(row, dict)]
+    return []

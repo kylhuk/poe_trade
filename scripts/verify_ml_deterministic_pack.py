@@ -7,77 +7,111 @@ import json
 from pathlib import Path
 from typing import cast
 
+import joblib
+
 
 DEFAULT_REQUIRED_ARTIFACTS = [
-    "task-1-baseline.json",
-    "task-10-promotion-gates.json",
-    "task-11-rollout-cutover.json",
-    "task-11-rollout-rollback.json",
+    "ml-pricing-benchmark-update.txt",
+    "ml-pricing-benchmark-update.json",
+    "ml-pricing-benchmark-update.txt.joblib",
 ]
 
 REQUIRED_JSON_KEYS: dict[str, tuple[str, ...]] = {
-    "task-1-baseline.json": ("latency_ms", "p50_ms", "p95_ms", "corpus_hash"),
-    "task-10-promotion-gates.json": (
-        "status",
-        "gate_results",
-        "summary",
-        "all_passed",
-    ),
-    "task-11-rollout-cutover.json": (
-        "status",
-        "rollout",
-        "effectiveServingModelVersion",
-        "lastAction",
-    ),
-    "task-11-rollout-rollback.json": (
-        "status",
-        "rollout",
-        "effectiveServingModelVersion",
-        "lastAction",
+    "ml-pricing-benchmark-update.json": (
+        "contract",
+        "split",
+        "candidate_results",
+        "ranking",
+        "best_candidate",
     ),
 }
 
+EXPECTED_CANDIDATES = (
+    "elasticnet_log",
+    "huber_log",
+    "catboost_log",
+    "lightgbm_log",
+    "xgboost_log",
+    "quantile_regressor_log",
+    "censored_quantile_log",
+    "censored_forest_log",
+    "knn_log",
+    "stacked_ensemble_log",
+)
 
-def _validate_artifact_semantics(
-    rel_path: str, payload: dict[str, object]
-) -> list[str]:
+REPORT_MARKER = "# ML Pricing Benchmark Report"
+REPORT_TABLE_HEADER = "| Candidate | Val MDAPE | Test MDAPE | Val WAPE | Test WAPE |"
+
+
+def _validate_report_payload(payload: dict[str, object], *, prefix: str) -> list[str]:
     errors: list[str] = []
-    if rel_path == "task-10-promotion-gates.json":
-        summary = payload.get("summary")
-        if not isinstance(summary, dict):
-            return ["task-10-promotion-gates.json:summary_not_object"]
-        mdape_improvement = summary.get("mdape_relative_improvement")
-        p95_improvement = summary.get("p95_latency_improvement_percent")
-        cohort_degradation_count = summary.get("protected_cohort_degradation_count")
-        if not isinstance(mdape_improvement, (int, float)):
-            errors.append(
-                "task-10-promotion-gates.json:mdape_relative_improvement_not_numeric"
-            )
-        elif float(mdape_improvement) < 0.2:
-            errors.append(
-                "task-10-promotion-gates.json:mdape_relative_improvement_below_threshold"
-            )
-        if not isinstance(p95_improvement, (int, float)):
-            errors.append(
-                "task-10-promotion-gates.json:p95_latency_improvement_not_numeric"
-            )
-        elif float(p95_improvement) < 50.0:
-            errors.append(
-                "task-10-promotion-gates.json:p95_latency_improvement_below_threshold"
-            )
-        if not isinstance(cohort_degradation_count, int):
-            errors.append(
-                "task-10-promotion-gates.json:protected_cohort_degradation_count_not_int"
-            )
-        elif cohort_degradation_count != 0:
-            errors.append(
-                "task-10-promotion-gates.json:protected_cohort_degradation_not_zero"
-            )
-        if payload.get("all_passed") is not True:
-            errors.append("task-10-promotion-gates.json:all_passed_not_true")
-        if summary.get("verdict") != "promote":
-            errors.append("task-10-promotion-gates.json:verdict_not_promote")
+    ranking = payload.get("ranking")
+    if not isinstance(ranking, list):
+        return [f"{prefix}:ranking_not_list"]
+    if len(ranking) != 10:
+        errors.append(f"{prefix}:expected_10_candidates_got_{len(ranking)}")
+    ranking_candidates: list[str] = []
+    for row in ranking:
+        if not isinstance(row, dict):
+            errors.append(f"{prefix}:ranking_row_not_object")
+            continue
+        ranking_candidates.append(str(row.get("candidate") or ""))
+    if len(set(ranking_candidates)) != len(ranking_candidates):
+        errors.append(f"{prefix}:ranking_has_duplicates")
+    if set(ranking_candidates) != set(EXPECTED_CANDIDATES):
+        errors.append(f"{prefix}:candidate_set_mismatch")
+
+    candidate_results = payload.get("candidate_results")
+    if not isinstance(candidate_results, list) or len(candidate_results) != 10:
+        errors.append(f"{prefix}:candidate_results_not_10")
+
+    best_candidate = payload.get("best_candidate")
+    if not isinstance(best_candidate, dict):
+        errors.append(f"{prefix}:best_candidate_not_object")
+    else:
+        best_name = str(best_candidate.get("candidate") or "")
+        if best_name not in EXPECTED_CANDIDATES:
+            errors.append(f"{prefix}:best_candidate_unknown")
+        elif ranking_candidates and ranking_candidates[0] != best_name:
+            errors.append(f"{prefix}:best_candidate_not_ranking_head")
+
     return errors
+
+
+def _validate_report_semantics(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return [f"{path.name}:unreadable"]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or lines[0] != REPORT_MARKER:
+        return [f"{path.name}:missing_title"]
+    if REPORT_TABLE_HEADER not in lines:
+        return [f"{path.name}:missing_table_header"]
+    row_lines = [
+        line for line in lines if line.startswith("| ") and line.endswith(" |")
+    ]
+    candidate_rows = [
+        line
+        for line in row_lines
+        if line not in {REPORT_TABLE_HEADER, "|---|---:|---:|---:|---:|"}
+    ]
+    if len(candidate_rows) != 10:
+        return [f"{path.name}:expected_10_candidates_got_{len(candidate_rows)}"]
+    candidate_names = [row.split("|")[1].strip() for row in candidate_rows]
+    if set(candidate_names) != set(EXPECTED_CANDIDATES):
+        return [f"{path.name}:candidate_set_mismatch"]
+    best_lines = [line for line in lines if line.startswith("Best candidate:")]
+    if not best_lines:
+        return [f"{path.name}:missing_best_candidate"]
+    top_lines = [line for line in lines if line.startswith("Top single-model:")]
+    if not top_lines:
+        return [f"{path.name}:missing_top_single_model"]
+    if "stacked_ensemble_log" not in best_lines[0]:
+        return [f"{path.name}:best_candidate_not_stacked"]
+    if "elasticnet_log" not in top_lines[0]:
+        return [f"{path.name}:top_single_not_elasticnet"]
+    return []
 
 
 def _sha256(path: Path) -> str:
@@ -102,7 +136,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _ = parser.add_argument(
         "--output-log",
-        default=".sisyphus/evidence/task-12-deterministic-pack.log",
+        default=".sisyphus/evidence/ml-pricing-benchmark-update-deterministic-pack.txt",
         help="Path to write the deterministic evidence pack log.",
     )
     _ = parser.add_argument(
@@ -148,7 +182,23 @@ def main() -> int:
             if missing_keys:
                 invalid.append(f"{rel_path}:missing_keys({','.join(missing_keys)})")
                 continue
-            invalid.extend(_validate_artifact_semantics(rel_path, parsed))
+            invalid.extend(_validate_report_payload(parsed, prefix=rel_path))
+            if invalid and any(entry.startswith(f"{rel_path}:") for entry in invalid):
+                continue
+        elif rel_path.endswith(".txt"):
+            invalid.extend(_validate_report_semantics(artifact_path))
+            if invalid and any(entry.startswith(f"{rel_path}:") for entry in invalid):
+                continue
+        elif rel_path.endswith(".txt.joblib"):
+            try:
+                loaded = joblib.load(artifact_path)
+            except Exception:
+                invalid.append(f"{rel_path}:unreadable")
+                continue
+            if not isinstance(loaded, dict):
+                invalid.append(f"{rel_path}:not_object")
+                continue
+            invalid.extend(_validate_report_payload(loaded, prefix=rel_path))
             if invalid and any(entry.startswith(f"{rel_path}:") for entry in invalid):
                 continue
         present_entries.append(

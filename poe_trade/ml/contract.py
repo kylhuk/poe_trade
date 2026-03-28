@@ -27,6 +27,18 @@ class PromotionContract:
 
 
 @dataclass(frozen=True)
+class PricingBenchmarkContract:
+    name: str
+    confirmation_horizon_hours: int
+    exchange_routes: tuple[str, ...]
+    non_exchange_routes: tuple[str, ...]
+    label_source: str
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class EvaluationContract:
     name: str
     split_kind: str
@@ -63,8 +75,8 @@ TARGET_CONTRACT = TargetContract(
 
 MIRAGE_EVAL_CONTRACT = EvaluationContract(
     name="mirage_eval_contract_v1",
-    split_kind="rolling",
-    supported_splits=("rolling",),
+    split_kind="forward",
+    supported_splits=("forward", "rolling"),
     primary_metric="mdape",
     verdict_enums=("promote", "hold"),
     loop_status_enums=(
@@ -80,4 +92,19 @@ MIRAGE_EVAL_CONTRACT = EvaluationContract(
         protected_cohort_max_regression=0.02,
         hotspot_top_n=12,
     ),
+)
+
+
+PRICING_BENCHMARK_CONTRACT = PricingBenchmarkContract(
+    name="non_exchange_disappearance_benchmark_v1",
+    confirmation_horizon_hours=48,
+    exchange_routes=("fungible_reference",),
+    non_exchange_routes=(
+        "cluster_jewel_retrieval",
+        "structured_boosted",
+        "structured_boosted_other",
+        "sparse_retrieval",
+        "fallback_abstain",
+    ),
+    label_source="benchmark_disappearance_proxy_h48_v1",
 )

@@ -45,3 +45,12 @@ GROUP BY
     market_pair
 ORDER BY latest_hour DESC
 LIMIT 20;
+
+SELECT
+    stash_id,
+    item_id,
+    sold_at,
+    price
+FROM poe_trade.v_account_stash_sold_items
+ORDER BY sold_at DESC
+LIMIT 20;

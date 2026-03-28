@@ -7,25 +7,26 @@ from ..db import ClickHouseClient
 
 
 def daily_report(client: ClickHouseClient, *, league: str) -> dict[str, object]:
+    escaped_league = league.replace("'", "''")
+    league_literal = f"'{escaped_league}'"
     query = (
         "SELECT "
-        f"'{league}' AS league, "
-        "(SELECT count() FROM poe_trade.scanner_recommendations WHERE league = {league:String}) AS recommendations, "
-        "(SELECT count() FROM poe_trade.scanner_alert_log WHERE league = {league:String}) AS alerts, "
-        "(SELECT count() FROM poe_trade.journal_events WHERE league = {league:String}) AS journal_events, "
-        "(SELECT count() FROM poe_trade.journal_positions WHERE league = {league:String}) AS journal_positions, "
-        "(SELECT count() FROM poe_trade.research_backtest_summary WHERE league = {league:String}) AS backtest_summary_rows, "
-        "(SELECT count() FROM poe_trade.research_backtest_detail WHERE league = {league:String}) AS backtest_detail_rows, "
-        "(SELECT count() FROM poe_trade.gold_currency_ref_hour WHERE league = {league:String}) AS gold_currency_ref_hour_rows, "
-        "(SELECT count() FROM poe_trade.gold_listing_ref_hour WHERE ifNull(league, '') = {league:String}) AS gold_listing_ref_hour_rows, "
-        "(SELECT count() FROM poe_trade.gold_liquidity_ref_hour WHERE ifNull(league, '') = {league:String}) AS gold_liquidity_ref_hour_rows, "
-        "(SELECT count() FROM poe_trade.gold_bulk_premium_hour WHERE ifNull(league, '') = {league:String}) AS gold_bulk_premium_hour_rows, "
-        "(SELECT count() FROM poe_trade.gold_set_ref_hour WHERE ifNull(league, '') = {league:String}) AS gold_set_ref_hour_rows, "
-        "(SELECT coalesce(sum(realized_pnl_chaos), 0.0) FROM poe_trade.journal_positions WHERE league = {league:String}) AS realized_pnl_chaos "
+        f"{league_literal} AS league, "
+        f"(SELECT count() FROM poe_trade.scanner_recommendations WHERE league = {league_literal}) AS recommendations, "
+        f"(SELECT count() FROM poe_trade.scanner_alert_log WHERE league = {league_literal}) AS alerts, "
+        f"(SELECT count() FROM poe_trade.journal_events WHERE league = {league_literal}) AS journal_events, "
+        f"(SELECT count() FROM poe_trade.journal_positions WHERE league = {league_literal}) AS journal_positions, "
+        f"(SELECT count() FROM poe_trade.research_backtest_summary WHERE league = {league_literal}) AS backtest_summary_rows, "
+        f"(SELECT count() FROM poe_trade.research_backtest_detail WHERE league = {league_literal}) AS backtest_detail_rows, "
+        f"(SELECT count() FROM poe_trade.gold_currency_ref_hour WHERE league = {league_literal}) AS gold_currency_ref_hour_rows, "
+        f"(SELECT count() FROM poe_trade.gold_listing_ref_hour WHERE ifNull(league, '') = {league_literal}) AS gold_listing_ref_hour_rows, "
+        f"(SELECT count() FROM poe_trade.gold_liquidity_ref_hour WHERE ifNull(league, '') = {league_literal}) AS gold_liquidity_ref_hour_rows, "
+        f"(SELECT count() FROM poe_trade.gold_bulk_premium_hour WHERE ifNull(league, '') = {league_literal}) AS gold_bulk_premium_hour_rows, "
+        f"(SELECT count() FROM poe_trade.gold_set_ref_hour WHERE ifNull(league, '') = {league_literal}) AS gold_set_ref_hour_rows, "
+        f"(SELECT coalesce(sum(realized_pnl_chaos), 0.0) FROM poe_trade.journal_positions WHERE league = {league_literal}) AS realized_pnl_chaos "
         "FORMAT JSONEachRow"
     )
-    rendered = query.replace("{league:String}", f"'{league}'")
-    payload = client.execute(rendered).strip()
+    payload = client.execute(query).strip()
     if not payload:
         return {
             "league": league,

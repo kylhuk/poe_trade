@@ -16,7 +16,7 @@ from . import routes
 from . import sql
 from . import hybrid_search
 from .hybrid_anchor import build_anchor
-from .train import apply_residual_cap
+from .train import apply_residual_cap, _prediction_space_to_price
 from .sql import ROLLOUT_STATE_TABLE, TRAINING_TABLE
 
 
@@ -101,7 +101,7 @@ def _confidence_from_support_and_interval(
     support_score = min(max(support, 0), 4000) / 4000.0
     width_ratio = (max(p90, p10) - min(p90, p10)) / max(p50, 0.1)
     tightness_score = max(0.0, 1.0 - min(width_ratio, 1.5) / 1.5)
-    confidence = 0.15 + (0.5 * support_score) + (0.35 * tightness_score)
+    confidence = 0.05 + (0.25 * support_score) + (0.2 * tightness_score)
     return max(0.05, min(0.99, confidence))
 
 
@@ -110,6 +110,30 @@ def _safe_multiplier(raw: Any) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return 0.9
+
+
+def _latest_fx_rate(client: ClickHouseClient, *, league: str) -> float:
+    query = " ".join(
+        [
+            "SELECT chaos_equivalent AS rate",
+            "FROM poe_trade.ml_fx_hour_latest_v2",
+            f"WHERE league = {_quote(league)}",
+            "AND currency = 'divine'",
+            "ORDER BY hour_ts DESC",
+            "LIMIT 1",
+            "FORMAT JSONEachRow",
+        ]
+    )
+    try:
+        rows = _query_rows(client, query)
+    except Exception:
+        return 1.0
+    if not rows:
+        return 1.0
+    try:
+        return max(0.1, float(rows[0].get("rate") or 1.0))
+    except (TypeError, ValueError):
+        return 1.0
 
 
 def _coerce_mod_payload(raw: Any) -> dict[str, float]:
@@ -348,10 +372,10 @@ def _select_serving_bundle(
         available_bundle_keys=available_bundle_keys,
     )
     if selected_key is None:
-        return None
+        return bundle
     selected_bundle = cohort_bundles.get(selected_key)
     if not isinstance(selected_bundle, dict):
-        return None
+        return bundle
     return selected_bundle
 
 
@@ -374,8 +398,9 @@ def predict_one_v3(
         cohort_identity.get("parent_cohort_key")
         or f"{strategy_family}|__legacy_missing_material_state_signature__"
     )
-    features = build_feature_row(parsed)
-    parsed = {**parsed, **features}
+    feature_input = {**parsed, **cohort_identity}
+    features = build_feature_row(feature_input)
+    parsed = {**feature_input, **features}
     base_type = str(parsed.get("base_type") or "")
     rarity = str(parsed.get("rarity") or "")
 
@@ -423,26 +448,51 @@ def predict_one_v3(
 
     if bundle is not None:
         try:
+            metadata = bundle.get("metadata") or {}
+            prediction_space = str(metadata.get("prediction_space") or "price")
+            price_unit = str(metadata.get("price_unit") or "chaos")
+            features = dict(features)
+            features["support_count_recent"] = int(metadata.get("row_count") or 0)
             vectorizer = bundle["vectorizer"]
             X = vectorizer.transform([features])
             models = bundle["models"]
-            p10 = float(models["p10"].predict(X)[0])
-            p50 = float(models["p50"].predict(X)[0])
-            p90 = float(models["p90"].predict(X)[0])
+            raw_p10 = float(models["p10"].predict(X)[0])
+            raw_p50 = float(models["p50"].predict(X)[0])
+            raw_p90 = float(models["p90"].predict(X)[0])
+            p10 = _prediction_space_to_price(raw_p10, prediction_space=prediction_space)
+            p50 = _prediction_space_to_price(raw_p50, prediction_space=prediction_space)
+            p90 = _prediction_space_to_price(raw_p90, prediction_space=prediction_space)
             p10 = max(0.1, p10)
             p50 = max(p10, p50)
             p90 = max(p50, p90)
+            fx_rate = (
+                _latest_fx_rate(client, league=league)
+                if price_unit == "divine"
+                else 1.0
+            )
+            if price_unit == "divine":
+                p10 *= fx_rate
+                p50 *= fx_rate
+                p90 *= fx_rate
             sale_model = models.get("sale_probability")
             sale_predict_proba = getattr(sale_model, "predict_proba", None)
-            if not callable(sale_predict_proba):
-                sale_prob = 0.5
-            else:
+            sale_predict = getattr(sale_model, "predict", None)
+            if callable(sale_predict_proba):
                 try:
                     sale_result: Any = sale_predict_proba(X)
                     sale_prob = float(sale_result[0][1])
                 except Exception:
                     sale_prob = 0.5
-            support = int((bundle.get("metadata") or {}).get("row_count") or 0)
+            elif callable(sale_predict):
+                try:
+                    sale_result = sale_predict(X)
+                    sale_prob = float(sale_result[0])
+                except Exception:
+                    sale_prob = 0.5
+            else:
+                sale_prob = 0.5
+            sale_prob = max(0.0, min(1.0, sale_prob))
+            support = int(features.get("support_count_recent") or 0)
             confidence = _confidence_from_support_and_interval(
                 support=support,
                 p10=p10,
@@ -459,28 +509,19 @@ def predict_one_v3(
             else:
                 try:
                     fast_sale_result: Any = fast_sale_predict(X)
-                    fast_sale = max(0.1, float(fast_sale_result[0]))
+                    fast_sale = _prediction_space_to_price(
+                        float(fast_sale_result[0]), prediction_space=prediction_space
+                    )
                 except Exception:
                     fast_sale = max(0.1, p50 * multiplier)
+            if price_unit == "divine":
+                fast_sale *= fx_rate
+            fast_sale = max(0.1, fast_sale * 0.95)
             source = "v3_model"
 
             if search.stage > 0 and anchor.anchor_price is not None:
-                fair_residual_model = bundle.get("fair_value_residual_model")
-                fast_residual_model = bundle.get("fast_sale_residual_model")
-                fair_residual_predict = getattr(fair_residual_model, "predict", None)
-                fast_residual_predict = getattr(fast_residual_model, "predict", None)
-                fair_residual = 0.0
-                fast_residual = 0.0
-                if callable(fair_residual_predict):
-                    try:
-                        fair_residual = float(fair_residual_predict(X)[0])
-                    except Exception:
-                        fair_residual = 0.0
-                if callable(fast_residual_predict):
-                    try:
-                        fast_residual = float(fast_residual_predict(X)[0])
-                    except Exception:
-                        fast_residual = 0.0
+                fair_residual = p50 - float(anchor.anchor_price)
+                fast_residual = fast_sale - float(anchor.anchor_price)
                 capped = apply_residual_cap(
                     anchor_price=anchor.anchor_price,
                     confidence=confidence,
@@ -508,7 +549,7 @@ def predict_one_v3(
         confidence = 0.25 if support < 20 else 0.45
         sale_prob = 0.35 if support < 20 else 0.55
         source = "v3_median_fallback"
-        fast_sale = max(0.1, p50 * 0.9)
+        fast_sale = max(0.1, p50 * 0.9 * 0.95)
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     prediction_id = str(uuid.uuid4())

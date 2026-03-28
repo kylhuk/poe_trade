@@ -12,6 +12,7 @@ from poe_trade.config import settings
 from poe_trade.db import ClickHouseClient
 
 from . import workflows
+from .v3 import benchmark as v3_benchmark
 from .v3 import backfill as v3_backfill
 from .v3 import eval as v3_eval
 from .v3 import serve as v3_serve
@@ -42,6 +43,7 @@ class _Args(argparse.Namespace):
     max_rows: int = 60000
     max_rows_per_route: int = 60000
     route: str = ""
+    input: str = ""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -102,6 +104,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     v3_eval_parser = subparsers.add_parser("v3-evaluate")
     _ = v3_eval_parser.add_argument("--league", required=True)
     _ = v3_eval_parser.add_argument("--run-id", required=True)
+
+    v3_benchmark_parser = subparsers.add_parser("v3-benchmark")
+    _ = v3_benchmark_parser.add_argument("--input", required=True)
+    _ = v3_benchmark_parser.add_argument("--output", required=True)
 
     v3_predict_one_parser = subparsers.add_parser("v3-predict-one")
     _ = v3_predict_one_parser.add_argument("--league", required=True)
@@ -207,6 +213,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 league=league,
                 run_id=str(args.run_id),
             )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        if command == "v3-benchmark":
+            input_path = Path(str(args.input))
+            payload_text = input_path.read_text(encoding="utf-8")
+            if payload_text.lstrip().startswith("["):
+                rows = json.loads(payload_text)
+            else:
+                rows = [
+                    json.loads(line)
+                    for line in payload_text.splitlines()
+                    if line.strip()
+                ]
+            result = v3_benchmark.save_benchmark_artifacts(rows, str(args.output))
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
         if command == "v3-predict-one":

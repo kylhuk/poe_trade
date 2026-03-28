@@ -24,7 +24,11 @@ from poe_trade.db.migrations import MigrationRunner
 from poe_trade.ingestion.poeninja_snapshot import PoeNinjaClient
 
 from .audit import VALIDATED_LEAGUES
-from .contract import MIRAGE_EVAL_CONTRACT, TARGET_CONTRACT
+from .contract import (
+    MIRAGE_EVAL_CONTRACT,
+    PRICING_BENCHMARK_CONTRACT,
+    TARGET_CONTRACT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1058,6 +1062,49 @@ def build_listing_events_and_labels(
             f"SELECT count() AS value FROM poe_trade.ml_execution_labels_v1 WHERE league = {_quote(league)}",
         ),
     }
+
+
+def audit_ring_parser_invariants(
+    client: ClickHouseClient,
+    *,
+    league: str,
+    source_table: str = "poe_trade.v_ml_v3_mirage_iron_ring_item_features_v1",
+) -> dict[str, int]:
+    _ensure_supported_league(league)
+    from .v3.features import ring_parser_invariant_counts
+
+    rows = _query_rows(
+        client,
+        " ".join(
+            [
+                "SELECT *",
+                f"FROM {source_table}",
+                f"WHERE ifNull(league, '') = {_quote(league)}",
+                "AND lowerUTF8(ifNull(category, '')) = 'ring'",
+                "FORMAT JSONEachRow",
+            ]
+        ),
+    )
+    totals = {
+        "synthesised_and_fractured": 0,
+        "synthesised_and_influenced": 0,
+        "too_many_prefixes": 0,
+        "too_many_suffixes": 0,
+        "non_ring_mod_family": 0,
+        "non_influenced_ring_with_influence_family": 0,
+    }
+    for row in rows:
+        counts = ring_parser_invariant_counts(row)
+        for key, value in counts.items():
+            totals[key] += int(value)
+
+    violations = {key: value for key, value in totals.items() if value > 0}
+    if violations:
+        details = ", ".join(
+            f"{key}={value}" for key, value in sorted(violations.items())
+        )
+        raise ValueError(f"ring parser invariant violation(s): {details}")
+    return totals
 
 
 def build_dataset(
@@ -3792,7 +3839,7 @@ def evaluate_route(
                 "family": family,
                 "variant": "route_main",
                 "league": league,
-                "split_kind": "rolling",
+                "split_kind": "forward",
                 "sample_count": sample_count,
                 "mdape": _to_float(family_metrics.get("mdape"), 1.0),
                 "wape": _to_float(family_metrics.get("wape"), 1.0),
@@ -5000,7 +5047,7 @@ def train_loop(
             client,
             league=league,
             dataset_table=dataset_table,
-            split_kind="rolling",
+            split_kind="forward",
             fallback_seed=run_id,
         )
         _write_train_run(
@@ -5049,7 +5096,7 @@ def train_loop(
             league=league,
             dataset_table=dataset_table,
             model_dir=model_dir,
-            split="rolling",
+            split="forward",
             output_dir=model_dir,
             run_manifest=run_manifest,
         )
@@ -5433,25 +5480,40 @@ def predict_one(
 ) -> dict[str, Any]:
     _ensure_supported_league(league)
     parsed = _parse_clipboard_item(clipboard_text)
-    support = _support_count_recent(
-        client,
-        league=league,
-        category=parsed["category"],
-        base_type=parsed["base_type"],
-    )
-    parsed["support_count_recent"] = support
-    route_bundle = _route_for_item(parsed)
-    route = route_bundle["route"]
     profile_lookup_ts = _now_ts()
     profile = _serving_profile_lookup(
         client,
         league=league,
         category=parsed["category"],
         base_type=parsed["base_type"],
-        route=route,
-        parent_route=str(route_bundle.get("fallback_parent_route") or ""),
+        route="",
+        parent_route="",
         as_of_ts=profile_lookup_ts,
     )
+    if profile["hit"]:
+        support = max(
+            _to_int(parsed.get("support_count_recent"), 0),
+            _to_int(profile.get("support_count_recent"), 0),
+        )
+        base_price = max(0.1, _to_float(profile.get("reference_price"), 1.0))
+        reference_fallback_reason = str(profile.get("fallback_reason") or "")
+    else:
+        support = _support_count_recent(
+            client,
+            league=league,
+            category=parsed["category"],
+            base_type=parsed["base_type"],
+        )
+        base_price = _reference_price(
+            client,
+            league=league,
+            category=parsed["category"],
+            base_type=parsed["base_type"],
+        )
+        reference_fallback_reason = ""
+    parsed["support_count_recent"] = support
+    route_bundle = _route_for_item(parsed)
+    route = route_bundle["route"]
     if profile["hit"]:
         support = max(
             support,
@@ -5468,14 +5530,6 @@ def predict_one(
             parsed["category"],
             parsed["base_type"],
         )
-        base_price = _reference_price(
-            client,
-            league=league,
-            category=parsed["category"],
-            base_type=parsed["base_type"],
-        )
-        reference_fallback_reason = ""
-    parsed["support_count_recent"] = support
 
     incumbent_model_version = (
         ""
@@ -7118,11 +7172,9 @@ def _route_artifact_promotable(
         route=route,
         league=league,
     )
-    artifact = (
-        validation.get("artifact")
-        if isinstance(validation.get("artifact"), dict)
-        else {}
-    )
+    artifact = validation.get("artifact")
+    if not isinstance(artifact, dict):
+        artifact = {}
     train_row_count = _to_int(artifact.get("train_row_count"), 0)
     if not bool(validation.get("valid")):
         return {
@@ -8246,7 +8298,8 @@ def _reference_snapshot_policy(*, route: str, category: object) -> dict[str, int
             "fallback_window_hours": 48,
             "min_support": 40,
         }
-    if str(route or "").strip().lower() == "fungible_reference":
+    normalized_route = str(route or "").strip().lower()
+    if normalized_route in PRICING_BENCHMARK_CONTRACT.exchange_routes:
         return {
             "target_window_hours": 6,
             "fallback_window_hours": 24,

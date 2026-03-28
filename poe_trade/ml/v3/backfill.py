@@ -80,6 +80,7 @@ def _clear_replay_day_slice(
 ) -> None:
     league_sql = _quote(league)
     day_sql = _quote(day.isoformat())
+    client.execute(sql.create_listing_episodes_table_query())
     client.execute(
         " ".join(
             [
@@ -107,6 +108,15 @@ def _clear_replay_day_slice(
             ]
         )
     )
+    client.execute(
+        " ".join(
+            [
+                "DELETE FROM poe_trade.ml_v3_listing_episodes",
+                f"WHERE league = {league_sql}",
+                f"AND toDate(as_of_ts) = toDate({day_sql})",
+            ]
+        )
+    )
 
 
 def replay_day(
@@ -118,6 +128,7 @@ def replay_day(
 ) -> BackfillDayResult:
     guard_disk_budget(client, max_bytes=max_bytes)
     _clear_replay_day_slice(client, league=league, day=day)
+    client.execute(sql.build_listing_episodes_insert_query(league=league, day=day))
     client.execute(sql.build_events_insert_query(league=league, day=day))
     client.execute(sql.build_disappearance_events_insert_query(league=league, day=day))
     client.execute(sql.build_sale_proxy_labels_insert_query(league=league, day=day))

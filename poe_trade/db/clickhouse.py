@@ -8,8 +8,11 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+import io
 from collections.abc import Mapping
 from dataclasses import dataclass
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,17 @@ class ClickHouseClient:
         except OSError as exc:  # pragma: no cover - network
             logger.error("ClickHouse socket error: %s", exc)
             raise ClickHouseClientError(str(exc), retryable=True) from exc
+
+    def query_df(
+        self, query: str, settings: Mapping[str, str] | None = None
+    ) -> pd.DataFrame:
+        normalized = query.strip().rstrip(";")
+        if " FORMAT " not in normalized.upper():
+            normalized = f"{normalized} FORMAT JSONEachRow"
+        payload = self.execute(normalized, settings=settings).strip()
+        if not payload:
+            return pd.DataFrame()
+        return pd.read_json(io.StringIO(payload), lines=True)
 
     def _build_url(self, params: Mapping[str, str]) -> str:
         cleaned = self.endpoint.rstrip("/")
