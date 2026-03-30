@@ -117,6 +117,7 @@ def test_ops_contract_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert body["primary_league"] == "Mirage"
     assert "/api/v1/ops/services" == body["routes"]["ops_services"]
     assert body["routes"]["stash_scan_start"] == "/api/v1/stash/scan/start"
+    assert body["routes"]["stash_scan_legacy"] == "/api/v1/stash/scan"
     assert body["routes"]["stash_scan_valuations"] == "/api/v1/stash/scan/valuations"
     assert body["visible_service_ids"] == ["market_harvester", "api"]
     assert body["controllable_service_ids"] == ["market_harvester"]
@@ -241,6 +242,43 @@ def test_stash_scan_start_returns_accepted_payload(
     body = json.loads(response.body.decode("utf-8"))
     assert response.status == 202
     assert body["scanId"] == "scan-9"
+    assert body["status"] == "running"
+    assert body["league"] == "Mirage"
+
+
+def test_stash_scan_legacy_alias_returns_accepted_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "poe_trade.api.app.get_session",
+        lambda _settings, *, session_id: _connected_session(session_id),
+    )
+    monkeypatch.setattr(
+        "poe_trade.api.app.start_private_stash_scan",
+        lambda _settings, _client, *, account_name, league, realm: {
+            "scanId": "scan-10",
+            "status": "running",
+            "startedAt": "2026-03-21T12:02:00Z",
+            "accountName": account_name,
+            "league": league,
+            "realm": realm,
+        },
+    )
+    app = ApiApp(
+        _settings_with_stash_enabled(),
+        clickhouse_client=ClickHouseClient(endpoint="http://ch"),
+    )
+
+    response = app.handle(
+        method="POST",
+        raw_path="/api/v1/stash/scan?league=Mirage&realm=pc",
+        headers={**_auth_headers(), "Cookie": "poe_session=test-session"},
+        body_reader=BytesIO(b""),
+    )
+
+    body = json.loads(response.body.decode("utf-8"))
+    assert response.status == 202
+    assert body["scanId"] == "scan-10"
     assert body["status"] == "running"
     assert body["league"] == "Mirage"
 

@@ -521,6 +521,13 @@ paths:
         '401':
           $ref: '#/components/responses/ApiError'
 
+    post:
+      summary: Legacy session bootstrap rejected
+      description: OAuth-only login; POESESSID bootstrap is not supported.
+      responses:
+        '400':
+          $ref: '#/components/responses/ApiError'
+
   /api/v1/auth/logout:
     post:
       summary: Logout
@@ -856,6 +863,10 @@ components:
     StashScanValuationsRequest:
       type: object
       required: [minThreshold, maxThreshold, maxAgeDays]
+      description: One of scanId or stashId is required. itemId is required when structuredMode is false.
+      anyOf:
+        - required: [scanId]
+        - required: [stashId]
       properties:
         scanId:
           type: string
@@ -863,6 +874,7 @@ components:
           type: string
         itemId:
           type: string
+          description: Required when structuredMode is false.
         structuredMode:
           type: boolean
           default: false

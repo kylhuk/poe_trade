@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-30T06:34:40.072803+00:00",
+  "timestamp": "2026-03-30T14:01:44.689185+00:00",
   "league": "Mirage",
   "snapshot_mode": "steady_state_snapshot_only",
   "downstream_derivation_owner": "ml_v3",
@@ -16,5 +16,5 @@
   "previous_rebuild_window_id": "",
   "rebuild_skipped": true,
   "rebuild_skip_reason": "steady_state_snapshot_only",
-  "elapsed_seconds": 0.08
+  "elapsed_seconds": 0.09
 }
