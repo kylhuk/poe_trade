@@ -8,6 +8,7 @@ from poe_trade.stash_scan import (
     content_signature_for_item,
     fetch_active_scan,
     fetch_item_history,
+    fetch_published_tabs,
     fetch_published_scan_id,
     lineage_key_for_item,
     lineage_key_from_previous_scan,
@@ -27,6 +28,22 @@ class _StubClickHouse(ClickHouseClient):
     ) -> str:
         self.queries.append(query)
         return self._payload
+
+
+class _SequentialStubClickHouse(ClickHouseClient):
+    def __init__(self, payloads: list[str]) -> None:
+        super().__init__(endpoint="http://clickhouse")
+        self._payloads = list(payloads)
+        self.queries: list[str] = []
+
+    def execute(  # pyright: ignore[reportImplicitOverride]
+        self, query: str, settings: Mapping[str, str] | None = None
+    ) -> str:
+        self.queries.append(query)
+        del settings
+        if self._payloads:
+            return self._payloads.pop(0)
+        return ""
 
 
 def test_lineage_key_prefers_upstream_item_id() -> None:
@@ -178,3 +195,42 @@ def test_fetch_item_history_returns_header_and_entries() -> None:
     assert result["item"]["itemClass"] == "Helmet"
     assert result["history"][0]["scanId"] == "scan-2"
     assert result["history"][0]["interval"] == {"p10": 39.0, "p90": 51.0}
+
+
+def test_fetch_published_tabs_maps_real_poe_tab_types_to_frontend_types() -> None:
+    client = _SequentialStubClickHouse(
+        payloads=[
+            '{"scan_id":"scan-1"}\n',
+            '{"scan_id":"scan-1","status":"published","started_at":"2026-03-21T10:00:00Z","updated_at":"2026-03-21T10:10:00Z","published_at":"2026-03-21T10:10:00Z","tabs_total":3,"tabs_processed":3,"items_total":3,"items_processed":3,"error_message":""}\n',
+            '{"published_at":"2026-03-21T10:10:00Z"}\n',
+            "\n".join(
+                [
+                    '{"tab_id":"tab-c","tab_index":0,"tab_name":"Currency","tab_type":"CurrencyStash"}',
+                    '{"tab_id":"tab-f","tab_index":1,"tab_name":"Fragments","tab_type":"FragmentStash"}',
+                    '{"tab_id":"tab-q","tab_index":2,"tab_name":"Dump","tab_type":"QuadStash"}',
+                ]
+            )
+            + "\n",
+            "\n".join(
+                [
+                    '{"tab_id":"tab-c","tab_index":0,"lineage_key":"sig:c1","item_id":"c1","item_name":"Chaos Orb","item_class":"Currency","rarity":"normal","x":0,"y":0,"w":1,"h":1,"listed_price":1,"currency":"chaos","predicted_price":1,"confidence":100,"price_p10":1,"price_p90":1,"price_recommendation_eligible":1,"estimate_trust":"normal","estimate_warning":"","fallback_reason":"","icon_url":"https://example.invalid/c.png","priced_at":"2026-03-21T10:10:00Z"}',
+                    '{"tab_id":"tab-f","tab_index":1,"lineage_key":"sig:f1","item_id":"f1","item_name":"Mortal Grief","item_class":"Fragment","rarity":"normal","x":7,"y":0,"w":1,"h":1,"listed_price":2,"currency":"chaos","predicted_price":2,"confidence":100,"price_p10":2,"price_p90":2,"price_recommendation_eligible":1,"estimate_trust":"normal","estimate_warning":"","fallback_reason":"","icon_url":"https://example.invalid/f.png","priced_at":"2026-03-21T10:10:00Z"}',
+                    '{"tab_id":"tab-q","tab_index":2,"lineage_key":"sig:q1","item_id":"q1","item_name":"Hubris Circlet","item_class":"Helmet","rarity":"rare","x":20,"y":20,"w":2,"h":2,"listed_price":3,"currency":"chaos","predicted_price":3,"confidence":100,"price_p10":3,"price_p90":3,"price_recommendation_eligible":1,"estimate_trust":"normal","estimate_warning":"","fallback_reason":"","icon_url":"https://example.invalid/q.png","priced_at":"2026-03-21T10:10:00Z"}',
+                ]
+            )
+            + "\n",
+        ]
+    )
+
+    result = fetch_published_tabs(
+        client,
+        account_name="qa-exile",
+        league="Mirage",
+        realm="pc",
+    )
+
+    assert [tab["type"] for tab in result["stashTabs"]] == [
+        "currency",
+        "fragment",
+        "quad",
+    ]

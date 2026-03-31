@@ -72,6 +72,10 @@ def contract_payload(
             "stash_status": "/api/v1/stash/status?league={league}&realm={realm}",
             "stash_scan_start": "/api/v1/stash/scan/start",
             "stash_scan_legacy": "/api/v1/stash/scan",
+            "stash_scan_result": "/api/v1/stash/scan/result",
+            "stash_scan_valuations_start": "/api/v1/stash/scan/valuations/start",
+            "stash_scan_valuations_status": "/api/v1/stash/scan/valuations/status",
+            "stash_scan_valuations_result": "/api/v1/stash/scan/valuations/result",
             "stash_scan_valuations": "/api/v1/stash/scan/valuations",
             "auth_login": "/api/v1/auth/login",
             "auth_callback": "/api/v1/auth/callback",
@@ -128,7 +132,7 @@ def dashboard_payload(
         snapshot
         for snapshot in snapshots
         if snapshot.id
-        in {"clickhouse", "market_harvester", "scanner_worker", "ml_trainer", "api"}
+        in {"clickhouse", "market_harvester", "scanner_worker", "ml_trainer"}
     ]
     return {
         "services": services_payload(snapshots),
@@ -1369,6 +1373,9 @@ def _safe_json_rows(client: ClickHouseClient, query: str) -> list[dict[str, Any]
     try:
         return safe_json_rows(client, query)
     except ValuationBackendUnavailable as exc:
+        cause = exc.__cause__
+        if isinstance(cause, ClickHouseClientError):
+            raise OpsBackendUnavailable("analytics backend unavailable") from cause
         raise OpsBackendUnavailable("analytics backend unavailable") from exc
 
 

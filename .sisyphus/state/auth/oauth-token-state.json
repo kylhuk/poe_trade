@@ -1,12 +1,12 @@
 {
   "wengaCH#0218": {
-    "access_token": "96affcb70a55519cf30ec8f77bb42b9f7cd33463",
+    "access_token": "39ed5df3b991e1c65f518f7fe93f8e715d2d2cb9",
     "account_name": "wengaCH#0218",
-    "expires_at": "2026-04-27T06:34:51.104638Z",
+    "expires_at": "2026-04-28T07:41:39.323813Z",
     "refresh_token": "",
     "scope": "account:profile account:stashes",
     "status": "connected",
     "token_type": "bearer",
-    "updated_at": "2026-03-30T06:34:51.104676Z"
+    "updated_at": "2026-03-31T07:41:39.323857Z"
   }
 }

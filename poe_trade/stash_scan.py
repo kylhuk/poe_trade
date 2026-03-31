@@ -662,6 +662,37 @@ def _write_active_scan_row(
 
 def _normalize_tab_type(raw: str) -> str:
     normalized = raw.lower().strip()
-    if normalized in {"normal", "quad", "currency", "map"}:
-        return normalized
-    return "normal"
+    mapping = {
+        "normal": "normal",
+        "normalstash": "normal",
+        "premiumstash": "normal",
+        "quad": "quad",
+        "quadstash": "quad",
+        "currency": "currency",
+        "currencystash": "currency",
+        "map": "map",
+        "mapstash": "map",
+        "fragment": "fragment",
+        "fragmentstash": "fragment",
+        "essence": "essence",
+        "essencestash": "essence",
+        "divination": "divination",
+        "divinationcardstash": "divination",
+        "unique": "unique",
+        "uniquestash": "unique",
+        "delve": "delve",
+        "delvestash": "delve",
+        "blight": "blight",
+        "blightstash": "blight",
+        "ultimatum": "ultimatum",
+        "ultimatumstash": "ultimatum",
+        "delirium": "delirium",
+        "deliriumstash": "delirium",
+        "metamorph": "metamorph",
+        "metamorphstash": "metamorph",
+        "flask": "flask",
+        "flaskstash": "flask",
+        "gem": "gem",
+        "gemstash": "gem",
+    }
+    return mapping.get(normalized, "normal")

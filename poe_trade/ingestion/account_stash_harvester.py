@@ -57,6 +57,7 @@ class AccountStashHarvester:
         account_name: str = "",
         access_token: str | None = None,
         refresh_access_token: Callable[[], str | None] | None = None,
+        price_item: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         request_headers: Mapping[str, str] | None = None,
     ) -> None:
         self._client = client
@@ -66,6 +67,7 @@ class AccountStashHarvester:
         self._account_name = account_name
         self._access_token = access_token.strip() if access_token else ""
         self._refresh_access_token = refresh_access_token
+        self._price_item = price_item
         self._request_headers = dict(request_headers or {})
 
     def run(
@@ -129,6 +131,73 @@ class AccountStashHarvester:
         tabs_processed = 0
         items_processed = 0
         items_total = 0
+        effective_price_item = (
+            price_item if price_item is not None else self._price_item
+        )
+        pending_item_rows: list[tuple[dict[str, Any], int, dict[str, Any]]] = []
+
+        def _build_item_row(
+            tab: dict[str, Any], tab_index: int, raw_item: dict[str, Any]
+        ) -> dict[str, Any]:
+            listed = parse_listed_price(str(raw_item.get("note") or ""))
+            listed_price = listed[0] if listed else None
+            currency = str(listed[1] if listed else "chaos")
+            prediction = _fallback_prediction(currency=currency)
+            if effective_price_item is not None:
+                try:
+                    price_payload = effective_price_item(raw_item)
+                    if _has_concrete_prediction(price_payload):
+                        prediction = normalize_stash_prediction(price_payload)
+                        currency = str(
+                            prediction.currency or (listed[1] if listed else "chaos")
+                        )
+                    elif isinstance(price_payload, dict):
+                        currency = str(price_payload.get("currency") or currency)
+                except Exception:
+                    logger.exception(
+                        "Valuation lookup failed account=%s realm=%s league=%s",
+                        account_name,
+                        realm,
+                        league,
+                    )
+            return {
+                "scan_id": effective_scan_id,
+                "account_name": account_name,
+                "league": league,
+                "realm": realm,
+                "tab_id": str(tab.get("id") or ""),
+                "tab_index": tab_index,
+                "tab_name": str(tab.get("name") or ""),
+                "tab_type": str(tab.get("type") or "normal"),
+                "lineage_key": lineage_key_for_item(raw_item),
+                "content_signature": content_signature_for_item(raw_item),
+                "item_position_key": _item_position_key(
+                    str(tab.get("id") or ""), raw_item
+                ),
+                "item_id": str(raw_item.get("id") or ""),
+                "item_name": str(
+                    raw_item.get("name") or raw_item.get("typeLine") or "Unknown"
+                ),
+                "item_class": str(raw_item.get("itemClass") or "Unknown"),
+                "rarity": _rarity_from_frame_type(raw_item.get("frameType")),
+                "x": int(raw_item.get("x") or 0),
+                "y": int(raw_item.get("y") or 0),
+                "w": int(raw_item.get("w") or 1),
+                "h": int(raw_item.get("h") or 1),
+                "listed_price": listed_price,
+                "currency": currency,
+                "predicted_price": prediction.predicted_price,
+                "confidence": prediction.confidence,
+                "price_p10": prediction.price_p10,
+                "price_p90": prediction.price_p90,
+                "price_recommendation_eligible": prediction.price_recommendation_eligible,
+                "estimate_trust": prediction.estimate_trust,
+                "estimate_warning": prediction.estimate_warning,
+                "fallback_reason": prediction.fallback_reason,
+                "icon_url": str(raw_item.get("icon") or ""),
+                "priced_at": _timestamp_utc(),
+                "payload_json": json.dumps(raw_item, ensure_ascii=False),
+            }
 
         try:
             self._set_bearer_token()
@@ -171,84 +240,16 @@ class AccountStashHarvester:
                     "payload_json": json.dumps(payload, ensure_ascii=False),
                 }
 
-                raw_items = payload.get("items") if isinstance(payload, dict) else []
+                stash_body = _stash_body_from_payload(payload)
+                raw_items = stash_body.get("items")
                 items = raw_items if isinstance(raw_items, list) else []
                 items_total += len(items)
-                current_item_rows: list[dict[str, Any]] = []
                 for raw_item in items:
                     if not isinstance(raw_item, dict):
                         continue
-                    listed = parse_listed_price(str(raw_item.get("note") or ""))
-                    listed_price = listed[0] if listed else None
-                    currency = str(listed[1] if listed else "chaos")
-                    prediction = _fallback_prediction(currency=currency)
-                    if price_item is not None:
-                        try:
-                            price_payload = price_item(raw_item)
-                            if _has_concrete_prediction(price_payload):
-                                prediction = normalize_stash_prediction(price_payload)
-                                currency = str(
-                                    prediction.currency
-                                    or (listed[1] if listed else "chaos")
-                                )
-                            elif isinstance(price_payload, dict):
-                                currency = str(
-                                    price_payload.get("currency") or currency
-                                )
-                        except Exception:
-                            logger.exception(
-                                "Valuation lookup failed account=%s realm=%s league=%s",
-                                account_name,
-                                realm,
-                                league,
-                            )
-                    current_item_rows.append(
-                        {
-                            "scan_id": effective_scan_id,
-                            "account_name": account_name,
-                            "league": league,
-                            "realm": realm,
-                            "tab_id": str(tab.get("id") or ""),
-                            "tab_index": tab_index,
-                            "tab_name": str(tab.get("name") or ""),
-                            "tab_type": str(tab.get("type") or "normal"),
-                            "lineage_key": lineage_key_for_item(raw_item),
-                            "content_signature": content_signature_for_item(raw_item),
-                            "item_position_key": _item_position_key(
-                                str(tab.get("id") or ""), raw_item
-                            ),
-                            "item_id": str(raw_item.get("id") or ""),
-                            "item_name": str(
-                                raw_item.get("name")
-                                or raw_item.get("typeLine")
-                                or "Unknown"
-                            ),
-                            "item_class": str(raw_item.get("itemClass") or "Unknown"),
-                            "rarity": _rarity_from_frame_type(
-                                raw_item.get("frameType")
-                            ),
-                            "x": int(raw_item.get("x") or 0),
-                            "y": int(raw_item.get("y") or 0),
-                            "w": int(raw_item.get("w") or 1),
-                            "h": int(raw_item.get("h") or 1),
-                            "listed_price": listed_price,
-                            "currency": currency,
-                            "predicted_price": prediction.predicted_price,
-                            "confidence": prediction.confidence,
-                            "price_p10": prediction.price_p10,
-                            "price_p90": prediction.price_p90,
-                            "price_recommendation_eligible": prediction.price_recommendation_eligible,
-                            "estimate_trust": prediction.estimate_trust,
-                            "estimate_warning": prediction.estimate_warning,
-                            "fallback_reason": prediction.fallback_reason,
-                            "icon_url": str(raw_item.get("icon") or ""),
-                            "priced_at": _timestamp_utc(),
-                            "payload_json": json.dumps(raw_item, ensure_ascii=False),
-                        }
-                    )
+                    pending_item_rows.append((dict(tab), tab_index, raw_item))
                 self._write_scan_tabs([current_tab_row])
-                self._write_scan_item_valuations(current_item_rows)
-                items_processed += len(current_item_rows)
+                items_processed += len(items)
                 self._write_scan_run(
                     scan_id=effective_scan_id,
                     status="running",
@@ -302,6 +303,11 @@ class AccountStashHarvester:
                 scan_id=effective_scan_id,
                 published_at=published_at,
             )
+            current_item_rows = [
+                _build_item_row(tab, tab_index, raw_item)
+                for tab, tab_index, raw_item in pending_item_rows
+            ]
+            self._write_scan_item_valuations(current_item_rows)
             return {
                 "scanId": effective_scan_id,
                 "status": "published",
@@ -416,6 +422,7 @@ class AccountStashHarvester:
             payload = self._request_account_stash(
                 stash_endpoint(realm, league, tab_id=tab_id),
             )
+            stash_body = _stash_body_from_payload(payload)
             snapshot_payload = {
                 "tab": tab,
                 "payload": payload,
@@ -428,7 +435,11 @@ class AccountStashHarvester:
                     "league": league,
                     "account_name": self._account_name.strip(),
                     "tab_id": tab_id,
-                    "next_change_id": str(payload.get("next_change_id") or ""),
+                    "next_change_id": str(
+                        stash_body.get("next_change_id")
+                        or payload.get("next_change_id")
+                        or ""
+                    ),
                     "payload_json": json.dumps(snapshot_payload, ensure_ascii=False),
                 }
             )
@@ -511,7 +522,8 @@ class AccountStashHarvester:
                 if isinstance(payload.get("payload"), dict)
                 else {}
             )
-            raw_items = body.get("items")
+            stash_body = _stash_body_from_payload(body)
+            raw_items = stash_body.get("items")
             items = raw_items if isinstance(raw_items, list) else []
             tab_name = str(tab.get("n") or tab.get("name") or "")
             tab_type = str(tab.get("type") or "normal")
@@ -707,6 +719,15 @@ def _ordered_private_tabs_from_payload(payload: Any) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _stash_body_from_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    stash = payload.get("stash")
+    if isinstance(stash, dict):
+        return stash
+    return payload
 
 
 def _private_stash_params(

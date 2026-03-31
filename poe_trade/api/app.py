@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from io import BufferedIOBase
+from io import BufferedIOBase, BytesIO
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections.abc import Mapping
 from typing import cast
@@ -29,6 +30,7 @@ from .auth_session import (
     begin_login,
     load_credential_state,
     load_oauth_token_state,
+    load_oauth_token_states,
     get_session,
     exchange_oauth_code,
     has_connected_session_for_account,
@@ -80,6 +82,7 @@ from .stash import (
     stash_scan_status_payload,
     stash_status_payload,
 )
+from poe_trade.stash_scan import serialize_stash_item_to_clipboard
 from .service_control import (
     ServiceActionForbiddenError,
     ServiceActionInvalidError,
@@ -91,7 +94,10 @@ from .service_control import (
 
 
 _STASH_SCAN_START_LOCK = threading.Lock()
+_ACCOUNT_STASH_AUTOSCAN_LOCK = threading.Lock()
+_account_stash_autoscan_started = False
 _PENDING_STASH_SCANS: dict[tuple[str, str, str], dict[str, object]] = {}
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -251,6 +257,7 @@ def _build_private_stash_harvester(
     clickhouse_client: ClickHouseClient,
     *,
     account_name: str,
+    league: str,
     token_state: dict[str, object],
     access_token: str,
 ) -> AccountStashHarvester:
@@ -275,8 +282,16 @@ def _build_private_stash_harvester(
         poe_client.set_bearer_token(refreshed_access_token or None)
         return refreshed_access_token
 
+    def _price_item(raw_item: dict[str, object]) -> dict[str, object]:
+        item_text = serialize_stash_item_to_clipboard(raw_item)
+        return price_check_payload(
+            clickhouse_client,
+            league=league,
+            item_text=item_text,
+        )
+
     reporter = StatusReporter(clickhouse_client, "account_stash_harvester")
-    return AccountStashHarvester(
+    harvester = AccountStashHarvester(
         poe_client,
         clickhouse_client,
         reporter,
@@ -285,6 +300,8 @@ def _build_private_stash_harvester(
         access_token=access_token,
         refresh_access_token=_refresh_access_token,
     )
+    setattr(harvester, "_price_item", _price_item)
+    return harvester
 
 
 def start_private_stash_scan(
@@ -331,6 +348,7 @@ def start_private_stash_scan(
             settings,
             clickhouse_client,
             account_name=account_name,
+            league=league,
             token_state=token_state,
             access_token=access_token,
         )
@@ -364,6 +382,67 @@ def start_private_stash_scan(
         thread = threading.Thread(target=_runner, daemon=True)
         thread.start()
         return result_holder
+
+
+def _start_account_stash_autoscan(
+    settings: Settings,
+    clickhouse_client: ClickHouseClient,
+) -> None:
+    if not settings.enable_account_stash:
+        return
+    if settings.stash_poll_interval <= 0:
+        return
+
+    global _account_stash_autoscan_started
+    with _ACCOUNT_STASH_AUTOSCAN_LOCK:
+        if _account_stash_autoscan_started:
+            return
+        _account_stash_autoscan_started = True
+
+    def _runner() -> None:
+        poll_interval = max(float(settings.stash_poll_interval), 1.0)
+        while True:
+            try:
+                token_states = load_oauth_token_states(settings)
+                connected_states = [
+                    state
+                    for state in token_states.values()
+                    if str(state.get("status") or "") == "connected"
+                    and str(state.get("account_name") or "").strip()
+                    and str(state.get("access_token") or "").strip()
+                ]
+                if not connected_states:
+                    logger.info(
+                        "account stash autoscan waiting for a connected session"
+                    )
+                for token_state in connected_states:
+                    account_name = str(token_state.get("account_name") or "").strip()
+                    access_token = str(token_state.get("access_token") or "").strip()
+                    if not account_name or not access_token:
+                        continue
+                    try:
+                        harvester = _build_private_stash_harvester(
+                            settings,
+                            clickhouse_client,
+                            account_name=account_name,
+                            league=settings.account_stash_league,
+                            token_state=token_state,
+                            access_token=access_token,
+                        )
+                        harvester.run_private_scan(
+                            realm=settings.account_stash_realm,
+                            league=settings.account_stash_league,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "account stash autoscan failed account=%s", account_name
+                        )
+            except Exception:
+                logger.exception("account stash autoscan loop failed")
+            time.sleep(poll_interval)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
 
 
 class ApiApp:
@@ -451,6 +530,26 @@ class ApiApp:
             self._stash_scan_start,
         )
         self.router.add(
+            "/api/v1/stash/scan/result",
+            ("GET", "OPTIONS"),
+            self._stash_scan_result,
+        )
+        self.router.add(
+            "/api/v1/stash/scan/valuations/start",
+            ("POST", "OPTIONS"),
+            self._stash_scan_valuations_start,
+        )
+        self.router.add(
+            "/api/v1/stash/scan/valuations/status",
+            ("GET", "OPTIONS"),
+            self._stash_scan_valuations_status,
+        )
+        self.router.add(
+            "/api/v1/stash/scan/valuations/result",
+            ("GET", "OPTIONS"),
+            self._stash_scan_valuations_result,
+        )
+        self.router.add(
             "/api/v1/stash/scan/valuations",
             ("POST", "OPTIONS"),
             self._stash_scan_valuations,
@@ -514,7 +613,7 @@ class ApiApp:
                     "lastAttemptAt": None,
                     "routes": {"_global": f"warmup_failed:{type(exc).__name__}"},
                 }
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "ml service warmup failed for league=%s: %s",
                     league,
                     exc,
@@ -1123,7 +1222,28 @@ class ApiApp:
         )
         return json_response(result, status=202)
 
+    def _stash_scan_result(self, context: Mapping[str, object]) -> Response:
+        return self._stash_tabs(context)
+
+    def _stash_scan_valuations_start(self, context: Mapping[str, object]) -> Response:
+        payload = self._stash_scan_valuations_payload(context)
+        return json_response(payload, status=202)
+
+    def _stash_scan_valuations_status(self, context: Mapping[str, object]) -> Response:
+        payload = self._stash_scan_valuations_payload(context)
+        return json_response(payload)
+
+    def _stash_scan_valuations_result(self, context: Mapping[str, object]) -> Response:
+        payload = self._stash_scan_valuations_payload(context)
+        return json_response(payload)
+
     def _stash_scan_valuations(self, context: Mapping[str, object]) -> Response:
+        payload = self._stash_scan_valuations_payload(context)
+        return json_response(payload)
+
+    def _stash_scan_valuations_payload(
+        self, context: Mapping[str, object]
+    ) -> dict[str, object]:
         if not self.settings.enable_account_stash:
             raise ApiError(
                 status=503,
@@ -1131,19 +1251,32 @@ class ApiApp:
                 message="stash feature is unavailable; set POE_ENABLE_ACCOUNT_STASH=true",
             )
         account_name, league, realm = self._stash_account_scope(context)
+        params = _query_params_from_context(context)
         try:
-            body = _read_json_body(
-                _headers_from_context(context),
-                _body_reader_from_context(context),
-                max_body_bytes=self.settings.api_max_body_bytes,
-            )
+            body = self._stash_scan_valuations_request_body(context)
         except ApiError as exc:
             if not exc.headers:
                 exc.headers = dict(_cors_from_context(context))
             raise
 
-        def _require_string(field: str) -> str:
-            value = body.get(field)
+        def _request_value(field: str) -> object | None:
+            if field in body:
+                value = body[field]
+                if value is None:
+                    pass
+                elif isinstance(value, str) and not value.strip():
+                    pass
+                else:
+                    return value
+            values = params.get(field)
+            if values:
+                return values[0]
+            return None
+
+        def _require_string(field: str, *, allow_alias: bool = False) -> str:
+            value = _request_value(field)
+            if allow_alias and not value:
+                value = _request_value("stashId")
             text = str(value or "").strip()
             if not text:
                 raise ApiError(
@@ -1154,7 +1287,7 @@ class ApiApp:
             return text
 
         def _require_float(field: str) -> float:
-            value = body.get(field)
+            value = _request_value(field)
             if isinstance(value, bool) or value is None:
                 raise ApiError(
                     status=400,
@@ -1171,7 +1304,7 @@ class ApiApp:
                 ) from exc
 
         def _require_int(field: str) -> int:
-            value = body.get(field)
+            value = _request_value(field)
             if isinstance(value, bool) or value is None:
                 raise ApiError(
                     status=400,
@@ -1194,21 +1327,37 @@ class ApiApp:
                 )
             return int(parsed)
 
-        scan_id = str(body.get("scanId") or body.get("stashId") or "").strip()
+        scan_id = _require_string("scanId", allow_alias=True)
         if not scan_id:
             raise ApiError(
                 status=400,
                 code="invalid_input",
                 message="invalid input",
             )
-        structured_mode = body.get("structuredMode", False)
+        structured_mode_raw = _request_value("structuredMode")
+        if structured_mode_raw is None:
+            structured_mode = False
+        elif isinstance(structured_mode_raw, bool):
+            structured_mode = structured_mode_raw
+        else:
+            structured_mode_text = str(structured_mode_raw).strip().lower()
+            if structured_mode_text in {"true", "1", "yes", "on"}:
+                structured_mode = True
+            elif structured_mode_text in {"false", "0", "no", "off"}:
+                structured_mode = False
+            else:
+                raise ApiError(
+                    status=400,
+                    code="invalid_input",
+                    message="invalid input",
+                )
         if not isinstance(structured_mode, bool):
             raise ApiError(
                 status=400,
                 code="invalid_input",
                 message="invalid input",
             )
-        item_id = str(body.get("itemId") or "").strip()
+        item_id = str(_request_value("itemId") or "").strip()
         if not structured_mode and not item_id:
             raise ApiError(
                 status=400,
@@ -1250,7 +1399,30 @@ class ApiApp:
                 code="backend_unavailable",
                 message="backend unavailable",
             ) from None
-        return json_response(payload)
+        return payload
+
+    def _stash_scan_valuations_request_body(
+        self, context: Mapping[str, object]
+    ) -> dict[str, object]:
+        headers = _headers_from_context(context)
+        raw_length = headers.get("Content-Length")
+        if raw_length is None:
+            return {}
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise ApiError(
+                status=400,
+                code="invalid_input",
+                message="content-length must be an integer",
+            ) from exc
+        if length <= 0:
+            return {}
+        return _read_json_body(
+            headers,
+            _body_reader_from_context(context),
+            max_body_bytes=self.settings.api_max_body_bytes,
+        )
 
     def _stash_scan_status(self, context: Mapping[str, object]) -> Response:
         account_name, league, realm = self._stash_account_scope(context)
@@ -1620,7 +1792,9 @@ def create_app(
 ) -> ApiApp:
     cfg = settings or config_settings.get_settings()
     client = clickhouse_client or ClickHouseClient.from_env(cfg.clickhouse_url)
-    return ApiApp(cfg, client)
+    app = ApiApp(cfg, client)
+    _start_account_stash_autoscan(cfg, client)
+    return app
 
 
 def make_handler(app: ApiApp) -> type[BaseHTTPRequestHandler]:
@@ -1639,12 +1813,38 @@ def make_handler(app: ApiApp) -> type[BaseHTTPRequestHandler]:
 
         def _handle(self, method: str) -> None:
             headers = {key: value for key, value in self.headers.items()}
+            body_bytes = b""
+            raw_length = headers.get("Content-Length")
+            if raw_length is not None:
+                try:
+                    length = int(raw_length)
+                except ValueError:
+                    length = -1
+                if length > 0:
+                    body_bytes = self.rfile.read(length)
+                elif length == 0:
+                    body_bytes = b""
+            logger.info(
+                "%s",
+                json.dumps(
+                    {
+                        "request": {
+                            "method": method,
+                            "path": self.path,
+                            "headers": headers,
+                            "body": body_bytes.decode("utf-8", errors="replace"),
+                        }
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
             try:
                 response = app.handle(
                     method=method,
                     raw_path=self.path,
                     headers=headers,
-                    body_reader=self.rfile,
+                    body_reader=BytesIO(body_bytes),
                 )
             except ApiError as exc:
                 response = json_error(
@@ -1660,6 +1860,20 @@ def make_handler(app: ApiApp) -> type[BaseHTTPRequestHandler]:
                     code="internal_error",
                     message="internal server error",
                 )
+            logger.info(
+                "%s",
+                json.dumps(
+                    {
+                        "response": {
+                            "status": response.status,
+                            "headers": response.headers,
+                            "body": response.body.decode("utf-8", errors="replace"),
+                        }
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
             self.send_response(response.status)
             for key, value in response.headers.items():
                 self.send_header(key, value)

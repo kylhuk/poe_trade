@@ -38,21 +38,24 @@ class _FakePoeClient(PoeClient):
                 "tabs": [{"id": "tab-1", "i": 0, "n": "Currency", "type": "currency"}]
             }
         return {
-            "items": [
-                {
-                    "id": "item-1",
-                    "name": "Mirror Shard",
-                    "typeLine": "Mirror Shard",
-                    "frameType": 0,
-                    "itemClass": "Currency",
-                    "icon": "https://example.invalid/icon.png",
-                    "x": 1,
-                    "y": 2,
-                    "w": 1,
-                    "h": 1,
-                    "note": "~price 3 chaos",
-                }
-            ]
+            "stash": {
+                "id": str(params.get("tabIndex") or "tab-1"),
+                "items": [
+                    {
+                        "id": "item-1",
+                        "name": "Mirror Shard",
+                        "typeLine": "Mirror Shard",
+                        "frameType": 0,
+                        "itemClass": "Currency",
+                        "icon": "https://example.invalid/icon.png",
+                        "x": 1,
+                        "y": 2,
+                        "w": 1,
+                        "h": 1,
+                        "note": "~price 3 chaos",
+                    }
+                ],
+            }
         }
 
 
@@ -90,3 +93,70 @@ def test_run_private_scan_publishes_items_without_valuation_callback() -> None:
     assert row["predicted_price"] == 0.0
     assert row["fallback_reason"] == "valuation_unavailable"
     assert row["price_recommendation_eligible"] == 0
+
+
+def test_run_private_scan_uses_valuation_callback_when_available() -> None:
+    clickhouse = _FakeClickHouse()
+    harvester = AccountStashHarvester(
+        _FakePoeClient(),
+        clickhouse,
+        StatusReporter(clickhouse, "account_stash_harvester"),
+        account_name="qa-exile",
+        access_token="access-token",
+    )
+
+    result = harvester.run_private_scan(
+        realm="pc",
+        league="Mirage",
+        price_item=lambda _item: {
+            "predictedValue": 42.0,
+            "currency": "chaos",
+            "confidence": 88.0,
+            "interval": {"p10": 35.0, "p90": 55.0},
+            "priceRecommendationEligible": True,
+            "estimateTrust": "normal",
+            "estimateWarning": "",
+            "fallbackReason": "",
+        },
+    )
+
+    assert result["status"] == "published"
+    valuations_query = next(
+        query
+        for query in clickhouse.queries
+        if "account_stash_item_valuations" in query
+    )
+    valuations_payload = valuations_query.split("FORMAT JSONEachRow\n", 1)[1]
+    row = json.loads(valuations_payload)
+    assert row["predicted_price"] == 42.0
+    assert row["confidence"] == 88.0
+    assert row["price_p10"] == 35.0
+    assert row["price_p90"] == 55.0
+    assert row["fallback_reason"] == ""
+    assert row["price_recommendation_eligible"] == 1
+
+
+def test_run_private_scan_publishes_before_writing_valuations() -> None:
+    clickhouse = _FakeClickHouse()
+    harvester = AccountStashHarvester(
+        _FakePoeClient(),
+        clickhouse,
+        StatusReporter(clickhouse, "account_stash_harvester"),
+        account_name="qa-exile",
+        access_token="access-token",
+    )
+
+    _ = harvester.run_private_scan(realm="pc", league="Mirage")
+
+    published_query_index = next(
+        index
+        for index, query in enumerate(clickhouse.queries)
+        if "account_stash_scan_runs" in query and '"status": "published"' in query
+    )
+    valuations_query_index = next(
+        index
+        for index, query in enumerate(clickhouse.queries)
+        if "account_stash_item_valuations" in query
+    )
+
+    assert published_query_index < valuations_query_index

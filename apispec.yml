@@ -316,14 +316,43 @@ paths:
   /api/v1/stash/tabs:
     get:
       summary: Published stash tabs
+      deprecated: true
       security:
         - sessionCookie: []
       parameters:
-        - $ref: '#/components/parameters/League'
+        - $ref: '#/components/parameters/LeagueQuery'
         - $ref: '#/components/parameters/Realm'
+        - in: query
+          name: tabIndex
+          schema:
+            type: integer
+          description: Optional hint for selecting a specific published tab.
       responses:
         '200':
           description: Stash tabs payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StashTabsResponse'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/ApiError'
+        '503':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/stash/scan/result:
+    get:
+      summary: Stash scan result
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/LeagueQuery'
+        - $ref: '#/components/parameters/Realm'
+        - $ref: '#/components/parameters/StashTabIndex'
+      responses:
+        '200':
+          description: Published stash tabs/items payload
           content:
             application/json:
               schema:
@@ -341,7 +370,7 @@ paths:
       security:
         - sessionCookie: []
       parameters:
-        - $ref: '#/components/parameters/League'
+        - $ref: '#/components/parameters/LeagueQuery'
         - $ref: '#/components/parameters/Realm'
       responses:
         '200':
@@ -359,7 +388,7 @@ paths:
       security:
         - sessionCookie: []
       parameters:
-        - $ref: '#/components/parameters/League'
+        - $ref: '#/components/parameters/LeagueQuery'
         - $ref: '#/components/parameters/Realm'
       responses:
         '202':
@@ -380,7 +409,7 @@ paths:
       security:
         - sessionCookie: []
       parameters:
-        - $ref: '#/components/parameters/League'
+        - $ref: '#/components/parameters/LeagueQuery'
         - $ref: '#/components/parameters/Realm'
       responses:
         '202':
@@ -400,7 +429,7 @@ paths:
       security:
         - sessionCookie: []
       parameters:
-        - $ref: '#/components/parameters/League'
+        - $ref: '#/components/parameters/LeagueQuery'
         - $ref: '#/components/parameters/Realm'
       responses:
         '200':
@@ -419,7 +448,7 @@ paths:
         - sessionCookie: []
       parameters:
         - $ref: '#/components/parameters/Fingerprint'
-        - $ref: '#/components/parameters/League'
+        - $ref: '#/components/parameters/LeagueQuery'
         - $ref: '#/components/parameters/Realm'
         - in: query
           name: limit
@@ -439,11 +468,12 @@ paths:
   /api/v1/stash/scan/valuations:
     post:
       summary: Valuate stash scan items
+      deprecated: true
       description: New endpoint that prices scanned stash items against historical comparables.
       security:
         - sessionCookie: []
       parameters:
-        - $ref: '#/components/parameters/League'
+        - $ref: '#/components/parameters/LeagueQuery'
         - $ref: '#/components/parameters/Realm'
       requestBody:
         required: true
@@ -454,6 +484,98 @@ paths:
       responses:
         '200':
           description: Stash valuation payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StashScanValuationsResponse'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '503':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/stash/scan/valuations/start:
+    post:
+      summary: Start valuation of stash scan items
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/LeagueQuery'
+        - $ref: '#/components/parameters/Realm'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StashScanValuationsRequest'
+      responses:
+        '202':
+          description: Valuation accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StashScanValuationsResponse'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '503':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/stash/scan/valuations/status:
+    get:
+      summary: Valuation status
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/LeagueQuery'
+        - $ref: '#/components/parameters/Realm'
+        - $ref: '#/components/parameters/StashScanValuationScanId'
+        - $ref: '#/components/parameters/StashScanValuationStashId'
+        - $ref: '#/components/parameters/StashScanValuationItemId'
+        - $ref: '#/components/parameters/StashScanValuationStructuredMode'
+        - $ref: '#/components/parameters/StashScanValuationMinThreshold'
+        - $ref: '#/components/parameters/StashScanValuationMaxThreshold'
+        - $ref: '#/components/parameters/StashScanValuationMaxAgeDays'
+      responses:
+        '200':
+          description: Valuation payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StashScanValuationsResponse'
+        '400':
+          $ref: '#/components/responses/ApiError'
+        '401':
+          $ref: '#/components/responses/ApiError'
+        '404':
+          $ref: '#/components/responses/ApiError'
+        '503':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/stash/scan/valuations/result:
+    get:
+      summary: Valuation result
+      security:
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/LeagueQuery'
+        - $ref: '#/components/parameters/Realm'
+        - $ref: '#/components/parameters/StashScanValuationScanId'
+        - $ref: '#/components/parameters/StashScanValuationStashId'
+        - $ref: '#/components/parameters/StashScanValuationItemId'
+        - $ref: '#/components/parameters/StashScanValuationStructuredMode'
+        - $ref: '#/components/parameters/StashScanValuationMinThreshold'
+        - $ref: '#/components/parameters/StashScanValuationMaxThreshold'
+        - $ref: '#/components/parameters/StashScanValuationMaxAgeDays'
+      responses:
+        '200':
+          description: Valuation payload
           content:
             application/json:
               schema:
@@ -657,12 +779,67 @@ components:
       required: true
       schema:
         type: string
+    LeagueQuery:
+      in: query
+      name: league
+      required: true
+      schema:
+        type: string
     Realm:
       in: query
       name: realm
       schema:
         type: string
         default: pc
+    StashTabIndex:
+      in: query
+      name: tabIndex
+      schema:
+        type: integer
+      description: Optional hint for selecting a specific published tab.
+    StashScanValuationScanId:
+      in: query
+      name: scanId
+      schema:
+        type: string
+      description: Primary valuation scan identifier. One of scanId or stashId is required.
+    StashScanValuationStashId:
+      in: query
+      name: stashId
+      schema:
+        type: string
+      description: Alias for scanId used by the legacy valuation request body.
+    StashScanValuationItemId:
+      in: query
+      name: itemId
+      schema:
+        type: string
+      description: Required when structuredMode is false.
+    StashScanValuationStructuredMode:
+      in: query
+      name: structuredMode
+      schema:
+        type: boolean
+        default: false
+    StashScanValuationMinThreshold:
+      in: query
+      name: minThreshold
+      required: true
+      schema:
+        type: number
+    StashScanValuationMaxThreshold:
+      in: query
+      name: maxThreshold
+      required: true
+      schema:
+        type: number
+    StashScanValuationMaxAgeDays:
+      in: query
+      name: maxAgeDays
+      required: true
+      schema:
+        type: integer
+        minimum: 1
     Fingerprint:
       in: path
       name: fingerprint
@@ -694,7 +871,7 @@ components:
       required: true
       schema:
         type: string
-        enum: [ingestion, scanner, opportunities, search-suggestions, search-history, pricing-outliers]
+        enum: [ingestion, scanner, opportunities, alerts, backtests, ml, report, search-suggestions, search-history, pricing-outliers]
 
   responses:
     ApiError:
@@ -780,10 +957,14 @@ components:
       additionalProperties: true
 
     OpsMessagesResponse:
-      type: array
-      items:
-        type: object
-        additionalProperties: true
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
 
     ScannerSummaryResponse:
       type: object

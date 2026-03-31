@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from io import BytesIO
+from urllib.parse import urlencode
 from unittest import mock
 
 import pytest
@@ -61,6 +62,13 @@ def _request_headers(body: bytes) -> dict[str, str]:
         "Cookie": "poe_session=test-session",
         "Content-Length": str(len(body)),
     }
+
+
+def _query_path(path: str, **params: object) -> str:
+    query = urlencode(
+        {key: value for key, value in params.items() if value is not None}
+    )
+    return f"{path}?{query}" if query else path
 
 
 def test_stash_scan_valuations_route_returns_single_item_payload(
@@ -183,6 +191,132 @@ def test_stash_scan_valuations_route_accepts_stash_id_alias(
     assert body["scanId"] == "scan-1"
     assert body["stashId"] == "scan-1"
     assert captured["scan_id"] == "scan-1"
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    [
+        _query_path(
+            "/api/v1/stash/scan/valuations/status",
+            league="Mirage",
+            realm="pc",
+            scanId="scan-1",
+            structuredMode="true",
+            minThreshold="10",
+            maxThreshold="50",
+            maxAgeDays="30",
+        ),
+        _query_path(
+            "/api/v1/stash/scan/valuations/result",
+            league="Mirage",
+            realm="pc",
+            scanId="scan-1",
+            structuredMode="true",
+            minThreshold="10",
+            maxThreshold="50",
+            maxAgeDays="30",
+        ),
+    ],
+)
+def test_stash_scan_valuations_canonical_get_routes_use_query_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_path: str,
+) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "poe_trade.api.app.get_session",
+        lambda _settings, *, session_id: _connected_session(session_id),
+    )
+    monkeypatch.setattr(
+        "poe_trade.api.app.stash_scan_valuations_payload",
+        lambda _client, **kwargs: (
+            captured.update(kwargs)
+            or {
+                "structuredMode": True,
+                "scanId": "scan-1",
+                "stashId": "scan-1",
+                "itemId": None,
+                "scanDatetime": None,
+                "chaosMedian": None,
+                "daySeries": [],
+                "items": [],
+            }
+        ),
+    )
+    app = ApiApp(
+        _settings_with_stash_enabled(),
+        clickhouse_client=ClickHouseClient(endpoint="http://ch"),
+    )
+
+    response = app.handle(
+        method="GET",
+        raw_path=raw_path,
+        headers={
+            "Origin": "https://app.example.com",
+            "Cookie": "poe_session=test-session",
+        },
+        body_reader=BytesIO(b""),
+    )
+
+    body = json.loads(response.body.decode("utf-8"))
+    assert response.status == 200
+    assert body["structuredMode"] is True
+    assert captured == {
+        "account_name": "qa-exile",
+        "league": "Mirage",
+        "realm": "pc",
+        "scan_id": "scan-1",
+        "item_id": None,
+        "structured_mode": True,
+        "min_threshold": 10.0,
+        "max_threshold": 50.0,
+        "max_age_days": 30,
+    }
+
+
+def test_stash_scan_valuations_start_route_returns_202_with_same_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "poe_trade.api.app.get_session",
+        lambda _settings, *, session_id: _connected_session(session_id),
+    )
+    monkeypatch.setattr(
+        "poe_trade.api.app.stash_scan_valuations_payload",
+        lambda _client, **kwargs: (
+            captured.update(kwargs)
+            or {
+                "structuredMode": True,
+                "scanId": "scan-1",
+                "stashId": "scan-1",
+                "itemId": None,
+                "scanDatetime": None,
+                "chaosMedian": None,
+                "daySeries": [],
+                "items": [],
+            }
+        ),
+    )
+    app = ApiApp(
+        _settings_with_stash_enabled(),
+        clickhouse_client=ClickHouseClient(endpoint="http://ch"),
+    )
+
+    body = _request_body(structuredMode=True, itemId="")
+    response = app.handle(
+        method="POST",
+        raw_path="/api/v1/stash/scan/valuations/start",
+        headers=_request_headers(body),
+        body_reader=BytesIO(body),
+    )
+
+    assert response.status == 202
+    assert json.loads(response.body.decode("utf-8"))["scanId"] == "scan-1"
+    assert captured["scan_id"] == "scan-1"
+    assert captured["structured_mode"] is True
 
 
 def test_stash_scan_valuations_route_returns_structured_batch_payload(

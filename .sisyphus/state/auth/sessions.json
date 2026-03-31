@@ -10,6 +10,17 @@
     "session_id": "-3ZfLrdttQdruYsMOKFZfKuuyWIm1frQMe3msNL1rN8",
     "status": "connected"
   },
+  "8szduv479dTIhgfis_Z-0fKAkNA5XVkCFffx7GHO9T4": {
+    "account_name": "wengaCH#0218",
+    "created_at": "2026-03-30T19:12:15.317302Z",
+    "expires_at": "2026-04-06T19:12:15.317297Z",
+    "scope": [
+      "account:profile",
+      "account:stashes"
+    ],
+    "session_id": "8szduv479dTIhgfis_Z-0fKAkNA5XVkCFffx7GHO9T4",
+    "status": "connected"
+  },
   "GvAx_97yjwZc4ZXergdu2RC2_S04uDJI7bPwQERf6ew": {
     "account_name": "wengaCH#0218",
     "created_at": "2026-03-29T22:32:33.935308Z",
@@ -30,6 +41,28 @@
       "account:stashes"
     ],
     "session_id": "I4TxffkCzyx7_qacFkMimflYbx-vg3qBmXHoa6Rb1us",
+    "status": "connected"
+  },
+  "Lpe9ZZk4OibksfMQuUSygWOJYVdajkwrrA6vHumeZFY": {
+    "account_name": "wengaCH#0218",
+    "created_at": "2026-03-30T17:00:00.786111Z",
+    "expires_at": "2026-04-06T17:00:00.786103Z",
+    "scope": [
+      "account:profile",
+      "account:stashes"
+    ],
+    "session_id": "Lpe9ZZk4OibksfMQuUSygWOJYVdajkwrrA6vHumeZFY",
+    "status": "connected"
+  },
+  "OyOULYJVO1GywNu2ebLLW34A939fgU5mRnX0b0iHYXg": {
+    "account_name": "wengaCH#0218",
+    "created_at": "2026-03-31T07:41:39.324532Z",
+    "expires_at": "2026-04-07T07:41:39.324521Z",
+    "scope": [
+      "account:profile",
+      "account:stashes"
+    ],
+    "session_id": "OyOULYJVO1GywNu2ebLLW34A939fgU5mRnX0b0iHYXg",
     "status": "connected"
   },
   "V5QgjQb1hSYuYQJqSLwKoCEpcTs5LQ5-kZp-E8h6fWI": {

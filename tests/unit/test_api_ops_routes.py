@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from threading import Event
 from collections.abc import Mapping
+from typing import Callable, cast
 from unittest import mock
 
 import pytest
@@ -118,6 +119,19 @@ def test_ops_contract_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "/api/v1/ops/services" == body["routes"]["ops_services"]
     assert body["routes"]["stash_scan_start"] == "/api/v1/stash/scan/start"
     assert body["routes"]["stash_scan_legacy"] == "/api/v1/stash/scan"
+    assert body["routes"]["stash_scan_result"] == "/api/v1/stash/scan/result"
+    assert (
+        body["routes"]["stash_scan_valuations_start"]
+        == "/api/v1/stash/scan/valuations/start"
+    )
+    assert (
+        body["routes"]["stash_scan_valuations_status"]
+        == "/api/v1/stash/scan/valuations/status"
+    )
+    assert (
+        body["routes"]["stash_scan_valuations_result"]
+        == "/api/v1/stash/scan/valuations/result"
+    )
     assert body["routes"]["stash_scan_valuations"] == "/api/v1/stash/scan/valuations"
     assert body["visible_service_ids"] == ["market_harvester", "api"]
     assert body["controllable_service_ids"] == ["market_harvester"]
@@ -129,6 +143,49 @@ def test_ops_contract_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         "recommendationContractVersion": 3,
         "contractMatchState": "unknown",
     }
+
+
+def test_stash_scan_result_alias_returns_published_tabs_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "poe_trade.api.app.get_session",
+        lambda _settings, *, session_id: _connected_session(session_id),
+    )
+    monkeypatch.setattr(
+        "poe_trade.api.app.fetch_stash_tabs",
+        lambda _client, *, league, realm, account_name: {
+            "scanId": "scan-1",
+            "publishedAt": "2026-03-21T12:00:00Z",
+            "isStale": False,
+            "scanStatus": None,
+            "stashTabs": [
+                {
+                    "id": "tab-1",
+                    "name": "Currency",
+                    "type": "currency",
+                    "items": [{"id": "item-1"}],
+                }
+            ],
+        },
+    )
+    app = ApiApp(
+        _settings_with_stash_enabled(),
+        clickhouse_client=ClickHouseClient(endpoint="http://ch"),
+    )
+    response = app.handle(
+        method="GET",
+        raw_path="/api/v1/stash/scan/result?league=Mirage&realm=pc",
+        headers={
+            "Origin": "https://app.example.com",
+            "Cookie": "poe_session=test-session",
+        },
+        body_reader=BytesIO(b""),
+    )
+    body = json.loads(response.body.decode("utf-8"))
+    assert response.status == 200
+    assert body["scanId"] == "scan-1"
+    assert body["stashTabs"][0]["id"] == "tab-1"
 
 
 def test_ops_services_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,6 +301,95 @@ def test_stash_scan_start_returns_accepted_payload(
     assert body["scanId"] == "scan-9"
     assert body["status"] == "running"
     assert body["league"] == "Mirage"
+
+
+def test_private_stash_harvester_builder_wires_price_item_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _DummyPoeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            self.token: str | None = None
+
+        def set_bearer_token(self, token: str | None) -> None:
+            self.token = token
+
+    class _DummyStatusReporter:
+        def __init__(self, client: object, service_name: str) -> None:
+            self.client = client
+            self.service_name = service_name
+
+    class _DummyHarvester:
+        def __init__(
+            self,
+            poe_client: object,
+            clickhouse_client: object,
+            reporter: object,
+            **kwargs: object,
+        ) -> None:
+            captured.update(
+                {
+                    "poe_client": poe_client,
+                    "clickhouse_client": clickhouse_client,
+                    "reporter": reporter,
+                    "kwargs": kwargs,
+                }
+            )
+
+    price_check_capture: dict[str, object] = {}
+    monkeypatch.setattr(api_app_module, "PoeClient", _DummyPoeClient)
+    monkeypatch.setattr(api_app_module, "StatusReporter", _DummyStatusReporter)
+    monkeypatch.setattr(api_app_module, "AccountStashHarvester", _DummyHarvester)
+    monkeypatch.setattr(
+        api_app_module,
+        "serialize_stash_item_to_clipboard",
+        lambda item: f"clipboard:{item.get('name')}",
+    )
+    monkeypatch.setattr(
+        api_app_module,
+        "price_check_payload",
+        lambda client, *, league, item_text: (
+            price_check_capture.update(
+                {"client": client, "league": league, "item_text": item_text}
+            )
+            or {
+                "predictedValue": 42.0,
+                "currency": "chaos",
+                "confidence": 88.0,
+                "interval": {"p10": 35.0, "p90": 55.0},
+                "priceRecommendationEligible": True,
+                "estimateTrust": "normal",
+                "estimateWarning": "",
+                "fallbackReason": "",
+            }
+        ),
+    )
+
+    settings = _settings_with_stash_enabled()
+    result = api_app_module._build_private_stash_harvester(
+        settings,
+        ClickHouseClient(endpoint="http://ch"),
+        account_name="qa-exile",
+        league="Mirage",
+        token_state={"access_token": "access-token"},
+        access_token="access-token",
+    )
+
+    assert isinstance(result, _DummyHarvester)
+    price_item = cast(
+        Callable[[dict[str, object]], dict[str, object]],
+        getattr(result, "_price_item"),
+    )
+    assert callable(price_item)
+    payload = price_item({"name": "Prismatic Eclipse"})
+    assert payload["predictedValue"] == 42.0
+    assert price_check_capture == {
+        "client": captured["clickhouse_client"],
+        "league": "Mirage",
+        "item_text": "clipboard:Prismatic Eclipse",
+    }
 
 
 def test_stash_scan_legacy_alias_returns_accepted_payload(
