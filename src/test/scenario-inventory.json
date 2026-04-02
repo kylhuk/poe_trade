@@ -1,0 +1,366 @@
+{
+  "scenarios": [
+    {
+      "id": "shell-tab-navigation",
+      "owner": "qa-frontend",
+      "classification": "deterministic-qa-only",
+      "selectorTarget": "[data-testid=panel-shell-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/shell-tab-navigation.png",
+      "backendDependencies": [
+        "none (ui-shell-only)"
+      ],
+      "apiMethods": []
+    },
+    {
+      "id": "dashboard-service-message-rollup",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=panel-dashboard-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/dashboard-service-message-rollup.png",
+      "backendDependencies": [
+        "/api/v1/ops/services",
+        "/api/v1/ops/messages"
+      ],
+      "apiMethods": [
+        "getServices",
+        "getMessages"
+      ]
+    },
+    {
+      "id": "services-list-refresh",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=panel-services-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/services-list-refresh.png",
+      "backendDependencies": [
+        "/api/v1/ops/services"
+      ],
+      "apiMethods": [
+        "getServices"
+      ]
+    },
+    {
+      "id": "services-start-action",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid^=service-][data-testid$=-start]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/services-start-action.html",
+      "backendDependencies": [
+        "/api/v1/actions/services/:id/start"
+      ],
+      "apiMethods": [
+        "startService"
+      ]
+    },
+    {
+      "id": "services-stop-action",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid^=service-][data-testid$=-stop]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/services-stop-action.html",
+      "backendDependencies": [
+        "/api/v1/actions/services/:id/stop"
+      ],
+      "apiMethods": [
+        "stopService"
+      ]
+    },
+    {
+      "id": "services-restart-action",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid^=service-][data-testid$=-restart]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/services-restart-action.html",
+      "backendDependencies": [
+        "/api/v1/actions/services/:id/restart"
+      ],
+      "apiMethods": [
+        "restartService"
+      ]
+    },
+    {
+      "id": "analytics-ingestion-panel",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-ingestion]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-ingestion-panel.png",
+      "backendDependencies": [
+        "/api/v1/ops/analytics/ingestion"
+      ],
+      "apiMethods": [
+        "getFairValueItems"
+      ]
+    },
+    {
+      "id": "analytics-scanner-panel",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-scanner]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-scanner-panel.png",
+      "backendDependencies": [
+        "/api/v1/ops/scanner/recommendations"
+      ],
+      "apiMethods": [
+        "getStaleListings",
+        "getScannerRecommendations"
+      ]
+    },
+    {
+      "id": "analytics-alerts-panel",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-alerts]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-alerts-panel.png",
+      "backendDependencies": [
+        "/api/v1/ops/analytics/alerts"
+      ],
+      "apiMethods": [
+        "getGemStates"
+      ]
+    },
+    {
+      "id": "analytics-backtests-panel",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-backtests]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-backtests-panel.png",
+      "backendDependencies": [
+        "/api/v1/ops/analytics/backtests"
+      ],
+      "apiMethods": [
+        "getHeistDrops"
+      ]
+    },
+    {
+      "id": "analytics-shipment-panel",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-ml]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-shipment-panel.png",
+      "backendDependencies": [
+        "/api/v1/ops/analytics/ml",
+        "/api/v1/ml/leagues/:league/automation/status"
+      ],
+      "apiMethods": [
+        "getShipmentRecommendation",
+        "getMlAutomationStatus"
+      ]
+    },
+    {
+      "id": "analytics-automation-history-contract",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-ml]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-automation-history-contract.json",
+      "backendDependencies": [
+        "/api/v1/ml/leagues/:league/automation/history"
+      ],
+      "apiMethods": [
+        "getMlAutomationHistory"
+      ]
+    },
+    {
+      "id": "analytics-reports-panel",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-reports]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-reports-panel.png",
+      "backendDependencies": [
+        "/api/v1/ops/analytics/report"
+      ],
+      "apiMethods": [
+        "getGoldShadowPrice"
+      ]
+    },
+    {
+      "id": "analytics-session-panel",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=analytics-panel-session]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-session-panel.png",
+      "backendDependencies": [
+        "/api/v1/ops/messages"
+      ],
+      "apiMethods": [
+        "getSessionRecommendation"
+      ]
+    },
+    {
+      "id": "analytics-gear-simulation",
+      "owner": "qa-frontend",
+      "classification": "deterministic-qa-only",
+      "selectorTarget": "[data-testid=analytics-panel-session]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/analytics-gear-simulation.html",
+      "backendDependencies": [
+        "none (client-side fallback simulation)"
+      ],
+      "apiMethods": [
+        "simulateGearSwap"
+      ]
+    },
+    {
+      "id": "messages-list-and-filter",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=panel-messages-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/messages-list-and-filter.png",
+      "backendDependencies": [
+        "/api/v1/ops/messages"
+      ],
+      "apiMethods": [
+        "getMessages"
+      ]
+    },
+    {
+      "id": "messages-ack-critical",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid^=message-][data-testid$=-ack]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/messages-ack-critical.html",
+      "backendDependencies": [
+        "/api/v1/ops/alerts/:id/ack"
+      ],
+      "apiMethods": [
+        "ackAlert"
+      ]
+    },
+    {
+      "id": "stash-status-gates",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid=panel-stash-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/stash-status-gates.png",
+      "backendDependencies": [
+        "/api/v1/stash/status"
+      ],
+      "apiMethods": [
+        "getStashStatus"
+      ]
+    },
+    {
+      "id": "stash-grid-load",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=panel-stash-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/stash-grid-load.png",
+      "backendDependencies": [
+        "/api/v1/stash/tabs"
+      ],
+      "apiMethods": [
+        "getStashTabs"
+      ]
+    },
+    {
+      "id": "pricecheck-invalid-input",
+      "owner": "qa-frontend",
+      "classification": "deterministic-qa-only",
+      "selectorTarget": "[data-testid=state-invalid_input]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/pricecheck-invalid-input.html",
+      "backendDependencies": [
+        "none (client-side input guard)"
+      ],
+      "apiMethods": []
+    },
+    {
+      "id": "pricecheck-submit-live",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=pricecheck-submit]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/pricecheck-submit-live.html",
+      "backendDependencies": [
+        "/api/v1/ops/leagues/:league/price-check"
+      ],
+      "apiMethods": [
+        "priceCheck"
+      ]
+    },
+    {
+      "id": "scanner-summary-contract",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=panel-dashboard-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/scanner-summary-contract.json",
+      "backendDependencies": [
+        "/api/v1/ops/scanner/summary"
+      ],
+      "apiMethods": [
+        "getScannerSummary"
+      ]
+    },
+    {
+      "id": "opportunities-tab-load",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=panel-opportunities-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/opportunities-tab-load.png",
+      "backendDependencies": [
+        "/api/v1/ops/scanner/recommendations"
+      ],
+      "apiMethods": [
+        "getScannerRecommendations"
+      ]
+    },
+    {
+      "id": "opportunities-sort-profit-per-minute",
+      "owner": "qa-frontend",
+      "classification": "live-smoke",
+      "selectorTarget": "[data-testid=scanner-sort-profit-per-minute]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/opportunities-sort-profit-per-minute.png",
+      "backendDependencies": [
+        "/api/v1/ops/scanner/recommendations?sort=expected_profit_per_minute_chaos",
+        "/api/v1/ops/scanner/recommendations?sort=expected_profit_per_minute_chaos&cursor=:opaque"
+      ],
+      "apiMethods": [
+        "getScannerRecommendations"
+      ]
+    },
+    {
+      "id": "scanner-recommendations-invalid-cursor",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid=panel-opportunities-root]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/scanner-recommendations-invalid-cursor.json",
+      "backendDependencies": [
+        "/api/v1/ops/scanner/recommendations?sort=expected_profit_per_minute_chaos&cursor=broken"
+      ],
+      "apiMethods": [
+        "getScannerRecommendations"
+      ]
+    },
+    {
+      "id": "auth-session-state-indicator",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid=settings-trigger]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/auth-session-state-indicator.png",
+      "backendDependencies": [
+        "/api/v1/auth/session"
+      ],
+      "apiMethods": []
+    },
+    {
+      "id": "auth-settings-save-session-refresh",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid=settings-trigger]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/auth-settings-save-session-refresh.html",
+      "backendDependencies": [
+        "cookie:POESESSID",
+        "/api/v1/auth/session"
+      ],
+      "apiMethods": []
+    },
+    {
+      "id": "auth-settings-clear-logout",
+      "owner": "qa-frontend",
+      "classification": "degraded-state",
+      "selectorTarget": "[data-testid=settings-trigger]",
+      "artifact": ".sisyphus/evidence/product/task-2-scenario-inventory/auth-settings-clear-logout.html",
+      "backendDependencies": [
+        "cookie:POESESSID",
+        "/api/v1/auth/logout"
+      ],
+      "apiMethods": []
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+project_id = "kbifvqghjycdccvczdja"
+
+[functions.process-email-queue]
+verify_jwt = true
+
+[functions.api-proxy]
+verify_jwt = false
